@@ -1,14 +1,14 @@
 {
-  "version": "1.0.0",
-  "notes": "最初の版",
+  "version": "1.0.1",
+  "notes": "ロゴと配色を新しくしました。ログイン画面と各画面に動きを加えています",
   "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-  "published_at": "2026-10-02T11:30:00.071Z",
+  "published_at": "2026-10-02T14:16:00.338Z",
   "channels": {
     "stable": {
-      "version": "1.0.0",
-      "notes": "最初の版",
+      "version": "1.0.1",
+      "notes": "ロゴと配色を新しくしました。ログイン画面と各画面に動きを加えています",
       "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-      "published_at": "2026-10-02T11:30:00.071Z"
+      "published_at": "2026-10-02T14:16:00.338Z"
     }
   }
 }
