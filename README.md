@@ -127,7 +127,7 @@ npm run license -- --to "株式会社サンプル" --days 365 --seats 3  # キ�
 ## 更新版を配る（配布元の作業）
 
 このリポジトリが開発の正であり、配布元でもあります。配布した各PCは
-`https://raw.githubusercontent.com/Takuma-BizLabo/ApoBoost/main/release.json` を見に来ます。
+`https://raw.githubusercontent.com/ApoBoost/ApoBoost/main/release.json` を見に来ます。
 
 **更新版を出す手順**
 

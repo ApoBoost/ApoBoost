@@ -9,7 +9,7 @@
 
 **このリポジトリが開発の正であり、同時に配布元でもあります。** ここに push した内容が、配布済みの各PCの「アップデート」に流れます（`release.json` を更新したときだけ）。
 
-- リポジトリ: `github.com/Takuma-BizLabo/ApoBoost`（Public）
+- リポジトリ: `github.com/ApoBoost/ApoBoost`（Public）
 
 ## 動かす
 
