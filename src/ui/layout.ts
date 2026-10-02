@@ -1,5 +1,6 @@
 // 全画面共通の枠（上の帯・ナビ・お知らせ・共通スクリプト）。
 import { CSS } from "./styles.js";
+import { FX_APP } from "./fx.js";
 
 export const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -198,6 +199,7 @@ const t=setInterval(()=>{box.classList.remove("morph");void box.offsetWidth;box.
 setTimeout(()=>{const toHopper=!hop.classList.contains("on");bee.classList.toggle("on");hop.classList.toggle("on");box.classList.toggle("hopper-mode",toHopper);},240);},10000);
 addEventListener("pagehide",()=>clearInterval(t),{once:true});})();
 </script>` : ""}
+${user ? FX_APP : ""}
 </body></html>`;
 }
 

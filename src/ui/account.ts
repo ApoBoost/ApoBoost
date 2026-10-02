@@ -4,6 +4,7 @@ import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
 import { esc, layout, n, type NavUser } from "./layout.js";
 import { post } from "./parts.js";
+import { FX_LOGIN } from "./fx.js";
 
 // ================= ログイン関連の画面 =================
 
@@ -48,7 +49,7 @@ ${opts.error ? `<div class="err">${esc(opts.error)}</div>` : ""}
 <label>ログインID</label><input name="username" autocomplete="username" autofocus required>
 <label>パスワード</label><input name="password" type="password" autocomplete="current-password" required>
 <button>ログイン</button>
-</form></body></html>`;
+</form>${FX_LOGIN}</body></html>`;
 }
 
 /** パスワード変更 */
