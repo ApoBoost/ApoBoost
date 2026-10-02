@@ -205,7 +205,7 @@ assert.equal(get(jCtrl).outcome, "");
   // 受付確認の自動返信が、こちらの文面（日程・商談）を写し返していても、アポにはしない
   assert.equal(inboxCategory(MAILBOX, mail("info@appo.co.jp", "お問い合わせありがとうございました", "このメールは自動送信されています。以下の内容で受け付けました。ご都合のよい日程で商談の機会をいただけますと幸いです。"), own), "auto");
   // 受付確認が、こちらの文面（「田中と申します」）を写し返していても、人の返信とはみなさない
-  assert.equal(inboxCategory(MAILBOX, mail("info@appo.co.jp", "お問い合わせありがとうございます。", "この度はお問い合わせ頂き誠にありがとうございます。改めて担当者よりご連絡します。─ご送信内容の確認─ [お名前] 田中 太郎 [お問い合わせ内容] 株式会社BizLaboの田中と申します。ぜひ一度お打ち合わせの日程をいただけますと幸いです。"), own), "auto");
+  assert.equal(inboxCategory(MAILBOX, mail("info@appo.co.jp", "お問い合わせありがとうございます。", "この度はお問い合わせ頂き誠にありがとうございます。改めて担当者よりご連絡します。─ご送信内容の確認─ [お名前] 田中 太郎 [お問い合わせ内容] 株式会社サンプル商事の田中と申します。ぜひ一度お打ち合わせの日程をいただけますと幸いです。"), own), "auto");
   // Googleフォームの回答の控え・社内のメールには触らない
   assert.equal(inboxCategory(MAILBOX, mail("forms-receipts-noreply@google.com", "フォームにご記入いただきありがとうございます: 経費申請フォーム", "株式会社サンプル商事 田中 太郎", true), own), null);
   assert.equal(inboxCategory(MAILBOX, mail("keiri@sender.example", "お問い合わせありがとうございます", "株式会社サンプル商事 田中 太郎"), own), null);
