@@ -17,7 +17,7 @@ import { post } from "./parts.js";
 /** 初めて使う人向けの「ご利用ガイド」。上から順に進めれば送信まで行けるようにする。
  *  画面のボタン名・見出しと言葉をそろえること（違うと探せない） */
 export function guideView(isAdmin: boolean): string {
-  const step = (n: string, title: string, body: string, link = "") => `<div class="card" id="step-${title === "営業リストを取り込む" ? "list" : n}" style="position:relative;padding-left:64px"><div style="position:absolute;left:16px;top:16px;width:34px;height:34px;border-radius:50%;background:var(--honey);color:#1C1710;font-weight:800;display:flex;align-items:center;justify-content:center">${n}</div><h2 style="margin-top:0">${title}</h2>${body}${link}</div>`;
+  const step = (n: string, title: string, body: string, link = "") => `<div class="card" id="step-${title === "営業リストを取り込む" ? "list" : n}" style="position:relative;padding-left:64px"><div style="position:absolute;left:16px;top:16px;width:34px;height:34px;border-radius:50%;background:var(--c-brand);color:var(--c-brand-ink);font-weight:800;display:flex;align-items:center;justify-content:center">${n}</div><h2 style="margin-top:0">${title}</h2>${body}${link}</div>`;
   // ガイドを見ながら操作できるよう、ガイド内のリンクは別タブで開く
   const go = (href: string, label: string) => `<p style="margin:10px 0 0"><a class="btn sub small" href="${href}" target="_blank" rel="noopener">${label} ↗</a></p>`;
   return `<h1>ご利用ガイド</h1>

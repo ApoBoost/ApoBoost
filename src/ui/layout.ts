@@ -8,8 +8,9 @@ export const n = (v: number | null | undefined) => Number(v ?? 0).toLocaleString
 
 export type NavUser = { username: string; display_name: string; role: string; gameOn?: boolean; todo?: number; appo?: number; effects?: boolean; path?: string } | null;
 
-const FAVICON = `data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2048%2048%22%3E%3Crect%20width%3D%2248%22%20height%3D%2248%22%20rx%3D%2210%22%20fill%3D%22%23FFF8E1%22%2F%3E%3Cpath%20d%3D%22M20%2015C18.5%2010%2016%208.5%2013.5%208%22%20stroke%3D%22%231C1710%22%20stroke-width%3D%222.2%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%2F%3E%3Cpath%20d%3D%22M28%2015C29.5%2010%2032%208.5%2034.5%208%22%20stroke%3D%22%231C1710%22%20stroke-width%3D%222.2%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%2F%3E%3Ccircle%20cx%3D%2212.8%22%20cy%3D%227.4%22%20r%3D%222.4%22%20fill%3D%22%231C1710%22%2F%3E%3Ccircle%20cx%3D%2235.2%22%20cy%3D%227.4%22%20r%3D%222.4%22%20fill%3D%22%231C1710%22%2F%3E%3Cellipse%20cx%3D%229.5%22%20cy%3D%2221%22%20rx%3D%227.6%22%20ry%3D%225.3%22%20fill%3D%22%23fff%22%20stroke%3D%22%231C1710%22%20stroke-width%3D%221.6%22%20transform%3D%22rotate%28-24%209.5%2021%29%22%2F%3E%3Cellipse%20cx%3D%2238.5%22%20cy%3D%2221%22%20rx%3D%227.6%22%20ry%3D%225.3%22%20fill%3D%22%23fff%22%20stroke%3D%22%231C1710%22%20stroke-width%3D%221.6%22%20transform%3D%22rotate%2824%2038.5%2021%29%22%2F%3E%3Crect%20x%3D%2213%22%20y%3D%2214%22%20width%3D%2222%22%20height%3D%2229%22%20rx%3D%2211%22%20fill%3D%22%23FFC62E%22%20stroke%3D%22%231C1710%22%20stroke-width%3D%222%22%2F%3E%3Crect%20x%3D%2213%22%20y%3D%2228.5%22%20width%3D%2222%22%20height%3D%224.6%22%20fill%3D%22%231C1710%22%2F%3E%3Crect%20x%3D%2213%22%20y%3D%2237%22%20width%3D%2222%22%20height%3D%224.6%22%20fill%3D%22%231C1710%22%2F%3E%3Ccircle%20cx%3D%2219.6%22%20cy%3D%2222.5%22%20r%3D%222.3%22%20fill%3D%22%231C1710%22%2F%3E%3Ccircle%20cx%3D%2228.4%22%20cy%3D%2222.5%22%20r%3D%222.3%22%20fill%3D%22%231C1710%22%2F%3E%3Ccircle%20cx%3D%2220.4%22%20cy%3D%2221.7%22%20r%3D%22.8%22%20fill%3D%22%23fff%22%2F%3E%3Ccircle%20cx%3D%2229.2%22%20cy%3D%2221.7%22%20r%3D%22.8%22%20fill%3D%22%23fff%22%2F%3E%3C%2Fsvg%3E`;
-const LOGO = `<svg class="hatch" viewBox="0 0 48 48" width="22" height="22" role="img" aria-label="ApoBoost"><path d="M20 14C18.5 9 16 7.5 13.5 7" stroke="#1C1710" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M28 14C29.5 9 32 7.5 34.5 7" stroke="#1C1710" stroke-width="2.2" fill="none" stroke-linecap="round"/><circle cx="12.8" cy="6.4" r="2.4" fill="#1C1710"/><circle cx="35.2" cy="6.4" r="2.4" fill="#1C1710"/><ellipse cx="9.5" cy="20" rx="8" ry="5.6" fill="#fff" stroke="#1C1710" stroke-width="1.6" transform="rotate(-24 9.5 20)"/><ellipse cx="38.5" cy="20" rx="8" ry="5.6" fill="#fff" stroke="#1C1710" stroke-width="1.6" transform="rotate(24 38.5 20)"/><rect x="13" y="13" width="22" height="29" rx="11" fill="#FFC62E" stroke="#1C1710" stroke-width="2"/><rect x="13" y="27.5" width="22" height="4.6" fill="#1C1710"/><rect x="13" y="36" width="22" height="4.6" fill="#1C1710"/><circle cx="19.6" cy="21.5" r="2.3" fill="#1C1710"/><circle cx="28.4" cy="21.5" r="2.3" fill="#1C1710"/><circle cx="20.4" cy="20.7" r=".8" fill="#fff"/><circle cx="29.2" cy="20.7" r=".8" fill="#fff"/></svg>`;
+// ロゴは assets/ の画像を使う（ログイン前でも読めるよう、/assets は認証の手前で配信している）
+const FAVICON = "/assets/icon.png";
+const LOGO = `<img src="/assets/logo.png" alt="ApoBoost" width="101" height="24">`;
 
 /** ナビは6つに絞る（#97）。以前は12リンクが2段に折り返していた。
  *  送信者・除外リスト・動作チェック・ユーザー管理・アップデートは「設定」の中のタブへ。
@@ -57,7 +58,7 @@ export function layout(title: string, body: string, flash = "", user: NavUser = 
 <title>${esc(title)} | ApoBoost</title>
 <link rel="icon" href="${FAVICON}">
 <style>${CSS}</style></head><body>
-<header class="top"><a class="logo" href="/">${LOGO} ApoBoost</a>${user ? `${navOf(user)}<div class="right">${user.role === "admin" && updateReady ? `<a class="upd" href="/update">新しい版があります</a>` : ""}<span>${esc(user.display_name || user.username)}${user.role === "admin" ? "（管理者）" : ""}</span><a href="/password">パスワード</a><a href="/logout">ログアウト</a></div>` : ""}</header>
+<header class="top"><a class="logo" href="/">${LOGO}</a>${user ? `${navOf(user)}<div class="right">${user.role === "admin" && updateReady ? `<a class="upd" href="/update">新しい版があります</a>` : ""}<span>${esc(user.display_name || user.username)}${user.role === "admin" ? "（管理者）" : ""}</span><a href="/password">パスワード</a><a href="/logout">ログアウト</a></div>` : ""}</header>
 <main>${flash ? `<div class="flash">${esc(flash)}</div>` : ""}${user ? settingsTabsFor(user) : ""}${body}</main>
 <script>
 // 送信系フォームの送信中スピナー＋二重送信防止（既存 .spin スタイルを流用）
@@ -126,7 +127,7 @@ f.addEventListener("submit",()=>{clearTimeout(t);try{localStorage.removeItem(key
 ${user ? `<script>
 // 開いているこのページから通知を出す。
 // OSの通知は状況によって出ないことがあるので、ページ自身が数秒ごとに新しいお知らせを見に行き、
-// ブラウザの通知（押すとこのタブが前に出る・絵は蜂）と、ページ右上の帯の両方で知らせる。
+// ブラウザの通知（押すとこのタブが前に出る・絵はロゴ）と、ページ右上の帯の両方で知らせる。
 (()=>{
   const K="fo-last-event";
   const get=()=>{try{return Number(localStorage.getItem(K)||0)}catch(e){return 0}};
@@ -136,7 +137,7 @@ ${user ? `<script>
     if(!box){box=document.createElement("div");box.id="fo-toasts";box.style.cssText="position:fixed;top:14px;right:14px;z-index:200;display:flex;flex-direction:column;gap:8px;max-width:min(380px,calc(100vw - 28px))";document.body.appendChild(box);}
     const el=document.createElement("div");
     el.style.cssText="background:#fff;border:1px solid var(--c-line-strong);border-left:4px solid var(--c-brand);border-radius:10px;padding:10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.18);display:flex;gap:10px;align-items:flex-start;cursor:pointer";
-    const img=document.createElement("img");img.src="/assets/bee.png";img.width=32;img.height=32;img.alt="";img.onerror=()=>img.remove();
+    const img=document.createElement("img");img.src="/assets/icon.png";img.width=32;img.height=32;img.alt="";img.onerror=()=>img.remove();
     const tx=document.createElement("div");const b=document.createElement("b");b.textContent=title;const p=document.createElement("div");p.className="small";p.textContent=body;tx.appendChild(b);tx.appendChild(p);
     el.appendChild(img);el.appendChild(tx);el.title="クリックで閉じる";el.onclick=()=>el.remove();
     box.appendChild(el);setTimeout(()=>el.remove(),20000);
@@ -145,7 +146,7 @@ ${user ? `<script>
     toast(e.title,e.body);
     try{
       if("Notification" in window&&Notification.permission==="granted"){
-        const n=new Notification("ApoBoost: "+e.title,{body:e.body,icon:"/assets/bee.png",tag:"fo-"+e.id});
+        const n=new Notification("ApoBoost: "+e.title,{body:e.body,icon:"/assets/icon.png",tag:"fo-"+e.id});
         n.onclick=()=>{window.focus();n.close();};
       }
     }catch(err){}
@@ -169,7 +170,7 @@ ${user ? `<script>
     const snooze=Number(localStorage.getItem("fo-notify-later")||0);
     if("Notification" in window&&Notification.permission==="default"&&Date.now()-snooze>7*864e5){
       const bar=document.createElement("div");bar.className="flash";bar.style.cssText="display:flex;gap:10px;align-items:center;flex-wrap:wrap";
-      bar.innerHTML='<span>🐝 通知をオンにすると、送信が止まったとき・アポの返信が来たときに、このパソコンに知らせます。</span>';
+      bar.innerHTML='<span>通知をオンにすると、送信が止まったとき・アポの返信が来たときに、このパソコンに知らせます。</span>';
       const yes=document.createElement("button");yes.className="btn small primary";yes.textContent="通知をオンにする";
       const no=document.createElement("button");no.className="btn small";no.textContent="あとで";
       yes.onclick=()=>{Notification.requestPermission().then((p)=>{bar.remove();if(p==="granted")show({id:0,title:"通知をオンにしました",body:"送信が止まったときやアポの返信が来たときに、このように知らせます"});});};

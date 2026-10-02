@@ -3,21 +3,22 @@
 //
 // 色の意味（どの画面でも同じ）:
 //   緑＝送れた・問題なし ／ 赤＝人の手が要る ／ 黄＝待ち ／ 青＝いま進行中 ／ 灰＝対象外
-// 黄色（ブランド色）はロゴと「その画面でいちばん押してほしいボタン」だけに使う。
-// 以前は背景・カード・ボタンの多くが黄色で、警告と区別がつかなかった。
+// ブランド色（ロゴの青）は「その画面でいちばん押してほしいボタン」と、いま選んでいるタブの印だけに使う。
+// 以前はブランド色が黄色で、「待ち」の黄色と同じだった。ロゴを青に変えたので、待ちの黄色（--c-wait*）とは別の色にしてある。
+// 上の帯はロゴの紺（--c-nav）。背景・文字・線も、ロゴに合わせて暖色から寒色へ寄せた。
 
 export const CSS = `
 :root{
   /* ---- 色 ---- */
-  --c-bg:#F6F4EF; --c-surface:#FFFFFF; --c-surface-2:#FAF9F6;
-  --c-ink:#1C1710; --c-ink-2:#4A4237; --c-ink-3:#756C5E;
-  --c-line:#E0DBD0; --c-line-strong:#C9C2B4;
-  --c-brand:#FFC62E; --c-brand-ink:#1C1710;
+  --c-bg:#F3F6FB; --c-surface:#FFFFFF; --c-surface-2:#F7F9FC;
+  --c-ink:#0B1B3F; --c-ink-2:#3A4763; --c-ink-3:#66728A;
+  --c-line:#DCE3EE; --c-line-strong:#C2CCDB;
+  --c-brand:#0A66E8; --c-brand-ink:#FFFFFF; --c-brand-bg:#EAF2FF; --c-nav:#062256;
   --c-ok:#1E7B34;   --c-ok-bg:#E6F4EA;
   --c-ng:#C62828;   --c-ng-bg:#FDECEC;
-  --c-wait:#7A5600; --c-wait-bg:#FFF2CC;
+  --c-wait:#7A5600; --c-wait-bg:#FFF2CC; --c-wait-dot:#F2B526;
   --c-info:#1B5FA8; --c-info-bg:#E7F0FA;
-  --c-off:#5F5A52;  --c-off-bg:#EEEBE5;
+  --c-off:#566074;  --c-off-bg:#E9EDF3;
   --c-warn:#B45309; --c-warn-bg:#FFF1E0;
   --c-link:#1A4FB4;
   /* ---- 文字 ---- */
@@ -36,17 +37,17 @@ body{margin:0;font-family:-apple-system,"Hiragino Sans","Noto Sans JP","Yu Gothi
 a{color:var(--c-link)}
 
 /* ---- 上の帯（ナビ）---- */
-header.top{background:var(--c-ink);color:#fff;padding:10px 20px;display:flex;align-items:center;gap:6px 6px;flex-wrap:wrap}
+header.top{background:var(--c-nav);color:#fff;padding:10px 20px;display:flex;align-items:center;gap:6px 6px;flex-wrap:wrap}
 header.top a{color:#fff;text-decoration:none;white-space:nowrap}
-header.top .logo{background:var(--c-brand);color:var(--c-brand-ink);font-weight:700;padding:5px 12px 5px 8px;border-radius:var(--radius-sm);display:inline-flex;align-items:center;gap:6px;margin-right:10px}
-header.top .logo .hatch{display:block;flex:none}
+header.top .logo{background:#fff;padding:5px 10px;border-radius:var(--radius-sm);display:inline-flex;align-items:center;margin-right:10px}
+header.top .logo img{display:block;flex:none;height:24px;width:auto}
 header.top nav{display:flex;gap:2px;flex-wrap:wrap;align-items:center}
 header.top nav a{padding:7px 14px;border-radius:999px;font-weight:600}
 header.top nav a:hover{background:rgba(255,255,255,.12)}
 header.top nav a.on{background:#fff;color:var(--c-ink)}
 header.top nav a .badge{display:inline-block;background:var(--c-ng);color:#fff;font-size:12px;font-weight:700;border-radius:999px;padding:0 7px;margin-left:6px;line-height:1.6}
-header.top .right{margin-left:auto;display:flex;gap:12px;align-items:center;font-size:var(--fs-sm);color:#CFC8BB}
-header.top .right a{color:#CFC8BB}
+header.top .right{margin-left:auto;display:flex;gap:12px;align-items:center;font-size:var(--fs-sm);color:#C5D0E6}
+header.top .right a{color:#C5D0E6}
 header.top a.upd{background:var(--c-brand);color:var(--c-brand-ink);font-weight:700;padding:4px 12px;border-radius:999px}
 
 /* ---- 設定の中のタブ ---- */
@@ -69,7 +70,7 @@ textarea{min-height:140px}
 .row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
 .row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
 
-/* ---- ボタン：黄色は「その画面でいちばん押してほしい1つ」だけ（#112）---- */
+/* ---- ボタン：ブランド色（青）は「その画面でいちばん押してほしい1つ」だけ（#112）---- */
 .btn{display:inline-block;background:#fff;color:var(--c-ink);border:1px solid var(--c-line-strong);padding:8px 14px;border-radius:var(--radius-sm);font-weight:700;cursor:pointer;text-decoration:none;font:inherit;font-weight:700;line-height:1.4}
 .btn:hover{border-color:var(--c-ink-3)}
 .btn.primary{background:var(--c-brand);border-color:var(--c-brand);color:var(--c-brand-ink)}
@@ -83,7 +84,7 @@ table{width:100%;border-collapse:collapse;background:var(--c-surface)}
 th,td{border-bottom:1px solid var(--c-line);padding:7px 8px;text-align:left;vertical-align:top}
 th{background:var(--c-surface-2);font-size:var(--fs-xs);color:var(--c-ink-2);font-weight:700}
 th a{color:inherit}
-tr.hl td{background:#FFFBEA}tr.hl td:first-child{box-shadow:inset 3px 0 0 var(--c-brand)}
+tr.hl td{background:var(--c-brand-bg)}tr.hl td:first-child{box-shadow:inset 3px 0 0 var(--c-brand)}
 tr.histrow td{background:var(--c-surface-2);border-bottom:1px dashed var(--c-line)}
 
 /* ---- 状態の札（色の意味は全画面共通：#111）---- */
@@ -114,13 +115,13 @@ tr.histrow td{background:var(--c-surface-2);border-bottom:1px dashed var(--c-lin
 .ovhead a,.ovhead .muted{font-size:var(--fs-sm)}
 .ovbar{display:flex;gap:2px;height:14px;border-radius:999px;overflow:hidden;background:var(--c-off-bg);margin-bottom:12px}
 .ovbar i{display:block;min-width:3px}
-.ovbar .ok{background:var(--c-ok)}.ovbar .wait{background:var(--c-brand)}.ovbar .off{background:var(--c-line-strong)}
+.ovbar .ok{background:var(--c-ok)}.ovbar .wait{background:var(--c-wait-dot)}.ovbar .off{background:var(--c-line-strong)}
 .ovnums{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 .ovnum{display:block;text-decoration:none;color:inherit;border-radius:var(--radius-sm);padding:4px 8px;margin:-4px -8px}
 .ovnum:hover{background:var(--c-surface-2)}
 .ovnum .lbl{display:flex;align-items:center;gap:6px;font-size:var(--fs-sm);color:var(--c-ink-2)}
 .ovnum .lbl i{width:10px;height:10px;border-radius:50%;flex:none}
-.ovnum.ok .lbl i{background:var(--c-ok)}.ovnum.wait .lbl i{background:var(--c-brand)}.ovnum.off .lbl i{background:var(--c-line-strong)}
+.ovnum.ok .lbl i{background:var(--c-ok)}.ovnum.wait .lbl i{background:var(--c-wait-dot)}.ovnum.off .lbl i{background:var(--c-line-strong)}
 .ovnum b{display:block;font-size:26px;line-height:1.3;font-variant-numeric:tabular-nums}
 .ovnum.ok b{color:var(--c-ok)}
 .ovnum .unit,.ovmini .unit{font-size:var(--fs-xs);font-weight:400;margin-left:2px}

@@ -3,9 +3,9 @@
   "configurations": [
     {
       "name": "apoboost-dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 3210
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["PORT=3212", "DATA_DIR=data-dev", "npm", "run", "dev"],
+      "port": 3212
     }
   ]
 }

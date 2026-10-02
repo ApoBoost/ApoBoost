@@ -14,7 +14,7 @@ export const ROOT = path.resolve(process.cwd());
 const UPDATABLE = ["src", "test", "package.json", "package-lock.json", "tsconfig.json", "README.md", "scripts", "update.json",
   // ダブルクリックで起動するファイル（配布済みのPCにも届くように更新対象に入れる）
   "ApoBoost起動.command", "ApoBoost起動.bat", "インストール（最初に1回）.bat", "ApoBoost.app",
-  // 通知の絵（蜂）など。ゲームの素材もここに入っている
+  // ロゴ・通知の絵など。ゲームの素材もここに入っている
   "assets"];
 
 export type Release = { version: string; notes?: string; zip?: string; published_at?: string };

@@ -11,7 +11,7 @@ function setTabTitle(title) {
   if (!process.stdout.isTTY) return;          // ログファイルに書き出す場合は何もしない
   process.stdout.write(`\x1b]1;${title}\x07\x1b]2;${title}\x07`);
 }
-setTabTitle("🐝 ApoBoost");
+setTabTitle("ApoBoost");
 
 let current = null;
 function start() {

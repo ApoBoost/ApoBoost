@@ -7,7 +7,7 @@ export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 
 clear
 echo "============================================"
-echo "  🐝 ApoBoost を起動します"
+echo "  ApoBoost を起動します"
 echo "============================================"
 echo ""
 

@@ -301,7 +301,7 @@ function foPreviewProgress(useAi){
 ${extra.preview ? `<p class="muted">${esc(extra.preview.job.company_name)}（${esc(extra.preview.job.industry)}）向け ${extra.preview.aiUsed ? "・AI生成あり" : "・テンプレのみ"}</p><p><b>件名:</b> ${esc(extra.preview.subject)}</p>${(extra.preview.lint ?? []).map((l) => `<div class="small" style="color:${l.level === "error" ? "var(--ng)" : "var(--warn)"}">${l.level === "error" ? "✕" : "△"} ${esc(l.text)}</div>`).join("")}<pre>${esc(extra.preview.message)}</pre>
 ${extra.preview.emailHtml ? `<h2 style="font-size:14px;margin-top:16px">相手のメールソフトでの見え方（#70）</h2>
 <div style="border:1px solid var(--hive-200);border-radius:10px;overflow:hidden;max-width:660px">
-  <div style="background:#F5F2EA;padding:10px 12px;border-bottom:1px solid var(--hive-200);font-size:12px;line-height:1.8">
+  <div style="background:var(--c-surface-2);padding:10px 12px;border-bottom:1px solid var(--hive-200);font-size:12px;line-height:1.8">
     <div><b>差出人:</b> ${esc(c.sender.company)} &lt;${esc(c.sender.from_email || c.sender.smtp_user || c.sender.email)}&gt;</div>
     <div><b>宛先:</b> ${esc(extra.preview.job.email || "（この会社のメールアドレス）")}</div>
     <div><b>件名:</b> ${esc(extra.preview.subject)}</div>

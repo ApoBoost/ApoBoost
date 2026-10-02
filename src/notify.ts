@@ -20,10 +20,10 @@ export function notifyEnabled(): boolean {
 }
 
 const appUrl = () => `http://localhost:${Number(process.env.PORT ?? 3210)}`;
-const BEE_PNG = path.resolve(process.cwd(), "assets", "bee.png");
+const ICON_PNG = path.resolve(process.cwd(), "assets", "icon.png");
 
 // ---- Mac: 通知専用アプリ ----
-const NOTIFIER_VERSION = "5"; // 中身を変えたら上げる（各PCで作り直される）
+const NOTIFIER_VERSION = "6"; // 中身を変えたら上げる（各PCで作り直される）
 // 置き場所はホームの Library の下にする。data/ の下（＝ダウンロードやデスクトップの中のことが多い）に置くと、
 // macOS が「このアプリにダウンロードフォルダを読ませてよいか」を止めてしまい、通知が出なかった
 const NOTIFIER_DIR = process.platform === "darwin"
@@ -125,18 +125,18 @@ export function ensureNotifierApp(): boolean {
     const srcFile = path.join(NOTIFIER_DIR, "notifier.applescript");
     fs.writeFileSync(srcFile, notifierSource(), "utf8");
     execFileSync("osacompile", ["-o", NOTIFIER_APP, srcFile], { stdio: "ignore" });
-    // アイコンを蜂にする（sips と iconutil はMacに最初から入っている）
-    if (fs.existsSync(BEE_PNG)) {
-      const iconset = path.join(NOTIFIER_DIR, "bee.iconset");
+    // アイコンをロゴにする（sips と iconutil はMacに最初から入っている）
+    if (fs.existsSync(ICON_PNG)) {
+      const iconset = path.join(NOTIFIER_DIR, "icon.iconset");
       fs.rmSync(iconset, { recursive: true, force: true });
       fs.mkdirSync(iconset, { recursive: true });
       for (const [size, name] of [[16, "icon_16x16"], [32, "icon_16x16@2x"], [32, "icon_32x32"], [64, "icon_32x32@2x"], [128, "icon_128x128"], [256, "icon_128x128@2x"], [256, "icon_256x256"], [512, "icon_256x256@2x"], [512, "icon_512x512"]] as const) {
-        execFileSync("sips", ["-z", String(size), String(size), BEE_PNG, "--out", path.join(iconset, `${name}.png`)], { stdio: "ignore" });
+        execFileSync("sips", ["-z", String(size), String(size), ICON_PNG, "--out", path.join(iconset, `${name}.png`)], { stdio: "ignore" });
       }
       execFileSync("iconutil", ["-c", "icns", iconset, "-o", path.join(NOTIFIER_APP, "Contents", "Resources", "applet.icns")], { stdio: "ignore" });
       fs.rmSync(iconset, { recursive: true, force: true });
       // 新しいmacOSでは、アプリの絵が Assets.car（標準のスクリプトの絵）から読まれて、上の applet.icns が使われない。
-      // Assets.car と、その参照（CFBundleIconName）を外して、蜂の絵が確実に使われるようにする
+      // Assets.car と、その参照（CFBundleIconName）を外して、ロゴの絵が確実に使われるようにする
       fs.rmSync(path.join(NOTIFIER_APP, "Contents", "Resources", "Assets.car"), { force: true });
       try { execFileSync("plutil", ["-remove", "CFBundleIconName", path.join(NOTIFIER_APP, "Contents", "Info.plist")], { stdio: "ignore" }); } catch { /* 元から無い場合 */ }
     }
@@ -208,10 +208,10 @@ export function notify(title: string, body: string, key = title): boolean {
       }
     } else if (process.platform === "win32") {
       // Windows 10/11 のトースト通知（PowerShell の標準機能だけで出す）。
-      // 押すとApoBoostの画面を開き（activationType=protocol）、左の絵は蜂にする。
+      // 押すとApoBoostの画面を開き（activationType=protocol）、左の絵はロゴにする。
       // 新しい形で作れなかった場合は、これまでの形（文字だけ）で出す
       const x = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      const logo = fs.existsSync(BEE_PNG) ? `<image placement='appLogoOverride' src='file:///${BEE_PNG.replace(/\\/g, "/")}'/>` : "";
+      const logo = fs.existsSync(ICON_PNG) ? `<image placement='appLogoOverride' src='file:///${ICON_PNG.replace(/\\/g, "/")}'/>` : "";
       const xml = `<toast activationType='protocol' launch='${appUrl()}'><visual><binding template='ToastGeneric'>${logo}<text>ApoBoost: ${x(t)}</text><text>${x(b)}</text></binding></visual></toast>`;
       const ps = `$ErrorActionPreference='SilentlyContinue';[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]>$null;[Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlDocument,ContentType=WindowsRuntime]>$null;` +
         `$x=New-Object Windows.Data.Xml.Dom.XmlDocument;$x.LoadXml("${xml}");` +
