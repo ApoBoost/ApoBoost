@@ -1,0 +1,4 @@
+{
+  "_comment": "配布したApoBoostが更新を確認しに行く先。配布元を変える場合だけ書き換えてください。",
+  "manifest_url": "https://raw.githubusercontent.com/Takuma-BizLabo/ApoBoost/main/release.json"
+}

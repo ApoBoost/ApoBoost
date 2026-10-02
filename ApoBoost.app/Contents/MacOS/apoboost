@@ -1,0 +1,16 @@
+#!/bin/bash
+# ApoBoostのアイコンから起動するための小さなプログラム（Mac用）。
+# ターミナルを開いて、同じフォルダの「ApoBoost起動.command」を実行します。
+# ターミナルを使うのは、送信の様子が見えることと、Ctrl+C で安全に止められるようにするためです。
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+LAUNCHER="$ROOT/ApoBoost起動.command"
+
+if [ ! -f "$LAUNCHER" ]; then
+  osascript -e 'display alert "ApoBoostが見つかりません" message "このアイコンは、ApoBoostのフォルダの中に置いたまま使ってください（フォルダの外に移動すると起動できません）。"'
+  exit 1
+fi
+chmod +x "$LAUNCHER" 2>/dev/null
+
+# ターミナルで起動（パスに空白や日本語があっても大丈夫なように、シングルクォートで囲む）
+ESCAPED=$(printf "%s" "$LAUNCHER" | sed "s/'/'\\\\''/g")
+osascript -e "tell application \"Terminal\" to do script \"'$ESCAPED'\"" -e 'tell application "Terminal" to activate' >/dev/null
