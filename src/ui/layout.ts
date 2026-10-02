@@ -8,9 +8,10 @@ export const n = (v: number | null | undefined) => Number(v ?? 0).toLocaleString
 
 export type NavUser = { username: string; display_name: string; role: string; gameOn?: boolean; todo?: number; appo?: number; effects?: boolean; path?: string } | null;
 
-// ロゴは assets/ の画像を使う（ログイン前でも読めるよう、/assets は認証の手前で配信している）
-const FAVICON = "/assets/icon.png";
-const LOGO = `<img src="/assets/logo.png" alt="ApoBoost" width="101" height="24">`;
+// ロゴは assets/ の画像を使う。画像を差し替えたら ?v= の数字を上げる（ブラウザが古い絵を1時間覚えているため）
+// （ログイン前でも読めるよう、/assets は認証の手前で配信している）
+const FAVICON = "/assets/icon.png?v=2";
+const LOGO = `<img src="/assets/logo.png?v=2" alt="ApoBoost" width="120" height="24">`;
 
 /** ナビは6つに絞る（#97）。以前は12リンクが2段に折り返していた。
  *  送信者・除外リスト・動作チェック・ユーザー管理・アップデートは「設定」の中のタブへ。
@@ -137,7 +138,7 @@ ${user ? `<script>
     if(!box){box=document.createElement("div");box.id="fo-toasts";box.style.cssText="position:fixed;top:14px;right:14px;z-index:200;display:flex;flex-direction:column;gap:8px;max-width:min(380px,calc(100vw - 28px))";document.body.appendChild(box);}
     const el=document.createElement("div");
     el.style.cssText="background:#fff;border:1px solid var(--c-line-strong);border-left:4px solid var(--c-brand);border-radius:10px;padding:10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.18);display:flex;gap:10px;align-items:flex-start;cursor:pointer";
-    const img=document.createElement("img");img.src="/assets/icon.png";img.width=32;img.height=32;img.alt="";img.onerror=()=>img.remove();
+    const img=document.createElement("img");img.src="/assets/icon.png?v=2";img.width=32;img.height=32;img.alt="";img.onerror=()=>img.remove();
     const tx=document.createElement("div");const b=document.createElement("b");b.textContent=title;const p=document.createElement("div");p.className="small";p.textContent=body;tx.appendChild(b);tx.appendChild(p);
     el.appendChild(img);el.appendChild(tx);el.title="クリックで閉じる";el.onclick=()=>el.remove();
     box.appendChild(el);setTimeout(()=>el.remove(),20000);
@@ -146,7 +147,7 @@ ${user ? `<script>
     toast(e.title,e.body);
     try{
       if("Notification" in window&&Notification.permission==="granted"){
-        const n=new Notification("ApoBoost: "+e.title,{body:e.body,icon:"/assets/icon.png",tag:"fo-"+e.id});
+        const n=new Notification("ApoBoost: "+e.title,{body:e.body,icon:"/assets/icon.png?v=2",tag:"fo-"+e.id});
         n.onclick=()=>{window.focus();n.close();};
       }
     }catch(err){}

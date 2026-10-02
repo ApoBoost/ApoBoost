@@ -23,7 +23,7 @@ const appUrl = () => `http://localhost:${Number(process.env.PORT ?? 3210)}`;
 const ICON_PNG = path.resolve(process.cwd(), "assets", "icon.png");
 
 // ---- Mac: 通知専用アプリ ----
-const NOTIFIER_VERSION = "6"; // 中身を変えたら上げる（各PCで作り直される）
+const NOTIFIER_VERSION = "7"; // 中身を変えたら上げる（各PCで作り直される）
 // 置き場所はホームの Library の下にする。data/ の下（＝ダウンロードやデスクトップの中のことが多い）に置くと、
 // macOS が「このアプリにダウンロードフォルダを読ませてよいか」を止めてしまい、通知が出なかった
 const NOTIFIER_DIR = process.platform === "darwin"

@@ -41,6 +41,12 @@ header.top{background:var(--c-nav);color:#fff;padding:10px 20px;display:flex;ali
 header.top a{color:#fff;text-decoration:none;white-space:nowrap}
 header.top .logo{background:#fff;padding:5px 10px;border-radius:var(--radius-sm);display:inline-flex;align-items:center;margin-right:10px}
 header.top .logo img{display:block;flex:none;height:24px;width:auto}
+/* ロゴにカーソルを載せると、ロゴの形に沿って光が1度横切る（光はロゴの画像で切り抜く） */
+header.top .logo{position:relative;transition:transform .15s}
+header.top .logo:hover{transform:translateY(-1px)}
+header.top .logo::after{content:"";position:absolute;inset:5px 10px;background:linear-gradient(105deg,transparent 40%,rgba(255,255,255,.85) 50%,transparent 60%) no-repeat;background-size:250% 100%;background-position:150% 0;-webkit-mask:url(/assets/logo.png?v=2) center/100% 100% no-repeat;mask:url(/assets/logo.png?v=2) center/100% 100% no-repeat;pointer-events:none}
+header.top .logo:hover::after{animation:logo-sheen .9s ease-in-out 1}
+@keyframes logo-sheen{from{background-position:150% 0}to{background-position:-50% 0}}
 header.top nav{display:flex;gap:2px;flex-wrap:wrap;align-items:center}
 header.top nav a{padding:7px 14px;border-radius:999px;font-weight:600}
 header.top nav a:hover{background:rgba(255,255,255,.12)}
@@ -74,6 +80,11 @@ textarea{min-height:140px}
 .btn{display:inline-block;background:#fff;color:var(--c-ink);border:1px solid var(--c-line-strong);padding:8px 14px;border-radius:var(--radius-sm);font-weight:700;cursor:pointer;text-decoration:none;font:inherit;font-weight:700;line-height:1.4}
 .btn:hover{border-color:var(--c-ink-3)}
 .btn.primary{background:var(--c-brand);border-color:var(--c-brand);color:var(--c-brand-ink)}
+/* 主ボタンは、載せると少し浮く（押せることが分かるように） */
+.btn{transition:transform .15s,box-shadow .15s,border-color .15s,background .15s}
+.btn.primary:hover:not([disabled]){background:#0858CC;border-color:#0858CC;transform:translateY(-1px);box-shadow:0 5px 14px rgba(10,102,232,.3)}
+.btn.primary:active{transform:none;box-shadow:none}
+@media (prefers-reduced-motion:reduce){.btn,header.top .logo{transition:none}header.top .logo:hover::after{animation:none}}
 .btn.sub{font-weight:600}
 .btn.danger{border-color:var(--c-ng);color:var(--c-ng)}
 .btn.small{padding:5px 10px;font-size:var(--fs-sm)}
