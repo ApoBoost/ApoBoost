@@ -4,6 +4,7 @@ import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
 import { esc, layout, n, type NavUser, IC_CHECK } from "./layout.js";
 import { post } from "./parts.js";
+import { AI_KEY_HELP } from "./settings.js";
 
 /** ミニゲーム「アポスロット」＝ ネオアイムジャグラーEX 準拠のリール制御シミュレータ。
  *  利用者提供の筐体イラストを土台に、リール・停止ボタン・レバー・表示・GOGOランプを座標で重ねる
@@ -95,6 +96,11 @@ ${step("6", "結果と反応を確認する", `<ul style="line-height:1.8;margin
 <li><b>反応の一覧</b>：送信用メールの受信箱を15分ごとに読み、返信を「返信あり／アポ獲得／断り」に自動で記録します（受付確認の自動メールは数えません）。判定の根拠を見て、間違っていれば取り消せます</li>
 <li>メールの末尾には「メール配信停止」リンクが入り、送られてきた配信停止は自動で除外リストに入ります</li>
 <li>「結果をCSVで書き出す」で一覧を保存できます</li></ul>`)}
+
+<div class="card" id="ai" style="scroll-margin-top:76px"><h2 style="margin-top:0">AIで文面を個別化する（任意）</h2>
+<p class="muted" data-nohelp>テンプレートでの送信は無料で、AIは不要です。会社ごとに書き出しを変えたいときだけ、設定画面でAPIキーを登録します。</p>
+${AI_KEY_HELP}
+<p style="margin:10px 0 0"><a class="btn small" href="/settings#s-ai" target="_blank" rel="noopener">設定を開く ↗</a></p></div>
 
 <div class="card"><h2 style="margin-top:0">よくある質問</h2>
 <p><b>Q. 料金はかかりますか？</b><br>テンプレートでの送信・社名の自動補完・返信の自動確認は無料です。AIを使う送り方を選んだ場合だけ、AIの料金がかかります。</p>

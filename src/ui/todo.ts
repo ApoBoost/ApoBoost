@@ -90,10 +90,9 @@ ${kind === "" && opts.today.length ? `<p data-nohelp style="margin:0 0 14px"><sp
 
 ${kind === "" && opts.groups.length ? `<div class="card"><h2 style="margin-top:0">同じ原因のまとめ</h2>
 <p class="muted" data-nohelp>原因が同じものは、1回の操作でまとめて片づけられます。</p>
-<table><tr><th>原因</th><th style="width:90px">件数</th><th>どうすればよいか</th><th style="width:260px"></th></tr>
-${opts.groups.map((g) => `<tr><td><b>${esc(g.label)}</b></td><td><b>${n(g.n)}</b>社</td><td class="small">${esc(g.advice)}</td>
-<td style="white-space:nowrap">${g.link ? `<a class="btn small primary" href="${g.link}">${esc(g.linkLabel ?? "開く")}</a> ` : ""}<form method="post" action="/todo/group" class="inline" onsubmit="return confirm('${n(g.n)}社をまとめて「${esc(g.actionLabel)}」にします。よろしいですか？')"><input type="hidden" name="key" value="${esc(g.key)}"><input type="hidden" name="action" value="${g.action}"><button class="btn small">${esc(g.actionLabel)}（${n(g.n)}社）</button></form></td></tr>`).join("")}
-</table></div>` : ""}
+${opts.groups.map((g) => `<div class="grouprow"><div><b>${esc(g.label)}</b> <span class="muted" data-nohelp>${n(g.n)}社</span><div class="small muted" data-nohelp>${esc(g.advice)}</div></div>
+<div style="white-space:nowrap">${g.link ? `<a class="btn small" href="${g.link}">${esc(g.linkLabel ?? "開く")}</a> ` : ""}<form method="post" action="/todo/group" class="inline" onsubmit="return confirm('${n(g.n)}社をまとめて「${esc(g.actionLabel)}」にします。よろしいですか？')"><input type="hidden" name="key" value="${esc(g.key)}"><input type="hidden" name="action" value="${g.action}"><button class="btn small">${esc(g.actionLabel)}</button></form></div></div>`).join("")}
+</div>` : ""}
 
 <div class="tabs">${KINDS.map(([k, label]) => tab(k, label)).join("")}</div>
 ${kind === "captcha" && rows.length ? `<p><a class="btn primary" href="/todo/run?kind=captcha">続けて処理する（1社ずつ順番に）→</a></p>` : ""}

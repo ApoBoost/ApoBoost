@@ -25,17 +25,29 @@ export function statsView(
 <label class="inline small">キャンペーン: <select name="campaign" onchange="this.form.submit()" style="width:auto;padding:4px 8px"><option value="">すべて</option>${campaigns.map((c) => `<option value="${c.id}" ${campaignId === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>
 <a class="btn sub small" href="${q(mode, campaignId)}">更新</a>
 </form>
-<div class="stats"><div class="stat">この期間の合計<b>${n(totals.total ?? 0)}<span style="font-size:12px;font-weight:400">件</span></b></div><div class="stat">フォーム<b>${n(totals.form ?? 0)}<span style="font-size:12px;font-weight:400">件</span></b></div><div class="stat">メール<b>${n(totals.email ?? 0)}<span style="font-size:12px;font-weight:400">件</span></b></div></div>
-${rows.length === 0 ? `<div class="card"><p class="muted">この条件では送信の記録がありません。</p></div>` : `<div class="card" style="overflow-x:auto">
-<table style="width:100%"><tr><th style="width:110px">${mode === "month" ? "月" : "日付"}</th><th style="width:60%">件数</th><th style="width:70px">フォーム</th><th style="width:70px">メール</th><th style="width:70px">合計</th></tr>
+${(() => {
+    // 直近7日と、その前の7日を比べる（日別表示のとき）
+    let week = "";
+    if (mode === "day" && rows.length) {
+      const day = (back: number) => new Date(Date.now() + 9 * 3600_000 - back * 86400_000).toISOString().slice(0, 10);
+      const sum = (from: number, to: number) => rows.filter((r) => r.period <= day(from) && r.period >= day(to)).reduce((a, r) => a + r.total, 0);
+      const now7 = sum(0, 6), prev7 = sum(7, 13), diff = now7 - prev7;
+      week = `<div class="stat">直近7日<b>${n(now7)}<span class="unit">件</span></b><span class="muted" data-nohelp>その前の7日 ${n(prev7)}件${prev7 || now7 ? `（${diff >= 0 ? "+" : "−"}${n(Math.abs(diff))}）` : ""}</span></div>`;
+    }
+    return `<div class="stats" style="margin-bottom:14px">${week}<div class="stat">この期間の合計<b>${n(totals.total ?? 0)}<span class="unit">件</span></b></div><div class="stat">フォーム<b>${n(totals.form ?? 0)}<span class="unit">件</span></b></div><div class="stat">メール<b>${n(totals.email ?? 0)}<span class="unit">件</span></b></div></div>`;
+  })()}
+${rows.length === 0 ? `<div class="card"><p class="muted">この条件では送信の記録がありません。</p></div>` : `<div class="card">
+<div class="vbars" role="img" aria-label="${mode === "month" ? "月別" : "日別"}の送信数">${[...rows].sort((x, y) => (x.period < y.period ? -1 : 1)).map((r) => `<div class="col" data-tip="${esc(label(r.period))} フォーム${r.form}・メール${r.email}">${r.email ? `<i class="e" style="height:${Math.max(2, Math.round((r.email / max) * 150))}px"></i>` : ""}${r.form ? `<i class="f" style="height:${Math.max(2, Math.round((r.form / max) * 150))}px"></i>` : ""}</div>`).join("")}</div>
+<div class="vlabels">${(() => { const sorted = [...rows].sort((x, y) => (x.period < y.period ? -1 : 1)); const step = Math.max(1, Math.ceil(sorted.length / 10)); return sorted.map((r, i) => `<span>${i % step === 0 ? esc(label(r.period)) : ""}</span>`).join(""); })()}</div>
+<p class="muted small" data-nohelp style="margin:10px 0 0"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--c-brand);vertical-align:-1px"></span> フォーム　<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#8E8E93;vertical-align:-1px"></span> メール</p>
+<details style="margin-top:10px"><summary class="muted small" style="cursor:pointer">${mode === "month" ? "月" : "日"}ごとの数字を見る</summary>
+<table style="max-width:420px"><tr><th>${mode === "month" ? "月" : "日付"}</th><th style="width:70px">フォーム</th><th style="width:70px">メール</th><th style="width:70px">合計</th></tr>
 ${rows.map((r) => {
-    const fw = Math.round((r.form / max) * 100), ew = Math.round((r.email / max) * 100);
     return `<tr><td class="small">${esc(label(r.period))}${weekday(r.period) ? `<span class="muted">（${weekday(r.period)}）</span>` : ""}</td>
-<td><div style="display:flex;height:16px;background:#f1efe9;border-radius:3px;overflow:hidden;min-width:120px"><div title="フォーム ${r.form}件" style="width:${fw}%;background:var(--honey)"></div><div title="メール ${r.email}件" style="width:${ew}%;background:#4A5387"></div></div></td>
 <td class="small">${n(r.form)}</td><td class="small">${n(r.email)}</td><td><b>${n(r.total)}</b></td></tr>`;
   }).join("")}
 </table>
-<p class="muted small" style="margin:8px 0 0"><span style="display:inline-block;width:12px;height:10px;background:var(--honey);vertical-align:-1px"></span> フォーム　<span style="display:inline-block;width:12px;height:10px;background:#4A5387;vertical-align:-1px"></span> メール</p></div>`}${analysis ? analysisSection(analysis) : ""}
+</details></div>`}${analysis ? analysisSection(analysis) : ""}
 `;
 }
 

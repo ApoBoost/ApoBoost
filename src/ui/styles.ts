@@ -128,6 +128,26 @@ tr.sep td{background:var(--c-bg);font-size:var(--fs-xs);color:var(--c-ink-3);fon
 @media (max-width:760px){.hrow{grid-template-columns:1fr}}
 .pagehead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 16px}
 .pagehead h1{margin:0}
+/* 要対応の「同じ原因のまとめ」: 表だとスマホで潰れるので、1件ずつの行にする */
+.grouprow{display:flex;justify-content:space-between;align-items:center;gap:10px 20px;flex-wrap:wrap;padding:10px 0;border-top:1px solid var(--c-line)}
+.grouprow>div:first-child{flex:1 1 320px;min-width:0}
+/* ---- 設定: 左に目次、右に項目 ---- */
+.setgrid{display:grid;grid-template-columns:170px minmax(0,1fr);gap:28px;align-items:start}
+.settoc{position:sticky;top:76px;display:grid;gap:2px}
+.settoc a{padding:6px 12px;border-radius:8px;color:var(--c-ink-2);text-decoration:none;font-weight:500}
+.settoc a:hover{background:var(--c-fill);color:var(--c-ink)}
+.setgrid .card{scroll-margin-top:76px}
+@media (max-width:760px){.setgrid{grid-template-columns:1fr;gap:10px}.settoc{position:static;display:flex;flex-wrap:wrap}}
+/* ---- 成果: 縦の棒グラフ（日別・月別）---- */
+.vbars{display:flex;align-items:flex-end;gap:4px;height:170px;padding:8px 0 0}
+.vbars .col{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;align-items:stretch;height:100%;position:relative}
+.vbars .col i{display:block;border-radius:3px 3px 0 0}
+.vbars .col i.f{background:var(--c-brand)}
+.vbars .col i.e{background:#8E8E93;border-radius:0}
+.vbars .col i.e:first-child{border-radius:3px 3px 0 0}
+.vbars .col:hover::after{content:attr(data-tip);position:absolute;bottom:100%;left:50%;transform:translateX(-50%);background:var(--c-ink);color:#fff;font-size:11px;padding:3px 8px;border-radius:6px;white-space:nowrap;z-index:5}
+.vlabels{display:flex;gap:4px;margin-top:6px;font-size:11px;color:var(--c-ink-3)}
+.vlabels span{flex:1;min-width:0;text-align:center;white-space:nowrap;overflow:visible}
 /* ---- 「…」メニュー: 主な操作だけをボタンで出し、残りはここに畳む ---- */
 .menu{position:relative;display:inline-block;vertical-align:middle}
 .menu>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:28px;padding:0 8px;border-radius:7px;background:var(--c-fill);color:var(--c-ink-2);font-weight:700;letter-spacing:.08em;line-height:1}

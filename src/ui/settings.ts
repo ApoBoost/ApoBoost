@@ -86,9 +86,31 @@ ${rows.length ? '<a class="btn sub" href="/suppressions/export.csv">除外リス
 <table><tr><th>メール</th><th>理由</th><th>登録</th></tr>${optouts.map((r) => `<tr><td>${esc(r.email)}</td><td>${esc(r.reason)}</td><td class="small">${esc(jst(r.created_at))}</td></tr>`).join("")}</table>`;
 }
 
+/** AIのAPIキーの説明（APIキーとは・料金の目安・取得の手順・注意）。
+ *  以前は設定画面の中に長い表ごと入っていて、設定の欄が埋もれていた。ガイドに出し、設定からはリンクで行く */
+export const AI_KEY_HELP = `<p><b>APIキーとは。</b> ChatGPTやClaude.aiのように「会員登録して画面から使う」サービスとは別に、このツールが直接AIを呼び出すための<b>利用者ごとの認証キー</b>です。長い文字列で、発行した本人（または会社）の支払い方法に、<b>使った分だけ課金</b>されます。月額ではなく従量課金です。</p>
+<p><b>料金の目安。</b> フォーム1件あたり入力1,000トークン＋出力300トークン程度を想定した概算です。</p>
+<table style="max-width:560px"><tr><th>モデル</th><th>1件あたり</th><th>月1,000件</th><th>月10,000件</th></tr>
+<tr><td>Claude Haiku</td><td>約0.4円</td><td>約400円</td><td>約4,000円</td></tr>
+<tr><td>Claude Sonnet</td><td>約0.8円</td><td>約800円</td><td>約8,000円</td></tr>
+<tr><td>Gemini Flash-Lite</td><td>約0.2円</td><td>約200円</td><td>約2,000円</td></tr>
+<tr><td>Gemini Flash</td><td>約0.3円</td><td>約300円</td><td>約3,000円</td></tr></table>
+<p class="muted small">2026年9月時点の各社公式レート・1ドル=154円換算の概算です。実際の送信件数やフォームの複雑さで変動します。</p>
+<p><b>キーの取得手順。</b></p>
+<ul class="small">
+<li><b>Claude:</b> <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a> でアカウント作成 → 支払い方法を登録 → 左メニュー「API Keys」から発行（<code>sk-ant-</code>で始まる文字列）</li>
+<li><b>Gemini:</b> <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> にGoogleアカウントでログイン →「Get API key」から発行（<code>AIza</code>で始まる文字列）</li>
+</ul>
+<p><b>${IC_WARN} 注意</b></p>
+<ul class="small">
+<li>キーは<b>他人・他の拠点と共有しない</b>でください。共有相手の利用分もあなたに課金されます。拠点ごとに各自のキーを発行してください</li>
+<li>各社の管理画面で<b>利用上限（スペンドリミット）</b>を設定できます。使いすぎ防止に、最初に設定しておくのがおすすめです</li>
+<li>キーはこのPCの <code>data/</code> フォルダ内にだけ保存され、配布物やGitHubには含まれません</li>
+</ul>`;
+
 export function settingsView(ngWords: string[], ai: import("../message.js").AiConfig, stats?: { senders: number; campaigns: number; companies: number; sent: number; suppressions: number; optouts: number }, gameEnabled = false, notifyOn = true, aiBudget?: { usage: import("../message.js").AiUsage; limit: number }, license?: { status: import("../license.js").LicenseStatus; key: string; enforce: boolean }, opts?: { effects: boolean; notifyReply: boolean; dailySummary: boolean; todoHideDays: number; listPageSize: number; sendPace: string }) {
   // ライセンス（#90）
-  const licenseCard = license ? `<div class="card"><h2 style="margin-top:0">ライセンス</h2>
+  const licenseCard = license ? `<div class="card" id="s-license"><h2 style="margin-top:0">ライセンス</h2>
 <p>${license.status.state === "valid" ? `<span class="tag sent">有効</span>` : license.status.state === "expired" ? `<span class="tag failed">期限切れ</span>` : license.status.state === "invalid" ? `<span class="tag failed">キーが不正</span>` : `<span class="tag queued">未登録</span>`} ${esc(license.status.label)}</p>
 <form method="post" action="/settings/license">
 <label>ライセンスキー（配布元から受け取った APO1… で始まる1行）</label>
@@ -113,14 +135,16 @@ export function settingsView(ngWords: string[], ai: import("../message.js").AiCo
   const configured = ai.provider !== "none";
   // データの概要: 集計して表示するだけの追加カード。このブロックを消せば丸ごと外せる
   const overview = stats
-    ? `<div class="card"><h2 style="margin-top:0">データの概要</h2>
+    ? `<div class="card" id="s-data"><h2 style="margin-top:0">データの概要</h2>
 <p class="muted">このPCに保存されている件数のまとめです（あなたが見られる範囲）。</p>
 <div class="stats"><div class="stat">送信者<b>${stats.senders}</b></div><div class="stat">キャンペーン<b>${stats.campaigns}</b></div><div class="stat">登録企業<b>${stats.companies}<span style="font-size:12px;font-weight:400">社</span></b></div><div class="stat">送信済み<b style="color:var(--ok)">${stats.sent}</b></div><div class="stat">除外リスト<b>${stats.suppressions}</b></div><div class="stat">配信停止<b>${stats.optouts}</b></div></div></div>`
     : "";
   const models = (p: "anthropic" | "gemini") => AI_MODELS[p].map((m) => `<option value="${m.id}" data-p="${p}" ${ai.model === m.id ? "selected" : ""}>${esc(m.label)}</option>`).join("");
+  // 左に目次、右に項目。以前は1ページに全部が縦に並び、どこに何があるか探しにくかった
+  const toc: [string, string][] = [["s-notify", "通知"], ["s-lists", "一覧と要対応"], ["s-ai", "AI"], ["s-ng", "NGワード"], ...(license ? [["s-license", "ライセンス"] as [string, string]] : []), ["s-data", "データ"]];
   return `<h1>設定</h1>
-${overview}${budgetCard}${licenseCard}
-<div class="card"><h2 style="margin-top:0">送信が止まったときの通知</h2>
+<div class="setgrid"><nav class="settoc" aria-label="設定の目次">${toc.map(([id, label]) => `<a href="#${id}">${label}</a>`).join("")}</nav><div>
+<div class="card" id="s-notify"><h2 style="margin-top:0">通知</h2>
 <p class="muted small">メール送信が一時停止したとき・送信が全部終わったとき・止まっていた送信を自動再開したときに、<b>パソコンの通知</b>（Macは通知センター、Windowsはトースト）でお知らせします。画面を見ていなくても気づけます。</p>
 <form method="post" action="/settings/notify" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><select name="notify_desktop" style="width:auto"><option value="1" ${notifyOn ? "selected" : ""}>通知する</option><option value="0" ${notifyOn ? "" : "selected"}>通知しない</option></select><button class="btn sub small">保存</button></form>
 <form method="post" action="/settings/notify-test" style="margin-top:8px"><button class="btn sub small">テスト通知を出す</button></form>
@@ -128,36 +152,15 @@ ${overview}${budgetCard}${licenseCard}
 <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:4px 0"><input type="checkbox" name="notify_reply" value="1" ${opts?.notifyReply ? "checked" : ""} style="width:auto">アポ・返信が来たら、すぐに知らせる</label>
 <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:4px 0"><input type="checkbox" name="daily_summary" value="1" ${opts?.dailySummary ? "checked" : ""} style="width:auto">1日の終わり（送信時間帯の終了時）に、その日のまとめを知らせる</label>
 <button class="btn small" style="margin-top:6px">保存</button></form></div>
-<div class="card"><h2 style="margin-top:0">一覧と要対応</h2>
+<div class="card" id="s-lists"><h2 style="margin-top:0">一覧と要対応</h2>
 <form method="post" action="/settings/lists" class="row">
 <div><label>要対応を「見送り」に移すまでの日数</label><input type="number" name="todo_hide_days" value="${opts?.todoHideDays ?? 30}" min="1" max="365"></div>
 <div><label>送信一覧の1ページの件数</label><select name="list_page_size">${[50, 100, 200].map((v) => `<option value="${v}" ${(opts?.listPageSize ?? 100) === v ? "selected" : ""}>${v}件</option>`).join("")}</select></div>
 <p style="grid-column:1/-1;margin:0"><button class="btn small">保存</button></p></form></div>
-<div class="card"><h2 style="margin-top:0">AIモード設定</h2>
+<div class="card" id="s-ai"><h2 style="margin-top:0">AI（文面の個別化・任意）</h2>
 <p>現在: ${configured ? `<span class="tag sent">設定済み</span> <b>${ai.provider === "anthropic" ? "Claude" : "Gemini"} / ${esc(ai.model)}</b>${ai.source === "env" ? ' <span class="muted small">（環境変数から読み込み）</span>' : ""}` : '<span class="tag">未設定（AI: none）</span> <span class="muted">テンプレートのみで動いています。AIを使わなくても送信はできます。</span>'}</p>
 
-<details ${configured ? "" : "open"} style="margin:10px 0"><summary style="cursor:pointer;font-weight:700">はじめての方へ: APIキーとは？ 料金はいくら？（クリックで開く）</summary>
-<div style="padding:10px 4px">
-<p><b>APIキーとは。</b> ChatGPTやClaude.aiのように「会員登録して画面から使う」サービスとは別に、このツールが直接AIを呼び出すための<b>利用者ごとの認証キー</b>です。長い文字列で、発行した本人（または会社）の支払い方法に、<b>使った分だけ課金</b>されます。月額ではなく従量課金です。</p>
-<p><b>料金の目安。</b> フォーム1件あたり入力1,000トークン＋出力300トークン程度を想定した概算です。</p>
-<table style="max-width:560px"><tr><th>モデル</th><th>1件あたり</th><th>月1,000件</th><th>月10,000件</th></tr>
-<tr><td>Claude Haiku</td><td>約0.4円</td><td>約400円</td><td>約4,000円</td></tr>
-<tr><td>Claude Sonnet</td><td>約0.8円</td><td>約800円</td><td>約8,000円</td></tr>
-<tr><td>Gemini Flash-Lite</td><td>約0.2円</td><td>約200円</td><td>約2,000円</td></tr>
-<tr><td>Gemini Flash</td><td>約0.3円</td><td>約300円</td><td>約3,000円</td></tr></table>
-<p class="muted small">2026年9月時点の各社公式レート・1ドル=154円換算の概算です。実際の送信件数やフォームの複雑さで変動します。</p>
-<p><b>キーの取得手順。</b></p>
-<ul class="small">
-<li><b>Claude:</b> <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a> でアカウント作成 → 支払い方法を登録 → 左メニュー「API Keys」から発行（<code>sk-ant-</code>で始まる文字列）</li>
-<li><b>Gemini:</b> <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> にGoogleアカウントでログイン →「Get API key」から発行（<code>AIza</code>で始まる文字列）</li>
-</ul>
-<p><b>${IC_WARN} 注意</b></p>
-<ul class="small">
-<li>キーは<b>他人・他の拠点と共有しない</b>でください。共有相手の利用分もあなたに課金されます。拠点ごとに各自のキーを発行してください</li>
-<li>各社の管理画面で<b>利用上限（スペンドリミット）</b>を設定できます。使いすぎ防止に、最初に設定しておくのがおすすめです</li>
-<li>キーはこのPCの <code>data/</code> フォルダ内にだけ保存され、配布物やGitHubには含まれません</li>
-</ul>
-</div></details>
+<p class="small" style="margin:6px 0 12px"><a href="/guide#ai">APIキーとは・料金の目安・取得の手順（ガイド）→</a></p>
 
 <form method="post" action="/settings/ai">
 <div class="row3">
@@ -177,12 +180,16 @@ for(const o of sel.options){const show=o.dataset.p===p;o.hidden=!show;o.disabled
 if(!cur||cur.dataset.p!==p)sel.value=first.value;}
 foAiModels();
 </script></div>
+${budgetCard}
 
-<div class="card"><h2 style="margin-top:0">NGワード（1行1語）</h2><form method="post" action="/settings"><textarea name="ng_words">${esc(ngWords.join("\n"))}</textarea><p><button class="btn primary">保存</button></p></form></div>
+<div class="card" id="s-ng"><h2 style="margin-top:0">NGワード（1行1語）</h2><form method="post" action="/settings"><textarea name="ng_words">${esc(ngWords.join("\n"))}</textarea><p><button class="btn">保存</button></p></form></div>
+${licenseCard}
+${overview}
 
 <div class="card"><h2 style="margin-top:0">データのバックアップ</h2>
 <p class="muted">送信者・キャンペーン・送信履歴を1つのファイル（JSON）に書き出します。PCの買い替え前や、記録の保管にどうぞ。安全のため、SMTPのアプリパスワードとAIのAPIキーは含みません。<b>書き出しのみで、読み込み（復元）機能はありません。</b></p>
-<a class="btn sub" href="/backup.json">バックアップを書き出す</a></div>`;
+<a class="btn sub" href="/backup.json">バックアップを書き出す</a></div>
+</div></div>`;
 }
 
 /** ユーザー管理（管理者のみ） */

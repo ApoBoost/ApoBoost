@@ -44,7 +44,7 @@ ${(() => {
 <b>テンプレ＋質問だけAI（おすすめ）:</b> 文面はテンプレ（0円）のまま、想定外の質問欄が出たときだけAIが回答します。全文生成をしないぶん<b>全文AIの1/5〜1/10の費用</b>で、成功率はテンプレのみより大きく上がります（AIを呼ぶのは想定外の質問が出た一部の会社だけ）。<br>
 <b>ハイブリッド:</b> 冒頭1〜2文だけAIが書くので安い（約0.2円/件）ぶん、想定外の質問欄には対応できず、そのフォームは失敗になりやすくなります。<br>
 ※ チェック欄・選択肢はどのモードでも自動対応します。画像認証（CAPTCHA）はどのモードでも突破しません。</p>
-${provider === "none" ? '<p class="muted">' + IC_WARN + ' AIを使うモードは、先に<a href="/settings"><b>設定画面でAPIキーの登録</b></a>が必要です（管理者のみ）。料金の目安や取得手順も設定画面に書いてあります。未設定のままではテンプレートのみで送られます。</p>' : ""}
+${provider === "none" ? '<p class="muted small" data-nohelp>AIを使うモードは、<a href="/settings#s-ai">設定でAPIキーを登録</a>すると選べます（<a href="/guide#ai" target="_blank" rel="noopener">料金と手順</a>）。未登録のあいだはテンプレートで送られます。</p>' : ""}
 </div><div data-step="2"><h2>② 文面</h2>
 <label>件名（件名欄があるフォーム用）</label><input type="text" name="subject_text" value="${d("subject_text", "【ここに件名】のご案内")}">
 <label>本文テンプレート</label>
