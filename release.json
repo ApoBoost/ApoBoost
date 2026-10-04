@@ -1,14 +1,14 @@
 {
-  "version": "1.0.7",
-  "notes": "キャラクターが登場します（ログイン画面と、やることが無いとき・一覧が空のとき）",
+  "version": "1.0.8",
+  "notes": "右下に質問箱を追加しました。困ったときに、よくある質問の答えをその場で確認できます",
   "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-  "published_at": "2026-10-04T12:01:27.477Z",
+  "published_at": "2026-10-04T12:08:24.424Z",
   "channels": {
     "stable": {
-      "version": "1.0.7",
-      "notes": "キャラクターが登場します（ログイン画面と、やることが無いとき・一覧が空のとき）",
+      "version": "1.0.8",
+      "notes": "右下に質問箱を追加しました。困ったときに、よくある質問の答えをその場で確認できます",
       "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-      "published_at": "2026-10-04T12:01:27.477Z"
+      "published_at": "2026-10-04T12:08:24.424Z"
     }
   }
 }
