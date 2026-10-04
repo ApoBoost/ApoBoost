@@ -52,11 +52,11 @@ async function post(body: Record<string, unknown>): Promise<Record<string, unkno
 
 /** 質問を控えて、配布元へ送る。送れなくても控えは残し、あとで送り直す */
 /** context: どの会社（1件の送信）についての質問か。parentId: 追加の質問のとき、元の質問（この利用者のもの）の id */
-export async function askSupport(userId: number, who: string, question: string, page: string, context = "", parentId = 0): Promise<{ ok: boolean; ticket: SupportTicket }> {
+export async function askSupport(userId: number, who: string, question: string, page: string, context = "", parentId = 0, chatId = 0): Promise<{ ok: boolean; ticket: SupportTicket }> {
   const db = getDb();
   const ticket = crypto.randomBytes(16).toString("hex");
   const parent = parentId ? ((db.prepare("SELECT ticket FROM support_tickets WHERE id=? AND user_id=?").get(parentId, userId) as { ticket: string } | undefined)?.ticket ?? "") : "";
-  const id = db.prepare("INSERT INTO support_tickets(ticket, user_id, who, question, page, context, parent) VALUES(?,?,?,?,?,?,?)").run(ticket, userId, who.slice(0, 120), question.slice(0, 2000), page.slice(0, 200), context.slice(0, 600), parent).lastInsertRowid as number;
+  const id = db.prepare("INSERT INTO support_tickets(ticket, user_id, who, question, page, context, parent, chat_id) VALUES(?,?,?,?,?,?,?,?)").run(ticket, userId, who.slice(0, 120), question.slice(0, 2000), page.slice(0, 200), context.slice(0, 600), parent, chatId).lastInsertRowid as number;
   const ok = await sendTicket(id);
   return { ok, ticket: db.prepare("SELECT * FROM support_tickets WHERE id=?").get(id) as SupportTicket };
 }
@@ -93,7 +93,12 @@ export async function pollSupportReplies(): Promise<number> {
       const text = String(x.reply ?? "").trim().slice(0, 4000);
       if (!x.ticket || !text) continue;
       const n = db.prepare("UPDATE support_tickets SET reply=?, replied_at=datetime('now') WHERE ticket=? AND reply=''").run(text, String(x.ticket)).changes;
-      if (n) { got++; notify("質問に返信が届きました", text.slice(0, 80), `support-${x.ticket}`); }
+      if (n) {
+        got++; notify("質問に返信が届きました", text.slice(0, 80), `support-${x.ticket}`);
+        // その質問を送った問い合わせ（終了済みでも）に、返信を書き足す。一覧から開くと続きとして読める
+        const t = db.prepare("SELECT chat_id FROM support_tickets WHERE ticket=?").get(String(x.ticket)) as { chat_id: number } | undefined;
+        if (t?.chat_id) appendChatMessage(t.chat_id, { r: "staff", t: text });
+      }
     }
   } catch (e) {
     logError("support", `返信の確認に失敗しました: ${String((e as Error).message ?? e).slice(0, 120)}`);
@@ -111,6 +116,62 @@ export function supportUnread(userId: number): number {
 }
 export function markSupportSeen(userId: number): void {
   getDb().prepare("UPDATE support_tickets SET seen_at=datetime('now') WHERE user_id=? AND reply<>'' AND seen_at IS NULL").run(userId);
+}
+
+// ---- 問い合わせ（質問箱の1回ぶんのやり取り）。終了したものも、一覧から見返せる ----
+export type ChatMessage = { r: string; t?: string; [k: string]: unknown };
+export type HelpChat = { id: number; user_id: number; title: string; last: string; messages: string; started_at: string; updated_at: string; ended_at: string | null };
+
+/** 画面のやり取りを保存する。id が 0 なら新しい問い合わせを作る。戻り値は問い合わせの id */
+export function saveChat(userId: number, id: number, title: string, last: string, messages: ChatMessage[], ended: boolean): number {
+  const db = getDb();
+  const json = JSON.stringify(messages.slice(-200)).slice(0, 200_000);
+  if (id) {
+    const own = db.prepare("SELECT id FROM help_chats WHERE id=? AND user_id=?").get(id, userId);
+    if (own) {
+      db.prepare("UPDATE help_chats SET title=?, last=?, messages=?, updated_at=datetime('now'), ended_at=CASE WHEN ? THEN COALESCE(ended_at, datetime('now')) ELSE ended_at END WHERE id=?")
+        .run(title.slice(0, 60), last.slice(0, 120), json, ended ? 1 : 0, id);
+      return id;
+    }
+  }
+  const nid = db.prepare("INSERT INTO help_chats(user_id, title, last, messages, ended_at) VALUES(?,?,?,?,CASE WHEN ? THEN datetime('now') ELSE NULL END)")
+    .run(userId, title.slice(0, 60), last.slice(0, 120), json, ended ? 1 : 0).lastInsertRowid as number;
+  // 古いものは100件まで残す
+  db.prepare("DELETE FROM help_chats WHERE user_id=? AND id NOT IN (SELECT id FROM help_chats WHERE user_id=? ORDER BY id DESC LIMIT 100)").run(userId, userId);
+  return nid;
+}
+export function appendChatMessage(chatId: number, m: ChatMessage): void {
+  const db = getDb();
+  const c = db.prepare("SELECT messages FROM help_chats WHERE id=?").get(chatId) as { messages: string } | undefined;
+  if (!c) return;
+  let list: ChatMessage[] = [];
+  try { list = JSON.parse(c.messages) as ChatMessage[]; } catch { /* 壊れていたら作り直す */ }
+  list.push(m);
+  db.prepare("UPDATE help_chats SET messages=?, last=?, updated_at=datetime('now') WHERE id=?").run(JSON.stringify(list.slice(-200)), String(m.t ?? "").replace(/\s+/g, " ").slice(0, 120), chatId);
+}
+/** 問い合わせの一覧（新しい順）。unread＝まだ読んでいない担当者の返信がある */
+export function listChats(userId: number): { id: number; title: string; last: string; updated_at: string; ended: boolean; staff: boolean; unread: boolean }[] {
+  const rows = getDb().prepare(`SELECT c.id, c.title, c.last, c.updated_at, c.ended_at,
+      (SELECT COUNT(*) FROM support_tickets t WHERE t.chat_id=c.id) staff,
+      (SELECT COUNT(*) FROM support_tickets t WHERE t.chat_id=c.id AND t.reply<>'' AND t.seen_at IS NULL) unread
+    FROM help_chats c WHERE c.user_id=? AND c.messages<>'[]' ORDER BY c.updated_at DESC, c.id DESC LIMIT 40`).all(userId) as { id: number; title: string; last: string; updated_at: string; ended_at: string | null; staff: number; unread: number }[];
+  return rows.map((r) => ({ id: r.id, title: r.title, last: r.last, updated_at: r.updated_at, ended: !!r.ended_at, staff: r.staff > 0, unread: r.unread > 0 }));
+}
+/** 問い合わせ1件の中身。開いたら、その中の返信は読んだことにする */
+export function getChat(userId: number, id: number): { id: number; title: string; ended: boolean; messages: ChatMessage[]; replyTicketId: number } | null {
+  const db = getDb();
+  const c = db.prepare("SELECT * FROM help_chats WHERE id=? AND user_id=?").get(id, userId) as HelpChat | undefined;
+  if (!c) return null;
+  db.prepare("UPDATE support_tickets SET seen_at=datetime('now') WHERE chat_id=? AND user_id=? AND reply<>'' AND seen_at IS NULL").run(id, userId);
+  let messages: ChatMessage[] = [];
+  try { messages = JSON.parse(c.messages) as ChatMessage[]; } catch { /* 空として返す */ }
+  const t = db.prepare("SELECT id FROM support_tickets WHERE chat_id=? AND user_id=? AND reply<>'' ORDER BY id DESC LIMIT 1").get(id, userId) as { id: number } | undefined;
+  return { id: c.id, title: c.title, ended: !!c.ended_at, messages, replyTicketId: t?.id ?? 0 };
+}
+/** 終了していない、いちばん新しい問い合わせ（ページを移っても続きから話せるように） */
+export function activeChatId(userId: number): number {
+  const c = getDb().prepare("SELECT id FROM help_chats WHERE user_id=? AND ended_at IS NULL AND updated_at > datetime('now','-1 day') ORDER BY id DESC LIMIT 1").get(userId) as { id: number } | undefined;
+  return c?.id ?? 0;
 }
 
 // ---- 質問箱の使われ方（この端末の中だけ。配布元には送らない） ----

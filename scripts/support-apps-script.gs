@@ -1,9 +1,16 @@
+/**
+ * @OnlyCurrentDoc
+ * ↑ この1行で、このスクリプトが触れる範囲を「このスプレッドシートだけ」に限っています
+ *   （Google ドライブのほかのファイルやメールには触れません）。
+ */
 // ApoBoost 質問箱の受け口（配布元用）
 // 使い方:
 //  1. 新しい Google スプレッドシートを作り、「拡張機能 → Apps Script」を開いて、このコードを貼り付けて保存
 //  2. 右上の「デプロイ → 新しいデプロイ」→ 種類「ウェブアプリ」→ 実行するユーザー「自分」、アクセスできるユーザー「全員」→ デプロイ
 //  3. 表示された「ウェブアプリのURL」（https://script.google.com/macros/s/…/exec）を、ApoBoost の update.json の support_url に書いてリリース
 //  4. 質問が届くと「質問」シートに1行ずつ増えます。G列「返信」に答えを書くと、相手のApoBoostのチャットに数分で届きます
+//  5. 質問が届いたらメールで知りたいときは、スプレッドシートの「ツール → 通知設定 → 編集の通知」で「変更が行われたとき・メール（その都度）」を選ぶ
+//     （このスクリプトからはメールを送りません。求める権限を、このスプレッドシートだけに絞るためです）
 var SHEET = "質問";
 // 列は末尾に足すだけにする（G列「返信」の位置を変えると、返信を読めなくなる）
 var HEAD = ["受付日時", "番号", "会社・担当", "版", "画面", "質問", "返信", "返信を渡した日時", "状況（どの会社の、どの失敗か）", "元の質問の番号（追加の質問のとき）"];
@@ -29,7 +36,6 @@ function doPost(e) {
       // 先頭が = + - @ の文字は、表計算の式として動かないように ' を付ける
       var safe = function (s) { s = String(s || ""); return /^[=+\-@]/.test(s) ? "'" + s : s; };
       sh.appendRow([new Date(), t, safe(String(b.who || "").slice(0, 120)), safe(String(b.version || "").slice(0, 20)), safe(String(b.page || "").slice(0, 200)), safe(q), "", "", safe(String(b.context || "").slice(0, 600)), /^[0-9a-f]{32}$/.test(String(b.parent || "")) ? String(b.parent) : ""]);
-      try { MailApp.sendEmail(Session.getEffectiveUser().getEmail(), "ApoBoost 質問が届きました", String(b.who || "") + "\n\n" + q + "\n\n" + SpreadsheetApp.getActiveSpreadsheet().getUrl()); } catch (err) {}
       return json_({ ok: true });
     }
     if (b.action === "poll") {

@@ -2,7 +2,7 @@
 import express from "express";
 import { app, me, ownedJob, ownedCampaign } from "../app/context.js";
 import { getDb, jst, STATUS_LABEL, type Job, type JobStatus } from "../db.js";
-import { askSupport, supportEnabled, supportNote, supportThread, supportUnread, markSupportSeen, pollSupportReplies, recordHelpFeedback, recordHelpMiss } from "../support.js";
+import { askSupport, supportEnabled, supportNote, supportThread, supportUnread, markSupportSeen, pollSupportReplies, recordHelpFeedback, recordHelpMiss, saveChat, listChats, getChat, activeChatId, type ChatMessage } from "../support.js";
 import { errKind, CAMPAIGN_STATUS_LABEL } from "../ui/parts.js";
 
 let lastPoll = 0;
@@ -65,7 +65,7 @@ app.get("/support/thread", async (req, res) => {
   const list = supportThread(u.id).map((t) => ({ id: t.id, question: t.question, at: t.created_at, sent: !!t.sent_ok, reply: t.reply, repliedAt: t.replied_at, context: t.context, followUp: !!t.parent }));
   const unread = supportUnread(u.id);
   if (req.query.seen === "1") markSupportSeen(u.id);
-  res.json({ enabled: supportEnabled(), note: supportNote(), unread, list });
+  res.json({ enabled: supportEnabled(), note: supportNote(), unread, list, activeChat: activeChatId(u.id) });
 });
 
 // 「この会社について質問する」: その1社（またはキャンペーン）の状況を返す。他の人のものは見せない
@@ -90,8 +90,26 @@ app.post("/support/ask", express.json({ limit: "20kb" }), async (req, res) => {
   // 誰からの質問か分かるように、会社名（送信者の1件目）と表示名を添える
   const s = getDb().prepare("SELECT company FROM sender_profiles ORDER BY id LIMIT 1").get() as { company: string } | undefined;
   const who = [s?.company, u.display_name || u.username].filter(Boolean).join(" / ");
-  const r = await askSupport(u.id, who, question, String(req.body?.page ?? ""), ctx?.text ?? "", Number(req.body?.parentId) || 0);
+  const r = await askSupport(u.id, who, question, String(req.body?.page ?? ""), ctx?.text ?? "", Number(req.body?.parentId) || 0, Number(req.body?.chatId) || 0);
   res.json({ ok: true, sent: r.ok });
+});
+
+// 問い合わせ（1回ぶんのやり取り）の保存・一覧・中身。この端末の中だけに残る
+app.post("/support/chats/save", express.json({ limit: "300kb" }), (req, res) => {
+  const u = me(req);
+  const msgs = Array.isArray(req.body?.messages) ? (req.body.messages as ChatMessage[]) : [];
+  const id = saveChat(u.id, Number(req.body?.id) || 0, String(req.body?.title ?? ""), String(req.body?.last ?? ""), msgs, req.body?.ended === true);
+  res.json({ ok: true, id });
+});
+app.get("/support/chats", (req, res) => {
+  res.setHeader("cache-control", "no-store");
+  res.json({ ok: true, list: listChats(me(req).id) });
+});
+app.get("/support/chats/:id", (req, res) => {
+  res.setHeader("cache-control", "no-store");
+  const c = getChat(me(req).id, Number(req.params.id));
+  if (!c) return res.status(404).json({ ok: false });
+  res.json({ ok: true, ...c });
 });
 
 // 答えで解決したか／見つからなかった言葉。この端末の中だけに残す（配布元には送らない）

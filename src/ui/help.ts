@@ -147,18 +147,37 @@ export const HELP_WIDGET = `<style>
 #fo-help form.ask textarea{height:84px;border-radius:14px}
 #fo-help form button{flex:none;border:0;border-radius:999px;background:var(--c-brand);color:#fff;font:inherit;font-weight:600;padding:0 16px;height:38px;cursor:pointer}
 #fo-help form button[disabled]{opacity:.5}
+/* 過去の問い合わせの一覧 */
+#fo-help .hbtn{margin-left:auto;flex:none;white-space:nowrap;height:30px;padding:0 11px;border-radius:15px;border:0;background:var(--c-fill);color:var(--c-ink-2);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer}
+#fo-help .hbtn:hover{background:var(--c-fill-hover)}
+#fo-help .hbtn+.x{margin-left:0}
+#fo-help .list{flex:1;overflow-y:auto;background:#fff}
+#fo-help .list[hidden],#fo-help .log[hidden],#fo-help form[hidden]{display:none}
+#fo-help .list h3{font-size:15px;margin:0;padding:14px 16px 8px}
+#fo-help .list button.row{display:flex;gap:11px;width:100%;text-align:left;border:0;border-top:1px solid var(--c-line);background:#fff;padding:12px 16px;cursor:pointer;font:inherit;color:inherit}
+#fo-help .list button.row:hover{background:var(--c-surface-2)}
+#fo-help .list .av{flex:none;width:40px;height:40px;border-radius:12px;background:#EAF3FE url(/assets/mascot.png?v=1) 42% 6%/165% auto no-repeat;position:relative}
+#fo-help .list .av.new::after{content:"";position:absolute;right:-3px;top:-3px;width:11px;height:11px;border-radius:50%;background:var(--c-ng);border:2px solid #fff}
+#fo-help .list .tx{flex:1;min-width:0}
+#fo-help .list .tt{display:flex;gap:8px;align-items:baseline}
+#fo-help .list .tt b{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#fo-help .list .tt span{flex:none;font-size:11.5px;color:var(--c-ink-3)}
+#fo-help .list .sn{font-size:12.5px;color:var(--c-ink-3);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+#fo-help .list .empty{padding:30px 16px;text-align:center;color:var(--c-ink-3);font-size:13px}
+#fo-help .list .new1{margin:12px 16px;}
 @media (max-width:520px){#fo-help{right:0;bottom:0;width:100vw;max-width:100vw;height:86vh;border-radius:22px 22px 0 0}}
 @media print{#fo-help,#fo-help-btn{display:none!important}}
 </style>
 <button id="fo-help-btn" type="button" aria-label="質問箱を開く" title="困ったときはこちら"></button>
 <div id="fo-help" hidden role="dialog" aria-label="質問箱">
-<div class="hd"><div class="ava" aria-hidden="true"></div><div><b>ApoBoost 質問箱</b><span>よくある質問に、その場でお答えします</span></div><button class="x" type="button" aria-label="閉じる">×</button></div>
+<div class="hd"><div class="ava" aria-hidden="true"></div><div><b>ApoBoost 質問箱</b><span>よくある質問に、その場でお答えします</span></div><button class="hbtn" type="button">履歴</button><button class="x" type="button" aria-label="閉じる">×</button></div>
 <div class="log" aria-live="polite"></div>
+<div class="list" hidden></div>
 <form autocomplete="off"><textarea id="fo-help-q" rows="1" placeholder="言葉で探す（例: アプリパスワード）" aria-label="質問を入力"></textarea><button>探す</button></form>
 </div>
 <script>
 // 質問箱。用意した答えはすべてこのページに入っている（AIは使わない）。
-// 通信するのは、担当者への質問・その返信・会社の状況の取得・使われ方の記録のときだけ（どれもこのアプリのサーバーまで。
+// 通信するのは、担当者への質問・その返信・会社の状況の取得・やり取りの保存のときだけ（どれもこのアプリのサーバーまで。
 // 外へ出るのは「担当者に送る」を押したときだけ）
 (function(){
   var TOPICS = ${JSON.stringify(HELP_TOPICS).replace(/</g, "\\u003c")};
@@ -167,31 +186,56 @@ export const HELP_WIDGET = `<style>
   var KEY_ITEMS = { captcha: ["captcha"], input: ["input"], noform: ["noform"], blocked: ["blocked"], unsure: ["unsure"], network: ["network"], form: ["form"], check: ["check"] };
   var box = document.getElementById("fo-help"), btn = document.getElementById("fo-help-btn");
   if (!box || !btn) return;
-  var log = box.querySelector(".log"), form = box.querySelector("form"), input = document.getElementById("fo-help-q"), sendBtn = form.querySelector("button");
+  var log = box.querySelector(".log"), listBox = box.querySelector(".list"), form = box.querySelector("form"), input = document.getElementById("fo-help-q"), sendBtn = form.querySelector("button"), histBtn = box.querySelector(".hbtn");
   var started = false, staffOn = false, staffNote = "", askMode = false, ctx = null, parentId = 0;
+  // いまの問い合わせ（1回ぶんのやり取り）。画面に出したものを順に控えて、サーバーに保存する。
+  // ページを移っても続きから話せるように・終了したあとも一覧から見返せるようにするため
+  var conv = { id: 0, msgs: [], title: "", ended: false }, viewing = false;
   var TYPE_MS = 1000;
   function el(tag, cls, text){ var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function scroll(){ log.scrollTop = log.scrollHeight; }
   function send(url, body){ try { fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(function(){}); } catch (e) {} }
+  // ---- 保存 ----
+  var saveTimer = null, saving = Promise.resolve();
+  function saveNow(){
+    clearTimeout(saveTimer); saveTimer = null;
+    if (viewing || !conv.msgs.length) return saving;
+    var last = ""; for (var i = conv.msgs.length - 1; i >= 0 && !last; i--) { var m = conv.msgs[i]; if (m.t && (m.r === "bot" || m.r === "me" || m.r === "staff")) last = m.t; }
+    var body = JSON.stringify({ id: conv.id, title: conv.title, last: last.replace(/\\s+/g, " ").slice(0, 120), messages: conv.msgs, ended: conv.ended });
+    var target = conv;
+    saving = saving.then(function(){ return fetch("/support/chats/save", { method: "POST", headers: { "content-type": "application/json" }, body: body, keepalive: body.length < 60000 }); })
+      .then(function(r){ return r.json(); }).then(function(j){ if (j && j.id) target.id = j.id; }).catch(function(){});
+    return saving;
+  }
+  function rec(m){ if (viewing) return; conv.msgs.push(m); if (m.r === "me" && !conv.title && !/^(解決した|解決しなかった|最初に戻る|担当者に質問する)$/.test(m.t)) conv.title = m.t.slice(0, 40); clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 600); }
+  addEventListener("pagehide", function(){ if (saveTimer) saveNow(); });
+  // ---- 画面に1つ出す（控えから描き直すときにも使う） ----
+  function render(m){
+    var e;
+    if (m.r === "bot" || m.r === "staff") {
+      e = el("div", "msg bot" + (m.r === "staff" ? " staff" : ""), m.t);
+      (m.links || []).forEach(function(l){ var a = el("a", "", l[1]); a.href = l[0]; if (l[0].indexOf("http") === 0) { a.target = "_blank"; a.rel = "noopener"; a.textContent = l[1] + " ↗"; } e.appendChild(a); });
+    } else if (m.r === "me") e = el("div", "msg me", m.t);
+    else if (m.r === "note") e = el("div", "note", m.t);
+    else if (m.r === "st") e = el("div", "st " + (m.cls || "go"), m.t);
+    else if (m.r === "ctx") { e = el("div", "ctx"); e.appendChild(el("b", "", m.t)); var dl = el("dl"); (m.rows || []).forEach(function(r){ dl.appendChild(el("dt", "", r[0])); dl.appendChild(el("dd", "", r[1])); }); e.appendChild(dl); }
+    if (e) { log.appendChild(e); scroll(); }
+  }
+  function put(m){ render(m); rec(m); }
   // 順番どおりに出すための列。答えの前に「・・・」を1秒ほど出す
   var queue = Promise.resolve();
   function later(fn){ queue = queue.then(fn); return queue; }
   function wait(ms){ return new Promise(function(ok){ setTimeout(ok, ms); }); }
-  function addBot(text, links, cls){
-    var m = el("div", "msg bot" + (cls ? " " + cls : ""), text);
-    (links || []).forEach(function(l){ var a = el("a", "", l[1]); a.href = l[0]; if (l[0].indexOf("http") === 0) { a.target = "_blank"; a.rel = "noopener"; a.textContent = l[1] + " ↗"; } m.appendChild(a); });
-    log.appendChild(m); scroll();
-  }
   function bot(text, links){
     return later(function(){
       clearOpts();
       var t = el("div", "msg bot typing"); t.setAttribute("aria-label", "入力中"); t.appendChild(el("i")); t.appendChild(el("i")); t.appendChild(el("i"));
       log.appendChild(t); scroll();
-      return wait(TYPE_MS).then(function(){ t.remove(); addBot(text, links); });
+      return wait(TYPE_MS).then(function(){ t.remove(); put({ r: "bot", t: text, links: links || undefined }); });
     });
   }
-  function me(text){ return later(function(){ clearOpts(); log.appendChild(el("div", "msg me", text)); scroll(); }); }
-  function note(text){ log.appendChild(el("div", "note", text)); scroll(); }
+  function me(text){ return later(function(){ clearOpts(); put({ r: "me", t: text }); }); }
+  function note(text){ put({ r: "note", t: text }); }
   function clearOpts(){ var old = log.querySelectorAll(".opts"); for (var i = 0; i < old.length; i++) old[i].remove(); }
   function opts(list){
     return later(function(){
@@ -205,6 +249,7 @@ export const HELP_WIDGET = `<style>
       log.appendChild(wrap); scroll();
     });
   }
+  var END = { label: "問い合わせを終了する", sub: true, run: function(){ endChat(); } };
   function findItem(id){ var hit = null; TOPICS.forEach(function(t){ t.items.forEach(function(it){ if (it.id === id) hit = { it: it, t: t }; }); }); return hit; }
   function deskButtons(){
     var list = DESKS.map(function(d){ return { label: d[1], run: function(){ me(d[1]); desk(d[0]); } }; });
@@ -217,8 +262,16 @@ export const HELP_WIDGET = `<style>
     bot(first ? "こんにちは。困りごとに近いものを選んでください。下の欄に、文章で書いて探すこともできます。" : "ほかに知りたいことはありますか？");
     var popular = [];
     TOPICS.forEach(function(t){ t.items.forEach(function(it){ if (it.popular && popular.length < 4) popular.push({ label: it.q, run: function(){ me(it.q); answer(it, t); } }); }); });
-    opts((first ? [{ head: "よく見られている質問" }].concat(popular) : []).concat([{ head: "窓口を選ぶ" }]).concat(deskButtons()));
+    opts((first ? [{ head: "よく見られている質問" }].concat(popular) : []).concat([{ head: "窓口を選ぶ" }]).concat(deskButtons()).concat(first ? [] : [END]));
   }
+  // 問い合わせを終了する。終了したものは「履歴」から見返せる。次に開くと、新しい問い合わせになる
+  function endChat(){
+    me("問い合わせを終了する");
+    bot("お問い合わせを終了しました。ご利用ありがとうございました。\\nこのやり取りは、上の「履歴」からいつでも見返せます。");
+    later(function(){ put({ r: "note", t: "終了しました" }); conv.ended = true; setAsk(false); return saveNow(); });
+    opts([{ label: "新しく質問する", run: function(){ newChat(); home(true); } }, { label: "履歴を見る", sub: true, run: function(){ showList(); } }]);
+  }
+  function newChat(){ conv = { id: 0, msgs: [], title: "", ended: false }; viewing = false; ctx = null; parentId = 0; log.textContent = ""; setAsk(false); form.hidden = false; }
   // 窓口 → 分類（分類が1つだけなら、その段は飛ばす）
   function desk(key){
     var ts = TOPICS.filter(function(t){ return t.desk === key; });
@@ -233,7 +286,7 @@ export const HELP_WIDGET = `<style>
   function unsolved(){
     if (staffOn) { askStaff(); return; }
     bot("お役に立てずすみません。ご利用ガイドに、画面ごとのくわしい手順があります。それでも解決しないときは、動作チェックの「診断ファイル」を配布元に送ってください。", [["/guide", "ご利用ガイド"], ["/health", "動作チェック"]]);
-    opts([{ label: "最初に戻る", run: function(){ home(false); } }]);
+    opts([{ label: "最初に戻る", run: function(){ home(false); } }, END]);
   }
   function answer(it, t){
     bot(it.a, it.links);
@@ -247,18 +300,14 @@ export const HELP_WIDGET = `<style>
     opts(more);
   }
   // ---- この会社について質問する（会社の詳細・要対応・キャンペーンの画面から） ----
-  function ctxCard(c, title){
-    var d = el("div", "ctx"); d.appendChild(el("b", "", title));
-    var dl = el("dl"); c.rows.forEach(function(r){ dl.appendChild(el("dt", "", r[0])); dl.appendChild(el("dd", "", r[1])); }); d.appendChild(dl);
-    log.appendChild(d); scroll();
-  }
+  function ctxCard(c, title){ put({ r: "ctx", t: title, rows: c.rows }); }
   function startContext(o){
     var url = "/support/context?" + (o.jobId ? "job=" + encodeURIComponent(o.jobId) : "campaign=" + encodeURIComponent(o.campaignId));
     fetch(url, { cache: "no-store" }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }).then(function(c){
-      if (!c || !c.ok) { home(!started); return; }
+      if (!c || !c.ok) { home(!conv.msgs.length); return; }
       later(function(){ clearOpts(); });
       me(o.jobId ? "この会社について質問する" : "このキャンペーンについて質問する");
-      later(function(){ ctx = c; ctxCard(c, "「" + c.company + "」についてのご質問ですね"); });
+      later(function(){ ctx = c; if (!conv.title || /について質問する$/.test(conv.title)) conv.title = c.company + " について"; ctxCard(c, "「" + c.company + "」についてのご質問ですね"); });
       var ids = KEY_ITEMS[c.key] || [];
       var hit = ids.length ? findItem(ids[0]) : null;
       if (hit) {
@@ -300,17 +349,20 @@ export const HELP_WIDGET = `<style>
   }
   function sendToStaff(text){
     me(text); setAsk(false); sendBtn.disabled = true;
-    var body = { question: text, page: location.pathname };
-    if (ctx && ctx.jobId) body.jobId = ctx.jobId;
-    if (ctx && ctx.campaignId) body.campaignId = ctx.campaignId;
-    if (parentId) body.parentId = parentId;
-    fetch("/support/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    // 先にやり取りを保存して、問い合わせの番号を確定させる（返信を、この問い合わせの続きとして受け取るため）
+    later(saveNow).then(function(){
+      var body = { question: text, page: location.pathname, chatId: conv.id };
+      if (ctx && ctx.jobId) body.jobId = ctx.jobId;
+      if (ctx && ctx.campaignId) body.campaignId = ctx.campaignId;
+      if (parentId) body.parentId = parentId;
+      return fetch("/support/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    })
       .then(function(r){ return r.json().catch(function(){ return { ok: false }; }); })
       .then(function(j){
         if (!j.ok) { bot(j.error || "送れませんでした。時間を置いてもう一度お試しください。"); opts([{ label: "もう一度書く", run: function(){ askStaff(); } }, { label: "最初に戻る", sub: true, run: function(){ home(false); } }]); return; }
         bot(j.sent ? "担当者に送りました。追って、このチャットでご連絡します。" + (staffNote ? "\\n" + staffNote : "") + "\\n返信が届くと、右下のボタンに赤い印が付きます（通知をオンにしていれば、通知でもお知らせします）。" : "質問を控えました。いまは配布元につながらなかったので、つながり次第、自動で送ります。返信は、このチャットに届きます。");
-        later(function(){ var st = el("div", "st " + (j.sent ? "go" : "wait"), j.sent ? "受付済み・返信待ち" : "送信待ち"); log.appendChild(st); scroll(); });
-        opts([{ label: "最初に戻る", run: function(){ home(false); } }]);
+        later(function(){ put({ r: "st", cls: j.sent ? "go" : "wait", t: j.sent ? "受付済み・返信待ち" : "送信待ち" }); });
+        opts([{ label: "最初に戻る", run: function(){ home(false); } }, END]);
       })
       .catch(function(){ bot("送れませんでした。時間を置いてもう一度お試しください。"); opts([{ label: "もう一度書く", run: function(){ askStaff(); } }]); })
       .then(function(){ sendBtn.disabled = false; });
@@ -332,8 +384,9 @@ export const HELP_WIDGET = `<style>
   form.addEventListener("submit", function(e){
     e.preventDefault();
     var text = input.value.trim(); if (!text) return;
+    if (viewing || conv.ended) { newChat(); }
     input.value = "";
-    if (askMode) { if (text.length < 5) { input.value = text; note("もう少しくわしく書いてください"); return; } sendToStaff(text); return; }
+    if (askMode) { if (text.length < 5) { input.value = text; log.appendChild(el("div", "note", "もう少しくわしく書いてください")); scroll(); return; } sendToStaff(text); return; }
     me(text);
     var hits = search(text);
     var compact = text.replace(/[\\s　]/g, "");
@@ -355,53 +408,86 @@ export const HELP_WIDGET = `<style>
   });
   // Enter で送る（Shift+Enter は改行）。日本語の変換中の Enter では送らない
   input.addEventListener("keydown", function(e){ if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit ? form.requestSubmit() : sendBtn.click(); } });
-  // ---- 担当者とのこれまでのやり取り ----
-  function loadThread(seen){
-    return fetch("/support/thread" + (seen ? "?seen=1" : ""), { cache: "no-store" }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; });
+  // ---- 過去の問い合わせ（履歴） ----
+  function getJson(url){ return fetch(url, { cache: "no-store" }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }); }
+  function day(s){ var d = new Date(String(s).replace(" ", "T") + "Z"); if (isNaN(d.getTime())) return ""; var n = new Date(); return d.getFullYear() === n.getFullYear() ? (d.getMonth() + 1) + "月" + d.getDate() + "日" : d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日"; }
+  function showChat(){ listBox.hidden = true; log.hidden = false; form.hidden = false; histBtn.textContent = "履歴"; scroll(); }
+  function showList(){
+    saveNow().then(function(){ return getJson("/support/chats"); }).then(function(j){
+      log.hidden = true; form.hidden = true; listBox.hidden = false; histBtn.textContent = "戻る";
+      listBox.textContent = "";
+      listBox.appendChild(el("h3", "", "これまでの問い合わせ"));
+      var list = (j && j.list) || [];
+      if (!list.length) listBox.appendChild(el("div", "empty", "まだ問い合わせはありません"));
+      list.forEach(function(c){
+        var row = el("button", "row"); row.type = "button";
+        row.appendChild(el("div", "av" + (c.unread ? " new" : "")));
+        var tx = el("div", "tx"), tt = el("div", "tt");
+        tt.appendChild(el("b", "", (c.staff ? "担当者 ／ " : "") + (c.title || "質問箱")));
+        tt.appendChild(el("span", "", day(c.updated_at) + (c.ended ? "・終了" : "・対応中")));
+        tx.appendChild(tt); tx.appendChild(el("div", "sn", c.last || ""));
+        row.appendChild(tx);
+        row.onclick = function(){ openPast(c.id); };
+        listBox.appendChild(row);
+      });
+    });
   }
-  function showTicket(t){
-    log.appendChild(el("div", "msg me", t.question));
-    if (t.context) { var c = el("div", "note", "状況: " + t.context.slice(0, 90)); c.style.alignSelf = "flex-end"; c.style.textAlign = "right"; log.appendChild(c); }
-    // 状態の色は全画面共通（黄＝待ち／青＝進行中／緑＝済み）
-    log.appendChild(el("div", "st " + (t.reply ? "ok" : t.sent ? "go" : "wait"), t.reply ? "返信あり" : t.sent ? "受付済み・返信待ち" : "送信待ち（つながり次第、自動で送ります）"));
-    if (t.reply) addBot(t.reply, null, "staff");
+  // 過去の問い合わせを開く。終了していないものは、続きから話せる
+  function openPast(id){
+    getJson("/support/chats/" + id).then(function(c){
+      if (!c || !c.ok) return;
+      later(function(){
+        log.textContent = ""; setAsk(false);
+        viewing = true; c.messages.forEach(render); viewing = false;
+        if (c.ended) {
+          viewing = true; conv = { id: c.id, msgs: c.messages, title: c.title, ended: true };
+          var wrap = el("div", "opts");
+          if (c.replyTicketId && staffOn) { var b1 = el("button", "", "追加で質問する"); b1.type = "button"; b1.onclick = function(){ newChat(); parentId = c.replyTicketId; me("追加で質問する"); askStaff(); }; wrap.appendChild(b1); }
+          var b2 = el("button", "", "新しく質問する"); b2.type = "button"; b2.onclick = function(){ newChat(); home(true); }; wrap.appendChild(b2);
+          log.appendChild(wrap);
+        } else {
+          conv = { id: c.id, msgs: c.messages, title: c.title, ended: false };
+          resumeOpts(c.replyTicketId);
+        }
+        showChat();
+      });
+    });
   }
-  function showThread(list){
-    if (!list || !list.length) return null;
-    note("担当者とのこれまでのやり取り");
-    list.forEach(showTicket);
-    var last = list[list.length - 1];
-    return last.reply ? last : null;
+  // 続きから話すときの選択肢
+  function resumeOpts(replyTicketId){
+    var list = [];
+    if (replyTicketId && staffOn) list.push({ label: "追加で質問する", run: function(){ me("追加で質問する"); parentId = replyTicketId; askStaff(); } });
+    opts(list.concat([{ head: "窓口を選ぶ" }]).concat(deskButtons()).concat([END]));
   }
-  // 返信のあと: 解決したか、追加で聞くか
-  function afterReply(last){
-    opts([
-      { label: "解決しました", run: function(){ me("解決しました"); bot("よかったです。"); home(false); } },
-      { label: "追加で質問する", run: function(){ me("追加で質問する"); parentId = last.id; askStaff(); } },
-      { label: "別のことを聞く", sub: true, run: function(){ home(true); } },
-    ]);
-  }
+  histBtn.addEventListener("click", function(){ if (listBox.hidden) showList(); else showChat(); });
   function show(){ box.hidden = false; btn.hidden = true; btn.classList.remove("new"); setTimeout(function(){ input.focus(); }, 50); }
   // o: { jobId } / { campaignId } を渡すと、その会社（キャンペーン）についての質問として開く
   function open(o){
     show();
     var first = !started; started = true;
-    loadThread(true).then(function(j){
+    getJson("/support/thread").then(function(j){
       if (j) { staffOn = !!j.enabled; staffNote = j.note || ""; }
-      var last = null;
-      if (first && j) last = showThread(j.list);
-      else if (j && j.unread) { j.list.filter(function(t){ return t.reply; }).slice(-j.unread).forEach(function(t){ later(function(){ showTicket(t); }); last = t; }); }
-      if (o && (o.jobId || o.campaignId)) { startContext(o); return; }
-      if (last && staffOn) { later(function(){ note("担当者から返信が届いています"); }); afterReply(last); return; }
-      if (first) home(true);
+      var hasCtx = o && (o.jobId || o.campaignId);
+      // 担当者から新しい返信が来ていれば、まず一覧を見せる（赤い印の付いた問い合わせを開くと読める）
+      if (j && j.unread && !hasCtx) { showList(); return; }
+      if (!first) { showChat(); if (hasCtx) { if (conv.ended || viewing) newChat(); startContext(o); } return; }
+      // 終了していない問い合わせがあれば、続きから（ページを移っても話が途切れないように）
+      if (j && j.activeChat) {
+        getJson("/support/chats/" + j.activeChat).then(function(c){
+          if (c && c.ok && !c.ended) { viewing = true; c.messages.forEach(render); viewing = false; conv = { id: c.id, msgs: c.messages, title: c.title, ended: false }; if (hasCtx) startContext(o); else resumeOpts(c.replyTicketId); }
+          else if (hasCtx) startContext(o); else home(true);
+        });
+        return;
+      }
+      if (hasCtx) startContext(o); else home(true);
     });
   }
-  function close(){ box.hidden = true; btn.hidden = false; }
+  function close(){ saveNow(); box.hidden = true; btn.hidden = false; }
   window.foHelpOpen = function(o){ open(o || null); };
   btn.addEventListener("click", function(){ open(null); });
   box.querySelector(".x").addEventListener("click", close);
   addEventListener("keydown", function(e){ if (e.key === "Escape" && !box.hidden) close(); });
   // 読んでいない返信があれば、右下のボタンに赤い印を付ける
-  loadThread(false).then(function(j){ if (j && j.unread) btn.classList.add("new"); });
+  getJson("/support/thread").then(function(j){ if (j && j.unread) btn.classList.add("new"); });
 })();
 </script>`;

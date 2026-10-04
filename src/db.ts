@@ -329,6 +329,20 @@ function migrate(db: Database.Database) {
   // 質問がどの会社（1件の送信）についてのものか。会社名・URL・失敗の種類だけを文章にして持つ（営業リストや文面は入れない）
   addCol("support_tickets", "context", "TEXT NOT NULL DEFAULT ''");
   addCol("support_tickets", "parent", "TEXT NOT NULL DEFAULT ''");       // 追加の質問のとき、元の質問の番号
+  // 質問箱の1回ぶんのやり取り（問い合わせ）。「問い合わせを終了する」で閉じ、過去のものは一覧から見返せる。
+  // messages は画面に出した順の記録（JSON）。この端末の中だけに残す
+  db.exec(`CREATE TABLE IF NOT EXISTS help_chats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    last TEXT NOT NULL DEFAULT '',
+    messages TEXT NOT NULL DEFAULT '[]',
+    started_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    ended_at TEXT
+  )`);
+  addCol("support_tickets", "chat_id", "INTEGER NOT NULL DEFAULT 0");     // どの問い合わせの中で送った質問か
+
   // 質問箱の使われ方。この端末の中だけに残す（配布元には送らない。利用者が自分で送る診断ファイルにだけ入る）
   db.exec(`CREATE TABLE IF NOT EXISTS help_feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
