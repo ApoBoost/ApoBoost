@@ -139,6 +139,10 @@ tr.sep td{background:var(--c-bg);font-size:var(--fs-xs);color:var(--c-ink-3);fon
 .settoc a:hover{background:var(--c-fill);color:var(--c-ink)}
 .setgrid .card{scroll-margin-top:76px}
 @media (max-width:760px){.setgrid{grid-template-columns:1fr;gap:10px}.settoc{position:static;display:flex;flex-wrap:wrap}}
+/* キャラクター。区切りの場面（空の一覧・やることが無いとき）にだけ出す */
+.mascot{display:block;flex:none;user-select:none;-webkit-user-drag:none}
+.emptystate{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.emptystate p{margin:4px 0}
 /* ---- 「…」メニュー: 主な操作だけをボタンで出し、残りはここに畳む ---- */
 .menu{position:relative;display:inline-block;vertical-align:middle}
 .menu>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:28px;padding:0 8px;border-radius:7px;background:#fff;border:1px solid var(--c-line-strong);color:var(--c-ink-2);font-weight:700;letter-spacing:.08em;line-height:1}

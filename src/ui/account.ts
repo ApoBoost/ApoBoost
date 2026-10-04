@@ -22,6 +22,10 @@ input{width:100%;padding:10px 12px;border:1px solid #D2D2D7;border-radius:10px;f
 button{width:100%;margin-top:20px;padding:11px;background:#0071E3;color:#fff;border:0;border-radius:10px;font-weight:600;font-size:15px;cursor:pointer}
 .err{background:#FDECEA;color:#C62828;border-radius:8px;padding:9px 12px;font-size:13px;margin-bottom:6px}
 .mark{display:block}
+/* キャラクター: 箱の右下の外に小さく立たせる。狭い画面（濃い地球儀の上に箱が載る）では出さない */
+.box{position:relative}
+.buddy{position:absolute;right:-64px;bottom:-22px;width:104px;height:auto;pointer-events:none;user-select:none}
+@media (max-width:1100px){.buddy{display:none}}
 *{box-sizing:border-box}
 /* ---- 動き：開いたときにロゴが左から飛んできて、光が1度だけ横切る ---- */
 .box{animation:up .5s ease-out both}
@@ -48,6 +52,7 @@ ${opts.error ? `<div class="err">${esc(opts.error)}</div>` : ""}
 <label>ログインID</label><input name="username" autocomplete="username" autofocus required>
 <label>パスワード</label><input name="password" type="password" autocomplete="current-password" required>
 <button>ログイン</button>
+<img class="buddy" src="/assets/mascot.png?v=1" alt="" onerror="this.remove()">
 </form>${FX_LOGIN}</body></html>`;
 }
 

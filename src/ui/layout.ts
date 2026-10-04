@@ -16,6 +16,11 @@ export const IC_WARN = IC('<path d="M12 4 2.8 19.5h18.4L12 4Z"/><path d="M12 10v
 export const IC_CHECK = IC('<circle cx="12" cy="12" r="9"/><path d="m8 12.3 2.8 2.8L16.2 9.5"/>', "ic-ok");
 const IC_GAME = IC('<rect x="2.5" y="7" width="19" height="10.5" rx="5.2"/><path d="M7 10.5v3.5M5.2 12.2h3.6"/><circle cx="15.5" cy="11" r=".7" fill="currentColor"/><circle cx="18" cy="13.4" r=".7" fill="currentColor"/>');
 
+/** キャラクター（青いアライグマ）。いつも画面にいると邪魔なので、出すのは「区切りの場面」だけにする:
+ *  ログイン画面・やることが無いとき・一覧が空のとき・エラーページ。作業中の画面（一覧・設定・入力）には出さない。
+ *  画像は明るい地の上に置く前提（足もとの影が白っぽいので、濃い地には置かない） */
+export const mascot = (size = 96) => `<img class="mascot" src="/assets/mascot.png?v=1" alt="" width="${Math.round(size * 0.95)}" height="${size}" loading="lazy" onerror="this.remove()">`;
+
 export type NavUser = { username: string; display_name: string; role: string; gameOn?: boolean; todo?: number; appo?: number; effects?: boolean; path?: string } | null;
 
 // ロゴは assets/ の画像を使う。画像を差し替えたら ?v= の数字を上げる（ブラウザが古い絵を1時間覚えているため）
@@ -228,7 +233,8 @@ export function errorPage(status: number, user: NavUser = null): string {
   };
   const [title, msg] = M[status] ?? M[500];
   return layout(title, `<div class="card" style="text-align:center;padding:48px 20px">
-<div style="font-size:44px;font-weight:800;color:var(--c-ink-3);line-height:1">${status}</div>
+<div style="display:flex;justify-content:center">${mascot(110)}</div>
+<div style="font-size:36px;font-weight:800;color:var(--c-ink-3);line-height:1;margin-top:8px">${status}</div>
 <h1 style="margin:14px 0 8px">${esc(title)}</h1>
 <p class="muted" data-nohelp style="max-width:520px;margin:0 auto 22px">${esc(msg)}</p>
 <p><a class="btn primary" href="/">ホームに戻る</a> <a class="btn" href="/health">動作チェック</a> <a class="btn" href="javascript:history.back()">前の画面に戻る</a></p>

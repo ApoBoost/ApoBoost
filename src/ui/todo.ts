@@ -2,7 +2,7 @@
 import { STATUS_LABEL, OUTCOME_LABEL, CHANNEL_LABEL, channelMode, jst, type Campaign, type Job, type SenderProfile, type JobStatus } from "../db.js";
 import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
-import { esc, layout, n, type NavUser } from "./layout.js";
+import { esc, layout, n, type NavUser, mascot } from "./layout.js";
 import { post, thumb, moreMenu, ZOOM_SNIPPET } from "./parts.js";
 
 // ---- 要対応（#50 #10 → #113〜#118 #124 で作り直し）----
@@ -113,13 +113,13 @@ ${pager}
 // まとめて操作の帯は、会社を1つ以上選んだときだけ出す（選ぶ前は意味がないので）
 function foTodoCount(){const bar=document.getElementById("todobulk");const all=bar.querySelector('input[name=all]');const k=document.querySelectorAll('input[name=ids][form=todobulk]:checked').length;document.getElementById("todosel").textContent=all&&all.checked?"このタブの全件":k+"社を選択中";bar.hidden=!(k>0||(all&&all.checked));}
 function foTodoConfirm(f){const a=f.action.value;if(!a){alert("操作を選んでください");return false;}const all=f.all&&f.all.checked;const k=document.querySelectorAll('input[name=ids][form=todobulk]:checked').length;if(!all&&!k){alert("会社を選んでください");return false;}const label=f.action.options[f.action.selectedIndex].text;return confirm((all?"このタブの全件":k+"社")+" を「"+label+"」にします。よろしいですか？");}
-</script>` : `<div class="card"><p>${kind === "dismissed" ? "見送った会社はありません。" : "対応が必要な会社はありません。"}</p></div>`}
+</script>` : `<div class="card emptystate">${kind === "dismissed" ? "" : mascot(96)}<p>${kind === "dismissed" ? "見送った会社はありません。" : "<b>対応が必要な会社はありません。</b>"}</p></div>`}
 ${ZOOM_SNIPPET}`;
 }
 
 /** 画像認証などを1社ずつ続けて処理する画面（#118）。一覧に戻らずに「次へ」で進める */
 export function todoRunView(j: TodoRow | null, kind: string, left: number, skip: string, doneMsg = ""): string {
-  if (!j) return `<h1>続けて処理する</h1><div class="card" style="text-align:center;padding:40px"><h2 style="margin-top:0">${left === 0 ? "すべて終わりました" : "対象がありません"}</h2><p><a class="btn primary" href="/todo">要対応に戻る</a></p></div>`;
+  if (!j) return `<h1>続けて処理する</h1><div class="card" style="text-align:center;padding:40px">${left === 0 ? `<div style="display:flex;justify-content:center;margin-bottom:10px">${mascot(120)}</div>` : ""}<h2 style="margin-top:0">${left === 0 ? "すべて終わりました" : "対象がありません"}</h2><p><a class="btn primary" href="/todo">要対応に戻る</a></p></div>`;
   const hid = `<input type="hidden" name="back" value="/todo/run?kind=${esc(kind)}&skip=${esc(skip)}">`;
   return `<h1>続けて処理する <span class="tag queued">残り ${n(left)}社</span></h1>
 <p><a href="/todo?kind=${esc(kind)}">← 一覧に戻る</a></p>

@@ -2,7 +2,7 @@
 import { STATUS_LABEL, OUTCOME_LABEL, CHANNEL_LABEL, channelMode, jst, type Campaign, type Job, type SenderProfile, type JobStatus } from "../db.js";
 import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
-import { esc, layout, n, type NavUser, IC_WARN } from "./layout.js";
+import { esc, layout, n, type NavUser, IC_WARN, mascot } from "./layout.js";
 import { MODE_LABEL, campaignStatusTag, post, moreMenu } from "./parts.js";
 
 /** ホーム上部の「今日やることが分かる1画面」（#49 #108 #132 #137） */
@@ -38,14 +38,14 @@ export function homeCard(h: HomeSummary): string {
     : h.queued > 0 && !h.runningNames.length ? { t: `待機中の会社が ${n(h.queued)}社あります。開始すると送信時間帯に自動で送ります`, b: "キャンペーンを開く", href: "/campaigns" }
     : h.todo > 0 ? { t: `自動で送れなかった会社が ${n(h.todo)}社あります。まず「今日やる10件」から`, b: "要対応を見る", href: "/todo" }
     : h.runningNames.length ? { t: `送信中: ${h.runningNames.join("、")}`, b: "", href: "" }
-    : { t: "いまやることはありません。お疲れさまでした", b: "", href: "" };
+    : { t: "いまやることはありません。お疲れさまでした", b: "", href: "", rest: true };
   const total = (label: string, v: string) => `<span style="margin-right:18px"><span class="muted" data-nohelp>${label}</span> <b>${v}</b></span>`;
   // 上は「次にやること」と全体の合計だけ。キャンペーンごとの進み具合は、下に1件1行で出す
   return `${h.setupDone < h.setupTotal ? `<p class="flash" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">はじめの設定が <b>${h.setupDone} / ${h.setupTotal}</b> まで済んでいます <a class="btn small" href="/setup">続きを進める</a></p>` : ""}
-<div class="card">
+<div class="card${"rest" in next ? " emptystate" : ""}">${"rest" in next ? mascot(84) : ""}<div>
   <p style="margin:0 0 8px;font-size:16px"><b>${esc(next.t)}</b>${next.b ? ` <a class="btn primary small" href="${next.href}" style="margin-left:8px">${esc(next.b)}</a>` : ""}</p>
   <p class="small" style="margin:0">${total("今日の送信", `${n(h.todayForm + h.todayEmail)}社`)}${total("今月", `${n(h.monthForm + h.monthEmail)}社`)}${total("アポ", `${n(h.appointments)}社`)}${total("待機", `${n(h.queued)}社`)}${h.todo ? `<a href="/todo" style="color:var(--c-ng)">${total("要対応", `${n(h.todo)}社`)}</a>` : ""}</p>
-</div>
+</div></div>
 ${h.perCampaign.length ? `<div class="card" style="padding:0">${h.perCampaign.map(campaignHomeCard).join("")}</div>` : ""}`;
 }
 
@@ -110,7 +110,7 @@ ${rows.map((c) => {
 <div class="cards">${rows.map((c) => `<div class="c"><h3><a href="/campaigns/${c.id}">${esc(c.name)}</a></h3>${campaignStatusTag(c.status, c.is_running)}
 <div class="small" style="margin-top:6px">送信済み ${n(c.sent)} / ${n(c.total)}社・待機 ${n(c.queued)}社・反応 ${n(c.reactions)}件</div>
 <div class="acts"><a class="btn small" href="/campaigns/${c.id}">開く</a></div></div>`).join("")}</div>`
-    : `<div class="card"><p>まだキャンペーンがありません。</p><p><a class="btn primary" href="/setup">はじめの設定を開く</a> <a class="btn" href="/campaigns/new">キャンペーンを作る</a></p></div>`;
+    : `<div class="card emptystate">${mascot(96)}<div><p><b>まだキャンペーンがありません。</b></p><p><a class="btn primary" href="/setup">はじめの設定を開く</a> <a class="btn" href="/campaigns/new">キャンペーンを作る</a></p></div></div>`;
 
   const importBox = senders.length && !home ? `<details style="margin:16px 4px 0"><summary class="muted small" style="cursor:pointer">別のPCで書き出した設定ファイルから作る</summary>
 <p class="muted" style="margin:8px 0">キャンペーン画面の「設定をファイルに書き出す」で作った .json を選ぶと、同じ文面・設定のキャンペーンが作られます（会社リスト・送信履歴・送信者は含まれません）。</p>
