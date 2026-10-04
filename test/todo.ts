@@ -1,0 +1,147 @@
+// 要対応に溜まっていた失敗の型を、ダミーサイトで再現して確かめる。`npm test` の一部。
+// 本番の失敗470件を調べて分かった型（電話番号が必須なのに空のまま／エラー文言の見逃し／
+// 確認画面で送信ボタンを見つけられない／サイト側の拒否 など）を1つずつ置いてある。
+// 新しい失敗の型が見つかったら、ここにダミーのページと期待する結果を足す。
+import http from "node:http";
+import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+
+process.env.FO_NO_NOTIFY = "1";
+process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "fo-todo-"));
+
+const { getDb } = await import("../src/db.js");
+const { launchBrowser, submitToCompany } = await import("../src/engine.js");
+
+const got: Record<string, Record<string, string>[]> = {};
+const hit = (k: string, b: Record<string, string>) => { (got[k] ??= []).push(b); };
+
+const page = (title: string, body: string, head = "") => `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>${title}</title>${head}</head><body><header><form action="/search" role="search"><input type="search" name="q"><button class="sb-search-submit"></button></form></header>${body}</body></html>`;
+const esc = (s: string) => String(s ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+const hidden = (b: Record<string, string>) => Object.entries(b).map(([k, v]) => `<input type="hidden" name="${k}" value="${esc(v)}">`).join("");
+const body = (req: http.IncomingMessage): Promise<Record<string, string>> => new Promise((resolve) => { let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => resolve(Object.fromEntries(new URLSearchParams(d)))); });
+// よくある入力欄（電話番号の見出しだけ差し替える）
+const fields = (telLabel: string, v: Record<string, string> = {}) => `
+<table>
+<tr><th>お名前</th><td><input type="text" name="nm" value="${esc(v.nm ?? "")}"></td></tr>
+<tr><th>メールアドレス</th><td><input type="text" name="em" value="${esc(v.em ?? "")}"></td></tr>
+<tr>${telLabel}<td><input type="text" name="tel" value="${esc(v.tel ?? "")}"></td></tr>
+<tr><th>お問い合わせ内容</th><td><textarea name="msg">${esc(v.msg ?? "")}</textarea></td></tr>
+</table>`;
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url ?? "/", "http://x");
+  const p = url.pathname;
+  const send = (html: string, code = 200) => { res.writeHead(code, { "content-type": "text/html; charset=utf-8" }); res.end(html); };
+  const post = req.method === "POST";
+  const b = post ? await body(req) : {};
+  const done = (k: string) => { hit(k, b); return send(page("完了", "<h1>送信完了</h1><p>お問い合わせを受け付けました。</p>")); };
+
+  // 1) 必須の印が「※」（電話番号※）。最初から電話番号を入れる
+  if (p === "/kome") return post ? done("kome") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><p>※は必須項目です。</p><form method="post">${fields("<th>電話番号<span style='color:red'>※</span></th>")}<button type="submit">送信する</button></form>`));
+
+  // 2) 必須の印が画像（alt=必須）で、別のセルにある
+  if (p === "/imgreq") return post ? done("imgreq") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号</th><td><img alt='必須' src='data:image/gif;base64,R0lGODlhAQABAAAAACw=' width='30' height='14'></td>")}<button type="submit">送信する</button></form>`));
+
+  // 3) 必須の印が無いのに電話番号が必須。確認ボタンを押すと同じ画面のまま赤字で「未入力です。」
+  //    注意書きに最初から「入力してください」があるサイト（新しいエラーを見逃していた型）
+  if (p === "/minyuryoku") {
+    if (!post) return send(page("お問い合わせ", `<h1>お問い合わせ</h1><p>以下の項目を入力してください。</p><form method="post">${fields("<th>電話番号</th>")}<input type="submit" value="確認画面へ"></form>`));
+    if (!b.tel) return send(page("お問い合わせ", `<h1>お問い合わせ</h1><p>以下の項目を入力してください。</p><form method="post">${fields("<th>電話番号</th>", b).replace('name="tel" value="">', 'name="tel" value=""><br><font color="red">未入力です。</font>')}<input type="submit" value="確認画面へ"></form>`));
+    return send(page("確認", `<h1>入力内容の確認</h1><p>下記の内容で送信します。</p><form method="post" action="/minyuryoku/send">${hidden(b)}<input type="submit" value="戻る" formaction="/minyuryoku"><input type="submit" value="送信する"></form>`));
+  }
+  if (p === "/minyuryoku/send" && post) return done("minyuryoku");
+
+  // 4) 警告のポップアップ（alert）で止めるサイト。画面には何も出ない
+  if (p === "/alert") return post ? done("alert") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post" onsubmit="if(!this.tel.value){alert('お電話を入力してください');return false;}">${fields("<th>お電話</th>")}<input type="submit" value="入力内容確認"></form>`));
+
+  // 5) 確認ボタンを押すと、入力欄の無いエラーページ（色も class も無い）＋「前画面に戻る」
+  if (p === "/plainerr") {
+    if (!post) return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号</th>")}<input type="submit" value="確認"></form>`));
+    if (!b.tel) return send(page("エラー", `<p>入力にエラーがあります。下記をご確認の上「戻る」ボタンにて修正をお願い致します。</p><p>【電話番号】は必須項目です。</p><input type="button" value="前画面に戻る" onclick="history.back()">`));
+    return send(page("確認", `<h1>確認</h1><p>以下の内容でよろしければ送信してください。</p><form method="post" action="/plainerr/send">${hidden(b)}<input type="submit" value="送信"></form>`));
+  }
+  if (p === "/plainerr/send" && post) return done("plainerr");
+
+  // 6) 確認画面の送信ボタンが、alt の無い画像ボタン（[戻る][送信] の順）
+  if (p === "/imgbtn") {
+    if (!post) return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>")}<input type="submit" value="確認画面へ進む"></form>`));
+    const px = "data:image/gif;base64,R0lGODlhAQABAAAAACw=";
+    return send(page("確認", `<h1>内容をご確認下さい。</h1><form method="post" action="/imgbtn/send">${hidden(b)}<input type="image" src="${px}#btn_back.gif" name="back" width="80" height="30" formaction="/imgbtn/back"><input type="image" src="${px}#btn_soushin.gif" width="80" height="30"></form>`));
+  }
+  if (p === "/imgbtn/send" && post) return done("imgbtn");
+  if (p === "/imgbtn/back") { hit("imgbtn_back", b); return send(page("戻った", "<p>戻りました</p>")); }
+
+  // 7) 確認画面の送信が、ただのリンク（<a href="javascript:…">送信する</a>）
+  if (p === "/alink") {
+    if (!post) return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>")}<input type="submit" value="入力内容の確認"></form>`));
+    return send(page("確認", `<h1>入力内容の確認</h1><p>送信内容をご確認の上、「送信する」ボタンをクリックしてください。</p><form method="post" action="/alink/send" name="f">${hidden(b)}</form><p><a href="javascript:history.back()">戻る</a> <a href="javascript:document.f.submit()">送信する</a></p>`));
+  }
+  if (p === "/alink/send" && post) return done("alink");
+
+  // 8) サイト側の拒否（Contact Form 7 の送信失敗）。入力を直しても通らない
+  if (p === "/cf7ng") return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>", b)}<input type="submit" value="送信する">${post ? '<div class="wpcf7-response-output">メッセージの送信に失敗しました。後でまたお試しください。</div>' : ""}</form>`));
+
+  // 9) 古いライブラリ（MooTools）が Array.from を書き換えているサイト。Array.from(new Set(…)) が [Set] になる
+  if (p === "/proto") return post ? done("proto") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>")}<input type="submit" value="送信する"></form>`, `<script>Array.from = function (x) { return x == null ? [] : (typeof x.length === "number" && typeof x !== "string") ? Array.prototype.slice.call(x) : [x]; };</script>`));
+
+  // 10) フリガナに空白があると「カタカナ以外の文字が入力されています」（赤字でも class でもない）
+  if (p === "/kana") {
+    if (post && !/[\s　]/.test(b.kana ?? "")) return done("kana");
+    return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post"><p>フリガナ <input type="text" name="kana" value="${esc(b.kana ?? "")}">${post ? "<br>フリガナ にカタカナ以外の文字が入力されています。" : ""}</p>${fields("<th>電話番号（必須）</th>", b)}<input type="submit" value="送信する"></form>`));
+  }
+
+  // 11) 確認画面に「入力内容の確認」という見出しボタンと「送信」が両方ある（確認を押し続けていた型）
+  if (p === "/both") {
+    if (!post) return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>")}<button type="submit">確認画面へ</button></form>`));
+    return send(page("確認", `<h1>確認</h1><form method="post" action="/both">${hidden(b)}<button type="submit">確認画面へ</button></form><form method="post" action="/both/send">${hidden(b)}<button type="submit">この内容で送信する</button></form>`));
+  }
+  if (p === "/both/send" && post) return done("both");
+
+  if (p === "/search") { hit("search", Object.fromEntries(url.searchParams)); return send(page("検索", "<p>検索結果</p>")); }
+  send("not found", 404);
+});
+await new Promise<void>((r) => server.listen(0, r));
+const port = (server.address() as { port: number }).port;
+
+getDb(); // スクリーンショット置き場などの準備
+// 「電話番号は必須の欄にだけ入れる」設定の送信者（本番で失敗が多かった条件）
+const sender = { id: 1, label: "t", company: "株式会社サンプル商事", industry: "", person: "山田 太郎", person_kana: "ヤマダ タロウ", email: "sales@example.com", reply_email: "", tel: "03-1234-5678", postal: "114-0001", address: "東京都北区1-2-3", url: "https://example.com", from_email: "", smtp_host: "", smtp_port: 0, smtp_user: "", smtp_pass: "", tel_required_only: 1, reply_check: 0, tls_insecure: 0, unsubscribe_url: "", inbox_sort: 0 } as unknown as import("../src/db.js").SenderProfile;
+
+const browser = await launchBrowser();
+const out: Record<string, { status: string; detail: string; log: string[] }> = {};
+let n = 0;
+try {
+  for (const k of ["kome", "imgreq", "minyuryoku", "alert", "plainerr", "imgbtn", "alink", "cf7ng", "proto", "kana", "both"]) {
+    n++;
+    // 会社ごとに別のホスト名にする（同じドメインへの連続送信の扱いに引っかからないように）
+    const r = await submitToCompany(browser, { jobId: 9000 + n, formUrl: `http://t${n}.localhost:${port}/${k}`, siteUrl: "", sender, subject: "ご案内", message: "はじめまして。サービスのご案内です。\nよろしくお願いいたします。" });
+    out[k] = { status: r.status, detail: r.detail, log: r.log };
+    console.log(`- ${k}: ${r.status} | ${r.detail.split("\n")[0]}`);
+    if (process.env.FO_DEBUG) console.log(r.log.join("\n"));
+  }
+} finally {
+  await browser.close();
+  server.close();
+}
+
+const sentOnce = (k: string, why: string) => { assert.equal(out[k].status, "sent", `${k}: ${why} → ${out[k].detail}\n${out[k].log.join("\n")}`); assert.equal(got[k]?.length, 1, `${k}: 送信は1回だけ（${got[k]?.length ?? 0}回）`); };
+sentOnce("kome", "※ を必須の印として読む"); assert.equal(got.kome[0].tel, "03-1234-5678");
+assert.ok(!out.kome.log.some((l) => l.includes("電話は任意")), "kome: 最初から電話番号を入れる");
+sentOnce("imgreq", "画像の「必須」を読む"); assert.equal(got.imgreq[0].tel, "03-1234-5678");
+assert.ok(!out.imgreq.log.some((l) => l.includes("電話は任意")), "imgreq: 最初から電話番号を入れる");
+sentOnce("minyuryoku", "「未入力です。」を拾って電話番号を入れ直す"); assert.equal(got.minyuryoku[0].tel, "03-1234-5678");
+sentOnce("alert", "警告のポップアップを入力エラーとして扱う"); assert.equal(got.alert[0].tel, "03-1234-5678");
+assert.ok(out.alert.log.some((l) => l.includes("サイトの警告: お電話を入力してください")), "alert: 警告の文言を記録に残す");
+sentOnce("plainerr", "素のエラーページから戻って入れ直す"); assert.equal(got.plainerr[0].tel, "03-1234-5678");
+sentOnce("imgbtn", "alt の無い画像の送信ボタンを押す"); assert.equal(got.imgbtn_back, undefined, "imgbtn: 戻るボタンは押さない");
+sentOnce("alink", "リンクの送信ボタンを押す");
+assert.equal(out.cf7ng.status, "failed"); assert.ok(out.cf7ng.detail.startsWith("サイト側で受け付けられませんでした"), `cf7ng: ${out.cf7ng.detail}`);
+sentOnce("proto", "Array.from を書き換えるサイトでも動く");
+sentOnce("kana", "「カタカナ以外の文字」を拾ってフリガナの空白を除く"); assert.equal(got.kana[0].kana, "ヤマダタロウ");
+sentOnce("both", "確認画面では送信を優先して押す");
+assert.equal(got.search, undefined, "検索フォームのボタンは押さない");
+
+console.log("todo: ALL OK");
+process.exit(0);

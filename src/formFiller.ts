@@ -152,10 +152,46 @@ const COLLECT_SCRIPT = `
     }
     return best;
   };
+  // 必須の印を読み取る。文字の「必須」「*」だけでなく、画像の「必須」（alt）、必須を表す class、「電話番号※」のような ※・＊ も拾う。
+  // これを読み落とすと、「電話番号は必須の欄にだけ入れる」設定のときに空のまま送ろうとして弾かれる
+  // （本番の失敗470件のうち236件がこれだった。a-qua-west.co.jp / bellstaff.co.jp / jhn.co.jp など）
+  const markIn = (node, strict) => {
+    if (!node) return false;
+    const t = (node.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 60);
+    if (/任意|optional/i.test(t)) return false;
+    if (/必須|required|[*＊]/i.test(t)) return true;
+    // ※ は注意書き（※半角数字）にも使われるので、見出しの末尾か、見出しセルの先頭に付いているときだけ必須とみなす
+    if (/※$/.test(t) || (strict && /^※\\s*[^\\s※]{1,14}$/.test(t))) return true;
+    if (node.querySelector('img[alt*="必須"], img[src*="hissu"], img[src*="required"], img[src*="must"]')) return true;
+    const marks = node.querySelectorAll('[class*="required"], [class*="Required"], [class*="hissu"], [class*="must"], [class*="need"]');
+    for (let k = 0; k < marks.length; k++) { if (!/^(INPUT|TEXTAREA|SELECT|FORM)$/.test(marks[k].tagName)) return true; }
+    return false;
+  };
+  const reqMark = (el) => {
+    // テーブル型: 同じ行の、入力欄を含まないセル（見出しセル・「必須」だけのセル）
+    const tr = el.closest('tr');
+    if (tr) { const cells = tr.children; for (let k = 0; k < cells.length; k++) { if (!cells[k].contains(el) && !cells[k].querySelector('input,textarea,select') && markIn(cells[k], true)) return true; } }
+    // dl 型: 直前の dt
+    const dd = el.closest('dd'); if (dd) { let p = dd.previousElementSibling; while (p && p.tagName !== 'DT') p = p.previousElementSibling; if (markIn(p, true)) return true; }
+    // label[for] と、包んでいる label
+    if (el.id) { try { if (markIn(document.querySelector('label[for="' + CSS.escape(el.id) + '"]'), true)) return true; } catch (e) {} }
+    if (markIn(el.closest('label'), true)) return true;
+    // 入力欄が2つ以下の、いちばん近い箱（1項目ぶんの枠）
+    let box = el.parentElement; let hops = 0;
+    while (box && hops < 4) {
+      if (box.querySelectorAll('input:not([type=hidden]),textarea,select').length > 2) break;
+      if ((box.innerText || '').trim().length > 0 && markIn(box, false)) return true;
+      box = box.parentElement; hops++;
+    }
+    return false;
+  };
   // 前回の採番を消す（段階式フォームで古い要素と番号が重なるのを防ぐ）
   document.querySelectorAll('[data-fo-idx]').forEach((e) => e.removeAttribute('data-fo-idx'));
-  const forms = Array.from(document.querySelectorAll('form'));
-  const els = Array.from(document.querySelectorAll('input, textarea, select'));
+  // Array.from は使わない: 古い prototype.js を読み込むサイトは Array.from を書き換えていて、要素でないものが返り
+  // 「el.getBoundingClientRect is not a function」で落ちていた（sow-net.com / asensa.co.jp の実例）
+  const toArr = (list) => { const a = []; for (let k = 0; k < list.length; k++) a.push(list[k]); return a; };
+  const forms = toArr(document.querySelectorAll('form'));
+  const els = toArr(document.querySelectorAll('input, textarea, select'));
   const out = [];
   let i = 0;
   for (const el of els) {
@@ -167,8 +203,8 @@ const COLLECT_SCRIPT = `
     el.setAttribute('data-fo-idx', String(i));
     const own = [ownText(el), el.getAttribute('placeholder'), el.getAttribute('name'), el.id, el.getAttribute('autocomplete'), el.getAttribute('title')].filter(Boolean).join(' | ').replace(/\\s+/g, ' ').slice(0, 200);
     const sig = own + ' || ' + labelText(el).replace(/\\s+/g, ' ').slice(0, 200);
-    const required = el.required || el.getAttribute('aria-required') === 'true' || /必須|required|\\*/.test(labelText(el).slice(0, 60)) || /required|必須/i.test(el.className);
-    const options = el.tagName === 'SELECT' ? Array.from(el.options).map(o => ({ value: o.value, text: (o.textContent || '').trim() })) : [];
+    const required = el.required || el.getAttribute('aria-required') === 'true' || /必須|required|\\*/.test(labelText(el).slice(0, 60)) || /required|必須/i.test(String(el.className || '')) || reqMark(el);
+    const options = el.tagName === 'SELECT' ? toArr(el.options).map(o => ({ value: o.value, text: (o.textContent || '').trim() })) : [];
     // ラジオ・チェックボックスの「設問見出し」: fieldsetのlegend → グループ全体を包む箱の直前にある見出し → labelの外側、の順で探す
     let glabel = '';
     if (type === 'radio' || type === 'checkbox') {
@@ -853,30 +889,60 @@ ${list}
 }
 
 // ---- ボタン ----
-const SUBMIT_RE = /(送信|送る|申し?込|送付|submit|send|完了する|確定|この内容で)/i;
-const CONFIRM_RE = /(確認|次へ|進む|confirm|next|preview|入力内容)/i;
-const BACK_RE = /(戻る|修正|back|edit|訂正|キャンセル|cancel|リセット|reset|clear|クリア)/i;
+const SUBMIT_RE = /(送信|送る|申し?込|送付|submit|send|soushin|sousin|完了する|確定|この内容で)/i;
+const CONFIRM_RE = /(確認|次へ|進む|すすむ|confirm|kakunin|next|preview|入力内容)/i;
+const BACK_RE = /(戻る|もどる|修正|back|modoru|return|edit|訂正|キャンセル|cancel|リセット|reset|clear|クリア|やり直)/i;
+// 送信・確認の言葉を含んでいても、押してはいけないボタン。
+// 「入力内容保存／読込」（formzu）を確認ボタンとして押し続けた例、検索ボタン（class名 sb-search-submit）を送信ボタンとして押した例があった
+const NOT_SUBMIT_RE = /(保存|読込|読み込|印刷|print|検索|search|ログイン|login|住所(を)?(自動)?(入力|取得)|郵便番号から|添付|ファイル(を)?選択|upload|アップロード|メルマガ|newsletter|subscribe|翻訳|translate)/i;
 // 「送信内容を確認する」「確認画面へ」のように文末が確認で終わるボタンは、「送信」を含んでも確認ボタン
 // （b-coach.jp の実例: 送信ボタン扱いで押し、確認画面を「フォームが消えた＝送信済み」と誤判定していた）。
 // 「内容を確認して送信」のように文末が送信のものは送信ボタンのまま
 const CONFIRM_END_RE = /(確認(する|します|画面へ|画面に進む|へ進む|へ)?|confirm)[\s>＞»→▶]*$/i;
 // 押したあとに出る確認画面の文言（ボタン名で見分けられなかったときの保険）
-const CONFIRM_PAGE_RE = /(下記の?内容で送信|以下の内容で送信|下記の内容でよろしければ|以下の内容でよろしければ|入力内容(を|の)?(ご)?確認|内容をご確認|[「『]送信(する)?[」』]\s*ボタンを押)/;
+const CONFIRM_PAGE_RE = /(下記の?内容で送信|以下の内容で送信|下記の内容でよろしければ|以下の内容でよろしければ|入力内容(を|の)?(ご)?確認|内容を(ご)?確認(の(上|うえ)|下さい|ください)|[「『]送信(する)?[」』]\s*(ボタン)?を(押|クリック))/;
 // ページ内ポップアップの確認文言（入力欄は後ろに残ったままなので「フォームが消えた」判定とは別に見る）
 const CONFIRM_MODAL_RE = /(送信|この内容で|以下の内容で|下記の内容で|お問い?合わ?せ).{0,25}(よろしいですか|よろしいでしょうか)/;
 
 const BUTTONS_SCRIPT = `
 (() => {
-  document.querySelectorAll('[data-fo-btn]').forEach((e) => e.removeAttribute('data-fo-btn'));
-  const els = Array.from(new Set(Array.from(document.querySelectorAll('button, input[type=submit], input[type=button], input[type=image], a[role=button], [role=button], [onclick], [class*="submit"], [id*="submit"], [class*="btn"]'))));
+  // Array.from / Set は使わない（サイトの古いライブラリが書き換えていることがある）
+  const old = document.querySelectorAll('[data-fo-btn]');
+  for (let k = 0; k < old.length; k++) old[k].removeAttribute('data-fo-btn');
+  const list = document.querySelectorAll('button, input[type=submit], input[type=button], input[type=image], a, [role=button], [onclick], [class*="submit"], [id*="submit"], [class*="btn"]');
   const out = [];
   let i = 0;
-  for (const el of els) {
+  for (let k = 0; k < list.length; k++) {
+    const el = list[k];
+    if (typeof el.getBoundingClientRect !== 'function') continue;
     const r = el.getBoundingClientRect(); const st = getComputedStyle(el);
     if (r.width === 0 || r.height === 0 || st.display === 'none' || st.visibility === 'hidden') continue;
+    const tag = el.tagName;
     // div等をボタン扱いするのは、テキストが短い（=ボタンらしい）ものだけ。大きなコンテナを誤クリックしない
-    if (!/^(BUTTON|INPUT|A)$/.test(el.tagName) && ((el.innerText || '').trim().length > 40 || el.querySelector('input,textarea,select'))) continue;
-    const text = (el.innerText || el.value || el.getAttribute('alt') || el.getAttribute('aria-label') || el.getAttribute('title') || el.className || '').trim().replace(/\\s+/g,' ').slice(0, 60);
+    if (!/^(BUTTON|INPUT|A)$/.test(tag) && ((el.innerText || '').trim().length > 40 || el.querySelector('input,textarea,select'))) continue;
+    // 中の画像の alt（画像だけのボタン。<a><img alt="送信する"></a> など）
+    let alt = '';
+    const imgs = el.querySelectorAll ? el.querySelectorAll('img[alt]') : [];
+    for (let m = 0; m < imgs.length && !alt; m++) alt = (imgs[m].getAttribute('alt') || '').trim();
+    // 画像ボタンで alt が無いときは、画像のファイル名や name を手がかりにする（btn_send.gif / kakunin.png / back.gif）
+    let hint = '';
+    if (tag === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'image') hint = ((el.getAttribute('src') || '').split('/').pop() || '') + ' ' + (el.getAttribute('name') || '') + ' ' + (el.id || '');
+    const cls = typeof el.className === 'string' ? el.className : ''; // SVG は className が文字列でない（.trim で落ちていた: tokyu-bs.co.jp の実例）
+    const text = String(el.innerText || el.value || el.getAttribute('alt') || alt || el.getAttribute('aria-label') || el.getAttribute('title') || hint || cls || '').trim().replace(/\\s+/g,' ').slice(0, 60);
+    // ただのリンク（class も onclick も無い <a>）は、短い文言で、ページを移らないもの（# / javascript: / フォームの中）だけをボタン候補にする
+    if (tag === 'A' && !el.getAttribute('role') && !el.getAttribute('onclick') && !/btn|button|submit/i.test(cls + ' ' + (el.id || ''))) {
+      const href = (el.getAttribute('href') || '').trim();
+      const stays = href === '' || href.charAt(0) === '#' || /^javascript:/i.test(href) || !!el.closest('form');
+      if (!stays || !text || text.length > 20) continue;
+    }
+    // 検索フォームのボタンか（サイト内検索を「送信ボタン」として押さない）
+    const form = el.closest('form');
+    let search = /search|検索/i.test(cls + ' ' + (el.id || '') + ' ' + (el.getAttribute('name') || ''));
+    if (form && !search) {
+      search = form.getAttribute('role') === 'search' || /search/i.test((form.getAttribute('action') || '') + ' ' + (typeof form.className === 'string' ? form.className : '') + ' ' + (form.id || ''))
+        || !!form.querySelector('input[type=search], input[name="s"], input[name="q"]');
+    }
+    if (!search && el.closest('[role=search]')) search = true;
     el.setAttribute('data-fo-btn', String(i));
     // ページ内ポップアップ（確認ダイアログ等）の中のボタンか。明示的なダイアログ要素か、画面に固定表示された重なり（position:fixed で z-index が高い）の中
     let inDialog = !!el.closest('dialog[open],[role=dialog],[role=alertdialog],[aria-modal=true],[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],[class*="popup"],[class*="lightbox"]');
@@ -884,13 +950,13 @@ const BUTTONS_SCRIPT = `
       const cs = getComputedStyle(a);
       if (cs.position === 'fixed' && Number(cs.zIndex) >= 10) inDialog = true;
     }
-    out.push({ idx: i, text, type: (el.getAttribute('type') || el.tagName).toLowerCase(), inForm: !!el.closest('form'), disabled: !!el.disabled, inDialog });
+    out.push({ idx: i, text, type: (el.getAttribute('type') || tag).toLowerCase(), inForm: !!form, disabled: !!el.disabled, inDialog, search });
     i++;
   }
   return out;
 })()`;
 
-type Btn = { idx: number; text: string; type: string; inForm: boolean; disabled: boolean; inDialog: boolean };
+type Btn = { idx: number; text: string; type: string; inForm: boolean; disabled: boolean; inDialog: boolean; search: boolean };
 
 /** 送信系ボタンはあるのに全部 disabled か（React系フォームが入力を認識していないサイン） */
 export async function allSubmitButtonsDisabled(target: Page | Frame): Promise<boolean> {
@@ -911,25 +977,45 @@ export async function allSubmitButtonsDisabled(target: Page | Frame): Promise<bo
   ).catch(() => false);
 }
 
-export async function clickNextButton(target: Page | Frame, page: Page, log: string[]): Promise<"confirm" | "submit" | "none"> {
+/** 確認または送信のボタンを押す。
+ *  preferSubmit: すでに確認画面へ進んだあと。確認と送信の両方があれば送信を選ぶ（確認ボタンを押し続けて抜けられなくなるのを防ぐ） */
+export async function clickNextButton(target: Page | Frame, page: Page, log: string[], opts: { preferSubmit?: boolean } = {}): Promise<"confirm" | "submit" | "none"> {
   const btns = (await target.evaluate(BUTTONS_SCRIPT)) as Btn[];
-  let usable = btns.filter((b) => !BACK_RE.test(b.text) && !b.disabled);
+  let usable = btns.filter((b) => !BACK_RE.test(b.text) && !b.disabled && !b.search && !NOT_SUBMIT_RE.test(b.text));
   // 確認ポップアップが開いていれば、その中の送信・確認ボタンを優先する（di-v.co.jp の実例:
   // 「送信する」→ ページ内に「この内容で送信します。よろしいですか？」が出て、その中の「送信」を押す必要があった。
   // 後ろに残っている元のボタンを押しても先に進まない）
   const inDialog = usable.filter((b) => b.inDialog && (SUBMIT_RE.test(b.text) || CONFIRM_RE.test(b.text)));
   if (inDialog.length) usable = inDialog;
   const confirm = usable.find((b) => CONFIRM_RE.test(b.text) && (!SUBMIT_RE.test(b.text) || CONFIRM_END_RE.test(b.text.trim())));
-  const submit = usable.find((b) => SUBMIT_RE.test(b.text)) ?? usable.find((b) => b.type === "submit" && b.inForm);
-  const target_ = confirm ?? submit;
+  // 画像ボタン（input type=image）も、フォームの中にあれば送信ボタンの候補にする（alt が無い画像ボタンを見つけられなかった）
+  const submitNamed = usable.find((b) => SUBMIT_RE.test(b.text) && !(CONFIRM_RE.test(b.text) && CONFIRM_END_RE.test(b.text.trim())))
+    ?? usable.find((b) => SUBMIT_RE.test(b.text) && b !== confirm);
+  // 名前では分からないが、フォームの中にある送信用のボタン。画像ボタン（input type=image）も候補にする
+  // （alt の無い画像ボタンを見つけられなかった）。[戻る][送信] の並びが多いので、最後のものを選ぶ
+  const submitAny = usable.filter((b) => (b.type === "submit" || b.type === "image") && b.inForm && b !== confirm).pop();
+  // 確認画面へ進んだあとは、名前で送信と分かるボタンを先に選ぶ。名前で分からないボタンは最後の手段
+  // （確認ボタンを「送信」として押すと、確認画面を「フォームが消えた＝送信済み」と誤判定するため）
+  const target_ = opts.preferSubmit ? (submitNamed ?? confirm ?? submitAny) : (confirm ?? submitNamed ?? submitAny);
   if (!target_) {
-    // ボタンが見つからないとき: 入力済みフォームを JS で直接 submit する（SPA やアイコンだけのボタンへの最後の手段）
-    const ok = await target.evaluate(() => {
-      const f = document.querySelector("[data-fo-idx]")?.closest("form");
+    // ボタンが見つからないとき: 入力済みフォームを JS で直接 submit する（SPA やアイコンだけのボタンへの最後の手段）。
+    // 確認画面には入力欄が無い（値は hidden で持っている）ので、そのときは hidden をいちばん多く持つフォームを送る
+    const ok = await target.evaluate((afterConfirm) => {
+      let f = document.querySelector("[data-fo-idx]")?.closest("form") ?? null;
+      if (!f && afterConfirm) {
+        let best = 0;
+        const forms = document.querySelectorAll("form");
+        for (let k = 0; k < forms.length; k++) {
+          const g = forms[k];
+          if (g.getAttribute("role") === "search" || g.querySelector('input[type=search], input[name="s"], input[name="q"]')) continue;
+          const n = g.querySelectorAll("input[type=hidden]").length;
+          if (n >= 2 && n > best) { best = n; f = g; }
+        }
+      }
       if (!f) return false;
       if (f.requestSubmit) f.requestSubmit(); else f.submit();
       return true;
-    }).catch(() => false);
+    }, !!opts.preferSubmit).catch(() => false);
     if (ok) {
       log.push("送信ボタン不検出 → form.requestSubmit() で送信");
       await page.waitForTimeout(2500);
@@ -938,7 +1024,7 @@ export async function clickNextButton(target: Page | Frame, page: Page, log: str
     }
     return "none";
   }
-  const kind = confirm ? "confirm" : "submit";
+  const kind = target_ === confirm ? "confirm" : "submit";
   log.push(`click[${kind}] "${target_.text}"`);
   const before = page.url();
   try {
@@ -962,7 +1048,15 @@ export async function clickNextButton(target: Page | Frame, page: Page, log: str
 // 「〜いただき／頂きありがとう」「担当者より追ってご連絡」の形を知らず判定不能→失敗扱いになっていたため追加
 const SUCCESS_RE = /((お問い?合わ?せ|ご連絡|ご送信|送信|ご応募|ご依頼|ご相談|ご登録|お申し?込み)(を)?(いただき|頂き)(まして)?[、,]?(誠に|大変|本当に)?(ありがとう|有難う|有り難う)|(担当(者)?|スタッフ|係)(より|から)[、,]?(追って|改めて|折り返し|後ほど|のちほど)?[、,]?(ご?連絡|ご?返信|ご?回答)(いた|致|させていただ|を差し上げ)|追って(ご?連絡|ご?返信)(いた|致|させていただ)|送信(が|は)?(完了|されました|いたしました|しました|致しました)|送信ありがとう|(ご|お)?回答(を)?(いただき|頂き)?(まして)?[、,]?(誠に|大変)?(ありがとう|有難う|有り難う)|お問い?合わ?せ(を)?(ありがとう|受け付け|承り|受付)|ありがとうございま(す|した)。?(お問い?合わ?せ|送信|受付)|受け付けました|受付(が)?完了|承りました|thank you for (contacting|your (message|inquiry|submission))|(message|inquiry|form)( has been| was)? (sent|submitted|received)|submitted successfully|successfully sent|自動返信(の)?メール(を)?(お送り|送付|送信|送らせて)|確認(の)?メール(を)?(お送り|送付|送信)|正常に(送信|受け付け|受付|完了)|(送信|受付|受け付け|お申し?込み|申込)(が|を)?(完了|終了)(いたし|致)?(ました)?|ご入力(いただき)?(誠に)?ありがとう|受付番号|お問い?合わ?せ番号)/i;
 const SUCCESS_URL_RE = /(thanks|thank-?you|complete|completed|done|sent|success|finish|kanryo|kanryou|touroku_kanryo)/i;
-const ERROR_RE = /(入力してください|必須項目|未入力|正しく入力|形式が|不正|エラーが|error(s)? (occurred|found)|is required|invalid|入力内容に誤り|確認してください)/i;
+// 「下さい」表記、「未入力です」「入力されていません」「は必須です」「カタカナ以外の文字が…」なども拾う。
+// これらを知らず、エラーが出ているのに「判定不能」「確認画面を抜けられない」になっていた（hightouch-haken.com / fs224.formasp.jp / tac21 の実例）
+const ERROR_RE = /((入力|記入|選択|指定|チェック)して(ください|下さい)|ご(入力|記入|選択)(ください|下さい)|必須項目|未入力|未記入|未選択|(入力|選択|記入)されていません|(入力|選択)が必須|は必須です|必須入力|正しく(入力|ありません)|形式が|不正|以外の文字|エラーが|エラーです|入力に(エラー|誤り|不備)|入力漏れ|error(s)? (occurred|found)|is required|invalid|入力内容に誤り|確認して(ください|下さい))/i;
+// サイトの側で受け付けを断られたときの文言。入力を直しても通らないので、入力エラーとは分けて扱う。
+//   ・Contact Form 7 の「メッセージの送信に失敗しました」（スパム判定・メールサーバーの不調）
+//   ・「スパム送信の可能性があります」、403 Forbidden、PHP の Fatal error、前の画面の内容が引き継がれない（Please fill out the form on the previous page）
+const REJECT_RE = /(メッセージの送信に失敗しました|送信に失敗しました|送信できませんでした|スパム(送信|メール|と判定|の可能性)|spam|403\s*Forbidden|Access\s*Denied|アクセスが拒否|不正な(アクセス|送信|リクエスト|操作)|Fatal error|Internal Server Error|Please fill out the form on the previous page|セッション(が|の)?(切れ|タイムアウト|有効期限|無効)|時間をおいて(から)?(再度|もう一度)|しばらく(たって|経って)から)/i;
+/** 文字列の中に、ある言葉が何回出てくるか（送信の前後で増えたかを見るのに使う） */
+const countOf = (hay: string, needle: string) => (needle ? hay.split(needle).length - 1 : 0);
 
 export type Outcome = { status: "sent" | "failed" | "unsure"; detail: string };
 
@@ -1001,6 +1095,16 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
   const hadBefore = beforeCompact && (SUCCESS_RE.test(beforeCompact) || SUCCESS_RE.test(beforeText));
   if ((SUCCESS_RE.test(compact) || SUCCESS_RE.test(text)) && !hadBefore) return { status: "sent", detail: "完了文言を検知" };
   if (SUCCESS_URL_RE.test(new URL(url).pathname)) return { status: "sent", detail: `完了URLへ遷移 (${url})` };
+  // 送信前には無かった文言かどうか。以前は「送信前の本文に同じ言葉が含まれていれば無視」としていたが、
+  // 「入力してください」のような短い言葉は注意書きとして最初から載っていることが多く、新しく出たエラーまで捨てていた
+  // （jhn.co.jp の実例: 電話番号の下に赤字で「入力してください。」が出ているのに判定不能）。回数が増えたかで見る
+  const isFresh = (phrase: string) => { const k = phrase.replace(/\s+/g, ""); return !beforeCompact || countOf(compact, k) > countOf(beforeCompact, k); };
+  // サイトの側で受け付けを断られた（入力を直しても通らない）
+  const rj = REJECT_RE.exec(text.slice(0, 6000));
+  if (rj && isFresh(rj[0])) {
+    const line = (text.split("\n").find((l) => l.includes(rj[0])) ?? rj[0]).replace(/\s+/g, " ").trim().slice(0, 70);
+    return { status: "failed", detail: `サイト側で受け付けられませんでした: ${line}` };
+  }
   // 実際にフォーム上に赤字で出ているバリデーションメッセージだけを拾う。
   // ページ本文の無関係なテキスト（「License is GPL」など）を拾わないよう、
   //   ・エラー用のマークアップ（error/invalid クラス、role=alert、aria-invalid、wpcf7 のタグ）
@@ -1020,7 +1124,7 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
     document.querySelectorAll("[class*='error'],[class*='invalid'],[class*='err'],[id*='error'],[role='alert'],[aria-live],.wpcf7-not-valid-tip,.wpcf7-response-output,.form-error,.field-error,.help-block,.text-danger,.attention,.caution").forEach((e) => cand.add(e));
     document.querySelectorAll("[aria-invalid='true']").forEach((f) => { const id = f.getAttribute("aria-describedby"); if (id) id.split(/\s+/).forEach((x) => { const e = document.getElementById(x); if (e) cand.add(e); }); });
     // 赤字で表示されている短いテキスト要素も候補にする
-    document.querySelectorAll("span,p,div,dd,li,strong,em,label").forEach((e) => { const t = (e as HTMLElement).innerText?.trim() || ""; if (t && t.length <= 60 && rx.test(t) && isRed(e)) cand.add(e); });
+    document.querySelectorAll("span,p,div,dd,dt,li,strong,em,label,font,b,small,td,th").forEach((e) => { const t = (e as HTMLElement).innerText?.trim() || ""; if (t && t.length <= 60 && rx.test(t) && isRed(e)) cand.add(e); });
     for (const el of cand) {
       const r = el.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) continue;
@@ -1032,20 +1136,21 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
     return out.slice(0, 6);
   }, ERROR_RE.source).catch(() => [] as string[]);
   // 送信前から出ていた文言（フォームの注意書き）は除く
-  const freshErrors = visibleErrors.filter((e) => !(beforeCompact && beforeCompact.includes(e.replace(/\s+/g, ""))));
+  const freshErrors = visibleErrors.filter(isFresh);
   if (freshErrors.length) {
     return { status: "failed", detail: `入力エラー: ${freshErrors.join(" / ")}` };
   }
   // 赤字要素として拾えなかった場合の保険: 「◯◯を入力してください」等の強いバリデーション文言だけを、
   // 送信前に無かったものに限って本文から拾う（ページ説明文や無関係な文章は拾わない）
-  const STRONG = /([^。\n]{0,20}(を|が)?(入力|記入|選択|指定)(して)?ください|[^。\n]{0,16}は必須です|[^。\n]{0,16}が未入力|[^。\n]{0,16}を正しく|[^。\n]{0,16}の形式が正しくありません)/;
-  const sm = STRONG.exec(text);
-  if (sm) {
+  // 色も class も付かない、サーバーが返す素のエラーページ（「【電話番号】は必須項目です。」「【電話番号】が入力されていません。」）も拾う
+  const STRONG = /([^。\n]{0,20}(を|が)?(入力|記入|選択|指定)(して)?(ください|下さい)|[^。\n]{0,16}は必須(項目)?です|[^。\n]{0,16}(が|は)?未入力|[^。\n]{0,16}(が|は)(入力|選択|記入)されていません|[^。\n]{0,16}を正しく|[^。\n]{0,16}の形式が正しくありません|[^。\n]{0,20}以外の文字が入力されています)/g;
+  for (let sm = STRONG.exec(text); sm; sm = STRONG.exec(text)) {
     const phrase = sm[0].replace(/\s+/g, " ").trim().slice(0, 60);
-    if (!(beforeCompact && beforeCompact.includes(phrase.replace(/\s+/g, "")))) {
-      return { status: "failed", detail: `入力エラー: ${phrase}` };
-    }
+    if (isFresh(phrase)) return { status: "failed", detail: `入力エラー: ${phrase}` };
   }
+  // どの欄かは書かれていないが、エラーだとは言っている
+  const generic = /入力(内容)?に(エラー|誤り|不備)があります/.exec(text);
+  if (generic && isFresh(generic[0])) return { status: "failed", detail: `入力エラー: ${generic[0]}` };
   if (afterSubmit && CONFIRM_MODAL_RE.test(compact) && !CONFIRM_MODAL_RE.test(beforeCompact)) {
     return { status: "unsure", detail: "確認画面（ポップアップ）で止まっている" };
   }

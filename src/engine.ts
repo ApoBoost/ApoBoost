@@ -135,7 +135,10 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
   const log: string[] = [];
   const ctx = await newContext(browser);
   const page = await ctx.newPage();
-  page.on("dialog", (d) => d.accept().catch(() => {}));
+  // サイトが出す警告のポップアップ（alert）。これまでは黙って閉じていたので、
+  // 「お電話を入力してください」と言われていても気づけず、確認ボタンを押し続けていた。文言を控えておき、入力エラーとして扱う
+  const dialogs: string[] = [];
+  page.on("dialog", (d) => { dialogs.push(d.message().replace(/\s+/g, " ").trim().slice(0, 120)); d.accept().catch(() => {}); });
   const shot = path.join(SCREENSHOT_DIR, `job-${input.jobId}.png`);
   const done = async (status: JobStatus, detail: string, pendingQuestions?: PendingQuestion[]): Promise<SubmitResult> => {
     let screenshot = "";
@@ -252,10 +255,37 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
     const fieldCountBefore = fields.length;
     const urlBefore = page.url(); // 送信ボタンを押す前のURL（ページが切り替わったかの判定に使う）
     let refilled = false; // 入力エラー後の埋め直しは1回だけ
+    let advanced = false; // 確認ボタンを押して、確認画面へ進めたか（進めたあとは「送信」を優先して押す）
+    let stuck = 0; // 確認ボタンを押しても入力画面のまま、が続いた回数
     // 5回まで: 確認→送信→（エラーなら戻って入れ直し）→確認→送信、の流れに足りる回数（#121）
     for (let round = 0; round < 5; round++) {
-      const kind = await clickNextButton(target, page, log);
-      if (kind === "none") return done("failed", "送信ボタンが見つからない");
+      dialogs.length = 0;
+      const urlAtRound = page.url();
+      const kind = await clickNextButton(target, page, log, { preferSubmit: advanced });
+      // ボタンを押したときにサイトが出した警告（alert）のうち、入力の不備を言っているもの
+      const warned = dialogs.find((m) => /(入力|記入|選択|必須|未入力|正しく|エラー|チェック|同意|ください|下さい)/.test(m) && !/よろしい(です|でしょう)か/.test(m));
+      if (warned) log.push(`サイトの警告: ${warned}`);
+      if (kind === "none") {
+        // 確認ボタンを押した先が、エラーや拒否のページだった（入力欄も送信ボタンも無い）場合は、その内容を理由にする
+        const why = await judgeOutcome(page, fieldCountBefore, false, textBefore, urlBefore);
+        log.push(`judge[${round}]: ${why.status} ${why.detail}（ボタンなし）`);
+        // 入力エラーのページなら、前の画面に戻って（電話番号なども入れて）1回だけやり直す
+        if (why.status === "failed" && why.detail.startsWith("入力エラー") && !refilled && round < 3) {
+          refilled = true; advanced = false;
+          const went = await clickBackButton(target, page);
+          log.push(`前の画面に戻って入れ直し: ${went ? "戻りました" : "戻れませんでした"}`);
+          const again = await collectFields(target).catch(() => [] as FieldInfo[]);
+          if (again.length) {
+            const r3 = await fillFields(target, again, { sender: input.sender, subject: input.subject, message: input.message }, { normalize: true });
+            log.push(`エラー後の自動修正・埋め直し: ${r3.filled.join(",") || "なし"}`);
+            await fillRequiredLeftovers(target, log);
+            await fillAriaChoices(target, log, { requiredOnly: false });
+            if (r3.filled.length) continue;
+          }
+        }
+        if (why.status === "failed") return done("failed", why.detail);
+        return done("failed", "送信ボタンが見つからない");
+      }
       // 確認画面で CAPTCHA が出る場合
       const cap2 = await page.evaluate(CAPTCHA_CHECK_SCRIPT).catch(() => null);
       if (cap2) {
@@ -263,7 +293,8 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
         if (/bframe/.test(String(cap2))) return done("skip_captcha", `送信時に画像認証（reCAPTCHA）が表示され未送信 (${cap2})`);
         return done("skip_captcha", `確認画面にCAPTCHA (${cap2})`);
       }
-      const outcome = await judgeOutcome(page, fieldCountBefore, kind === "submit", textBefore, urlBefore);
+      let outcome = await judgeOutcome(page, fieldCountBefore, kind === "submit", textBefore, urlBefore);
+      if (outcome.status === "unsure" && warned) outcome = { status: "failed", detail: `入力エラー: ${warned}` };
       log.push(`judge[${round}]: ${outcome.status} ${outcome.detail}`);
       if (outcome.status === "sent") return done("sent", outcome.detail);
       if (outcome.status === "unsure" && outcome.detail.startsWith("確認画面")) {
@@ -271,13 +302,35 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
         log.push("確認画面を検知 → 送信ボタンを押す");
         continue;
       }
+      // サイトの側で断られた（スパム判定・403・サイトの不具合など）。入力を直しても通らないので、そのまま理由を返す
+      if (outcome.status === "failed" && outcome.detail.startsWith("サイト側")) {
+        return done("failed", `${outcome.detail}\nフォームからは自動で送れない会社です。メールアドレスが分かればメールで、無ければ手動での送信か見送りになります`);
+      }
+      // 確認・送信ボタンを押しても入力画面のまま（URLも入力欄もそのまま）で、エラーの文言も拾えなかった。
+      // 多くは、空のままの必須欄（任意と判断して入れなかった電話番号など）をブラウザやサイトが止めている。
+      // 入力エラーと同じ扱いにして、電話番号なども入れて1回だけやり直す
+      if (outcome.status === "unsure" && page.url() === urlAtRound && !outcome.detail.startsWith("確認画面")) {
+        const here = await collectFields(target).catch(() => [] as FieldInfo[]);
+        const stillForm = here.length >= fieldCountBefore && here.some((f) => classify(f) === "message");
+        const bad = stillForm ? await describeInvalidFields(target) : [];
+        if (stillForm && (kind === "confirm" || bad.length)) {
+          stuck++;
+          if (!refilled) outcome = { status: "failed", detail: `入力エラー: ボタンを押しても先へ進めません${bad.length ? `（${bad.join(" / ")}）` : ""}` };
+          else if (stuck >= 2 || bad.length) return done("failed", `入力エラー: ${kind === "confirm" ? "確認" : "送信"}ボタンを押しても先へ進めません${bad.length ? `\n引っかかっている欄: ${bad.join(" / ")}` : ""}\nスクリーンショットで未入力・エラー表示になっている欄を確認してください`);
+          if (outcome.status === "failed") log.push(`judge[${round}]→ ${outcome.detail}`);
+        }
+      }
       if (outcome.status === "failed") {
         // バリデーションエラーなら、カナのスペース除去などの修正ルールを通して集め直し、埋め直して1回だけ再送する
         if (!refilled && round < 3 && /入力エラー/.test(outcome.detail)) {
           refilled = true;
           // 「前画面に戻って正しく入力してください」と言われたら、戻ってから入れ直す（#121）
-          if (/(前(の)?(画面|ページ)|入力画面)(に|へ)?戻/.test(outcome.detail)) {
+          // 入力欄が1つも無いエラーページ（サーバーが返す「【電話番号】は必須項目です」だけのページ）のときも戻る
+          // （ヘッダーの検索欄などは残っているので、「本文欄が無い」で見分ける）
+          const noFields = !(await collectFields(target).catch(() => [] as FieldInfo[])).some((f) => classify(f) === "message");
+          if (noFields || /(前(の)?(画面|ページ)|入力画面)(に|へ)?戻/.test(outcome.detail)) {
             const went = await clickBackButton(target, page);
+            advanced = false;
             log.push(`前の画面に戻って入れ直し: ${went ? "戻りました" : "戻れませんでした"}`);
           }
           // フリガナの文字種を指定された場合は、それに合わせる（#120）
@@ -305,6 +358,8 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
       if (kind === "confirm") {
         // 確認画面に未入力の必須項目（同意チェック等）が残っていれば埋める
         const more = await collectFields(target);
+        // 確認画面へ進めた（URLが変わった、または入力欄が減った）。次からは「送信」を優先して押す
+        if (page.url() !== urlAtRound || more.length < fieldCountBefore) advanced = true;
         if (more.length) {
           const r2 = await fillFields(target, more, { sender: input.sender, subject: input.subject, message: input.message });
           if (r2.filled.length) log.push(`confirm-page filled: ${r2.filled.join(",")}`);

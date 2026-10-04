@@ -18,13 +18,15 @@ export type TodoGroup = { key: string; label: string; n: number; advice: string;
 export type TodoKind = "" | "captcha" | "check" | "failed" | "noform" | "dismissed";
 
 /** その会社が「何で止まっているか」。出すボタンを決めるのに使う（#116） */
-export function todoReason(j: Pick<Job, "status" | "result_text" | "channel">): "captcha" | "check" | "mailconfig" | "input" | "unreachable" | "noform" | "network" | "unsure" | "other" {
+export function todoReason(j: Pick<Job, "status" | "result_text" | "channel">): "captcha" | "check" | "mailconfig" | "input" | "blocked" | "unreachable" | "noform" | "network" | "unsure" | "other" {
   const t = j.result_text || "";
   if (j.status === "skip_captcha") return "captcha";
   if (j.status === "skip_no_form") return /アクセスできない|接続を拒否|見つかりません（ドメイン|応答がありません/.test(t) ? "unreachable" : "noform";
   if (/^要確認/.test(t)) return "check";
   if (/メール送信エラー|ログインを拒否|2段階認証|アプリパスワード|送信用メール/.test(t)) return "mailconfig";
   if (/送信後の判定不能/.test(t)) return "unsure";
+  // サイトの側で断られた（スパム判定・403 など）。入力を直しても通らないので、入力エラーとは別にする
+  if (/^サイト側で受け付けられません/.test(t)) return "blocked";
   if (/入力エラー|必須|送信ボタンが有効になりません|本文欄/.test(t)) return "input";
   if (/時間切れ|タイムアウト|timeout|net::|通信|接続/i.test(t)) return "network";
   return "other";
@@ -46,6 +48,7 @@ export function todoActions(j: TodoRow, back: string): string {
     case "check": return `<a class="btn small" href="/jobs/${j.id}#answer">質問に答える</a> ${dismiss}`;
     case "mailconfig": return `<a class="btn small" href="/senders">送信者の設定を直す</a> ${requeue}`;
     case "input": return `${open} ${requeue} ${toEmail} ${dismiss}`;
+    case "blocked": return `${toEmail} ${open} ${sent} ${dismiss}`;
     case "unsure": return `${sent} ${requeue} ${dismiss}`;
     case "unreachable": return `${fix} ${toEmail} ${dismiss}`;
     case "noform": return `${fix} ${toEmail} ${requeue} ${dismiss}`;
@@ -55,7 +58,7 @@ export function todoActions(j: TodoRow, back: string): string {
   }
 }
 
-export const REASON_LABEL: Record<string, string> = { captcha: "画像認証", check: "質問への回答待ち", mailconfig: "メールの設定", input: "入力エラー", unreachable: "サイトを開けない", noform: "フォームが無い", network: "通信エラー", unsure: "届いたか不明", other: "その他" };
+export const REASON_LABEL: Record<string, string> = { captcha: "画像認証", check: "質問への回答待ち", mailconfig: "メールの設定", input: "入力エラー", blocked: "サイト側の拒否", unreachable: "サイトを開けない", noform: "フォームが無い", network: "通信エラー", unsure: "届いたか不明", other: "その他" };
 
 export function todoView(rows: TodoRow[], kind: TodoKind, counts: Record<string, number>, opts: { today: TodoRow[]; groups: TodoGroup[]; hideDays: number; page: number; pageSize: number; total: number }): string {
   const KINDS: [TodoKind, string][] = [["", "すべて"], ["failed", "失敗"], ["check", "回答待ち"], ["captcha", "画像認証"], ["noform", "フォーム無し"], ["dismissed", "見送り"]];

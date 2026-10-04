@@ -568,6 +568,10 @@ export function todoWhere(kind: string): string {
 export const TODO_GROUPS: { key: string; label: string; where: string; advice: string; action: "requeue" | "dismiss" | "to_email"; actionLabel: string; link?: string; linkLabel?: string }[] = [
   { key: "mailconfig", label: "メールの設定が原因で送れなかった", where: "j.status='failed' AND (j.result_text LIKE 'メール送信エラー:%2段階認証%' OR j.result_text LIKE 'メール送信エラー:%ログインを拒否%' OR j.result_text LIKE 'メール送信エラー:%アプリパスワード%')", advice: "送信者のアプリパスワードを直してから、まとめて送り直します。1社ずつ対応する必要はありません。", action: "requeue", actionLabel: "まとめて送り直す", link: "/senders", linkLabel: "送信者の設定を直す" },
   { key: "network", label: "通信が切れて送れなかった", where: "j.status='failed' AND (j.result_text LIKE '%EPIPE%' OR j.result_text LIKE '%ECONN%' OR j.result_text LIKE '%時間切れ%' OR j.result_text LIKE '%timeout%' OR j.result_text LIKE '%通信が途中で切れ%')", advice: "回線が不安定だったときの失敗です。そのまま送り直せます。", action: "requeue", actionLabel: "まとめて送り直す" },
+  // 送信ボタンを押す前に止まっていたもの（確認画面を抜けられない・入力エラーなど）。まだ送っていないので、まとめて送り直してよい。
+  // 「送信後の判定不能」は届いている可能性があるので、ここには入れない（二重送信を防ぐ）
+  { key: "notsent", label: "入力の不備などで、送る前に止まった", where: "j.status='failed' AND j.channel='form' AND (j.result_text LIKE '確認画面を抜けられない%' OR j.result_text LIKE '送信ボタンが見つからない%' OR j.result_text LIKE '入力エラー%' OR j.result_text LIKE '例外: page.evaluate%')", advice: "電話番号が必須なのに空だった、エラーの表示を読み取れなかった、などで止まった会社です。まだ送信していないので、そのまま送り直せます（必須の欄の読み取りを強化しました）。", action: "requeue", actionLabel: "まとめて送り直す" },
+  { key: "blocked_email", label: "サイト側に断られたが、メールアドレスは分かっている", where: "j.status='failed' AND j.result_text LIKE 'サイト側で受け付けられませんでした%' AND j.email<>''", advice: "スパム判定などでフォームからは送れない会社です。メールで送れます。", action: "to_email", actionLabel: "まとめてメールで送る" },
   { key: "noform_email", label: "フォームは無いが、メールアドレスは分かっている", where: "j.status='skip_no_form' AND j.email<>''", advice: "フォームをあきらめて、メールで送れます。", action: "to_email", actionLabel: "まとめてメールで送る" },
   { key: "unreachable", label: "サイトを開けなかった（メールアドレスも無い）", where: "j.status='skip_no_form' AND j.email='' AND (j.result_text LIKE '%アクセスできない%' OR j.result_text LIKE '%見つかりません%')", advice: "サイトが閉鎖・移転している可能性が高い会社です。送る手段が無いので、見送るのが現実的です。", action: "dismiss", actionLabel: "まとめて見送る" },
 ];
