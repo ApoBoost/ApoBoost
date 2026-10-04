@@ -62,7 +62,13 @@ export function classify(f: FieldInfo): Category {
     return "message";
   }
   if (f.type === "email") return /(確認|confirm|re-?enter)/i.test(f.sig) ? "email_confirm" : "email";
-  if (f.type === "tel") return "tel";
+  // type=tel は「数字のキーボードを出すため」に郵便番号やFAXにも使われる（pica-corp.jp / klgc.co.jp の実例: 郵便番号欄に電話番号が入っていた）
+  if (f.type === "tel") {
+    const own0 = f.sig.split(" || ")[0];
+    if (/(fax|ファックス|ファクス)/i.test(own0)) return "ignore";
+    if (/(郵便|〒|zip|postal|postcode)/i.test(own0) && !/(電話|tel\b|phone)/i.test(own0)) return "postal";
+    return "tel";
+  }
   if (f.type === "url") return "url";
   if (["file", "hidden", "submit", "button", "reset", "image", "password", "search", "color", "range"].includes(f.type)) return "ignore";
   const [own, ctx = ""] = f.sig.split(" || ");

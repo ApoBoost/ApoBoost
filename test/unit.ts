@@ -16,7 +16,7 @@ const { phrasesFor, learnFromCorrection, classifyReply, clearReplyRulesCache } =
 const { S, setting, settingOn, saveSettingValue, settingNum } = await import("../src/settings.js");
 const { TEMPLATE_LIBRARY } = await import("../src/templates.js");
 const { createBackup, listBackups, requestRestore, pendingRestore, cancelRestore } = await import("../src/backup.js");
-const { splitAddress } = await import("../src/formFiller.js");
+const { splitAddress, classify } = await import("../src/formFiller.js");
 const { excludedKeywords, matchExcludedKeyword } = await import("../src/csv.js");
 const { logError, recentLogs } = await import("../src/applog.js");
 const { getDb } = await import("../src/db.js");
@@ -28,6 +28,12 @@ function ok(name: string, cond: unknown, detail = "") {
   console.error(`NG: ${name}${detail ? ` — ${detail}` : ""}`);
 }
 const eq = (name: string, a: unknown, b: unknown) => ok(name, JSON.stringify(a) === JSON.stringify(b), `得られた値 ${JSON.stringify(a)} / 期待 ${JSON.stringify(b)}`);
+
+// ---- formFiller.ts: 項目の種類判定 ----
+const fi = (sig: string, type = "text") => ({ idx: 0, tag: "input", type, name: "", id: "", sig, required: false, options: [], checked: false, formIndex: 0, maxlength: 0, placeholder: "", inputmode: "", pattern: "", glabel: "" } as unknown as Parameters<typeof classify>[0]);
+eq("classify: type=tel の郵便番号は郵便番号", classify(fi("例）1234567 | 郵便番号 | zip || 郵便番号 住所", "tel")), "postal");
+eq("classify: type=tel のFAXは入れない", classify(fi("FAX | fax || FAX番号", "tel")), "ignore");
+eq("classify: type=tel の電話は電話", classify(fi("例) 042-643-6261 | telephone-number || 電話番号", "tel")), "tel");
 
 // ---- jp.ts: 英語エラーの日本語化 ----
 ok("jp: DNSエラー", jpError(new Error("net::ERR_NAME_NOT_RESOLVED at https://x")).includes("サイトが見つかりません"));

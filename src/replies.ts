@@ -320,9 +320,11 @@ function ownNamePartsFor(mailbox: string): string[] {
 }
 
 /** 件名だけで「問い合わせの受付確認」と分かる言い回し */
-const RECEIPT_SUBJECT_RE = /((お問い?合わ?せ|お問合せ|問い?合わ?せ|ご相談|ご依頼|資料請求|ご応募|応募|エントリー|フォーム).{0,24}(ありがとう|有難う|有り難う|受付|受け付け|承り|完了|確認|控|自動)|(ありがとう|受付|受け付け|承り)(ました|ございました|ございます)?.{0,12}(お問い?合わ?せ|問い?合わ?せ)|送信(ありがとう|完了|内容|控)|受付(完了|確認|のお知らせ)|受信完了|自動(返信|送信|応答|配信)|auto[- ]?reply|thank you for (your )?(inquiry|contacting)|への(お)?問い?合わ?せ$|メールフォーム)/i;
+const RECEIPT_SUBJECT_RE = /((お問い?合わ?せ|お問合せ|問い?合わ?せ|ご相談|ご依頼|資料請求|ご応募|応募|エントリー|フォーム).{0,24}(ありがとう|有難う|有り難う|受付|受け付け|承り|完了|確認|控|自動)|(ありがとう|受付|受け付け|承り)(ました|ございました|ございます)?.{0,12}(お問い?合わ?せ|問い?合わ?せ)|送信(ありがとう|完了|内容|控)|受付(完了|確認|のお知らせ)|受信完了|自動(返信|送信|応答|配信)|auto[- ]?reply|thank you for (your )?(inquiry|contacting)|への(お)?問い?合わ?せ$|メールフォーム|(お問い?合わ?せ|お問合せ)(フォーム)?(より|から)|フォーム(を)?送信(しました|いたしました|致しました|完了)|自動送信通知|オートメーションメール|^(【[^】]{1,40}】\s*)?(お問い?合わ?せ|お問合せ)\s*$|^【(お問い?合わ?せ|お問合せ)】|^.{1,40}[\s　](お問い?合わ?せ|お問合せ)$)/i;
+// 「【自動送信通知】」のように、件名だけで受付確認と断定できる言い回し（会社名に「セキュリティ」等が入っていても受付確認とみなす）
+const STRONG_RECEIPT_SUBJECT_RE = /(自動(送信|返信|応答)|受付(完了|確認)|フォーム(より|から|送信)|オートメーションメール)/;
 /** 本文の書き出しで「受付確認」と分かる言い回し（件名に出ていないフォーム作成サービス等の受付確認用） */
-const RECEIPT_BODY_RE = /(送信が完了|受付が完了|受け付けました|受付いたしました|お問い?合わ?せ(を)?(いただき|頂き)(まして)?(誠に)?ありがとう|以下の内容で(送信|受け付け|受付|承り)|下記の内容で(送信|受け付け|受付|承り))/;
+const RECEIPT_BODY_RE = /(送信が完了|受付が完了|受け付けました|受付いたしました|受付致しました|(お問い?合わ?せ|お問合せ|ご連絡)(を)?(承り|受領)(いた|致|し|ました)|(お問い?合わ?せ|お問合せ)(を)?(いただき|頂き)(まして)?[、,]?(誠に)?ありがとう|への(お問い?合わ?せ|お問合せ)(を)?(ありがとう|有難う)|以下の内容(で|にて)(送信|受け付け|受付|承り)|下記の内容(で|にて)(送信|受け付け|受付|承り)|自動返信です|システムからの自動|フォーム(を)?送信(いた|致|し)ました)/;
 /** 受信箱から外してはいけない種類の知らせ（契約・署名・セキュリティ・支払い・審査など） */
 const SENSITIVE_RE = /(署名|契約|締結|申込書|セキュリティ|請求|お支払|支払い|審査|ログイン|パスワード|認証コード|アカウント|招待|共有され)/;
 
@@ -337,7 +339,8 @@ export function inboxCategory(mailbox: string, m: IncomingMail, ownNames: string
   if (dom === (mailbox.toLowerCase().split("@")[1] ?? "") || /(^|\.)google\.com$/.test(dom)) return null;
   const unsubscribe = /^\s*配信停止/.test(m.subject);
   const human = /^\s*(re|fw|fwd)\s*[:：]/i.test(m.subject);          // こちらのメールへの返信・転送は人のメール
-  const sensitive = SENSITIVE_RE.test(m.subject);
+  // 会社名に「セキュリティ」等が入っていて受付確認を取り逃した例（プルコセキュリティ）があるので、件名が受付確認と断定できるときは除く
+  const sensitive = SENSITIVE_RE.test(m.subject) && !STRONG_RECEIPT_SUBJECT_RE.test(m.subject);
   const receipt = RECEIPT_SUBJECT_RE.test(m.subject) || RECEIPT_BODY_RE.test(squash(m.text).slice(0, 300));
   const machine = m.autoHeader || AUTO_FROM_RE.test(from.split("@")[0] ?? "");
   const job = findSentJob(mailbox, m);
@@ -356,6 +359,11 @@ export function inboxCategory(mailbox: string, m: IncomingMail, ownNames: string
   const hay = squash(`${m.subject}\n${m.text}`);
   const ours = ownNames.map(squash).filter((x) => x.length >= 3);
   if (ours.some((x) => hay.includes(x))) return "auto";
+  // 「田中 様」のように姓だけで呼ぶ受付確認（日発運送の実例）。件名だけで受付確認と断定できるときに限る
+  if (STRONG_RECEIPT_SUBJECT_RE.test(m.subject)) {
+    const surnames = ownNames.map((n) => n.split(/[\s　]+/)[0] ?? "").map(squash).filter((x) => x.length >= 2);
+    if (surnames.some((x) => hay.includes(x + "様") || hay.includes(x + "さま"))) return "auto";
+  }
   if (sentTemplateLines(mailbox).filter((l) => hay.includes(l)).length >= 2) return "auto";
   if (namesRecentlySentCompany(mailbox, m.date, hay)) return "auto";
   return null;
@@ -553,7 +561,8 @@ export async function checkReplies(): Promise<{ recorded: number; errors: string
           let uids: number[];
           // 振り分けをオンにして最初の1回は、すでに受信箱に溜まっているメールもさかのぼって振り分ける
           const sortOn = Number((s as SenderProfile & { inbox_sort?: number }).inbox_sort ?? 1) === 1;
-          const sweepKey = `inbox_sorted_v1:${mailbox}`;
+          // v2: 受付確認の見分け方を広げた（2026-10-04）ので、受信箱に残っていた分をもう一度さかのぼって振り分ける
+          const sweepKey = `inbox_sorted_v2:${mailbox}`;
           const needSweep = sortOn && !getSetting(sweepKey, "");
           if (!needSweep && state.uidvalidity === validity && state.last_uid > 0) {
             uids = ((await client.search({ uid: `${state.last_uid + 1}:*` }, { uid: true })) || []).filter((u) => u > state.last_uid);
