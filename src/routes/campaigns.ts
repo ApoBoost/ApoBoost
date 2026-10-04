@@ -238,9 +238,13 @@ app.get("/campaigns/:id", (req, res) => {
     const doable = Math.min(queuedNow, leftToday);
     const minutes = Math.round((doable * perJob) / 60);
     const end = new Date(Date.now() + minutes * 60_000 + 9 * 3600_000).toISOString();
+    // 秒・分の生の数字は出さない（「1社あたり約15869秒」「約2116分」と出ていた）。
+    // 送信が何日かに分かれていると1社あたりの間隔が何時間にもなるので、その場合は終わりの時刻を言わない
+    const reliable = perJob <= 600;
+    const span = minutes < 60 ? `約${Math.max(1, minutes)}分` : `約${Math.floor(minutes / 60)}時間${minutes % 60 ? `${minutes % 60}分` : ""}`;
     eta = doable === 0
-      ? `本日の上限に達しています。残り ${queuedNow}社は翌営業日の送信時間帯に続きます（1社あたり約${Math.round(perJob)}秒）`
-      : `残り ${queuedNow}社 ／ このペース（1社あたり約${Math.round(perJob)}秒）だと、きょう送れる ${doable}社で約${minutes}分（${end.slice(11, 16)}ごろ）${doable < queuedNow ? `。残りの ${queuedNow - doable}社は翌営業日に続きます` : ""}`;
+      ? `今日の上限に達しています。残り ${queuedNow}社は、次の送信時間帯に続きます`
+      : `残り ${queuedNow}社${reliable ? `。${span}で送り終わる見込みです（${end.slice(11, 16)}ごろ）` : ""}${doable < queuedNow ? `。きょう送れるのは ${doable}社で、残りの ${queuedNow - doable}社は翌営業日に続きます` : ""}`;
   }
   res.send(layout(c.name, campaignView(c, jobs, counts, isRunning(id), aiStatusLabel(), { preview, windowOk: inSendWindow(c), sentToday: sentToday(id, "form"), emailSentToday: sentToday(id, "email"), scanning: isScanning(id), unscanned, scanned, statusFilter, qFilter, outcomeFilter, impFilter, sortKey, eta, ab, tab, page, pageSize, total: rowTotal, companyTotal, companyAll: (db.prepare("SELECT COUNT(DISTINCT COALESCE(NULLIF(domain,''), CAST(id AS TEXT))) n FROM form_jobs WHERE campaign_id=? AND is_test=0").get(id) as { n: number }).n, warmup: channelMode(c.channel) !== "form_only" ? { sent: sentTodayBySender(c.sender_id), ...effectiveEmailLimit(c, c.sender_id) } : null, undo: recentUndo(id, me(req).id), matched, attempts, companyCounts, outcomes, lastImport: consumedImport, retryTargets, emailQueued, period, emailPaused: emailPause(c.sender), imports: importHistory(id), reactions: db.prepare("SELECT id, company_name, domain, email, channel, outcome, outcome_note, updated_at FROM form_jobs WHERE campaign_id=? AND is_test=0 AND outcome<>'' ORDER BY updated_at DESC").all(id) as ReactionRow[], replyScan: { ...replyScanStatus(db.prepare("SELECT * FROM sender_profiles WHERE id=?").get(c.sender_id) as SenderProfile | undefined), checking: isCheckingReplies() } }), takeFlash(req), navUser(req), appState.updateReady));
 });

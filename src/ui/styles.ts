@@ -106,6 +106,47 @@ th a{color:inherit}
 tr.hl td{background:var(--c-brand-bg)}tr.hl td:first-child{box-shadow:inset 3px 0 0 var(--c-brand)}
 tr.histrow td{background:var(--c-surface-2);border-bottom:1px dashed var(--c-line)}
 
+/* ---- 詰めた一覧: 1社＝1段（要対応・送信一覧）。以前は1社が3段で、32社で画面4つ分あった ---- */
+table.dense{table-layout:fixed}
+main>table.dense,main>form>table.dense{overflow:visible}
+table.dense td{padding:7px 10px;vertical-align:middle}
+table.dense td.cut{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+table.dense td.cut .muted{margin-left:6px}
+table.dense td.acts{white-space:nowrap;text-align:right;overflow:visible}
+table.dense tr:hover td{background:var(--c-surface-2)}
+tr.sep td{background:var(--c-bg);font-size:var(--fs-xs);color:var(--c-ink-3);font-weight:600;padding:5px 10px}
+/* ---- ホームのキャンペーン1件ぶん: 名前・進み具合・数字を1行ずつ（以前は数字のタイルが6つ並んでいた）---- */
+.hrow{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.4fr);gap:8px 28px;align-items:center;padding:14px 20px}
+.hrow+.hrow{border-top:1px solid var(--c-line)}
+.hrow h2{margin:0;font-size:16px}
+.hrow .state{margin-top:2px}
+.hrow .nums{display:flex;gap:6px 18px;flex-wrap:wrap;margin-top:8px;font-size:var(--fs-sm)}
+.hrow .nums a{color:var(--c-ink-2);text-decoration:none;white-space:nowrap}
+.hrow .nums a:hover{color:var(--c-ink)}
+.hrow .nums b{font-size:15px;color:var(--c-ink);margin-left:3px}
+.hrow .bar{max-width:none;margin:6px 0 4px}
+@media (max-width:760px){.hrow{grid-template-columns:1fr}}
+.pagehead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 16px}
+.pagehead h1{margin:0}
+/* ---- 「…」メニュー: 主な操作だけをボタンで出し、残りはここに畳む ---- */
+.menu{position:relative;display:inline-block;vertical-align:middle}
+.menu>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:28px;padding:0 8px;border-radius:7px;background:var(--c-fill);color:var(--c-ink-2);font-weight:700;letter-spacing:.08em;line-height:1}
+.menu>summary::-webkit-details-marker{display:none}
+.menu>summary:hover,.menu[open]>summary{background:var(--c-fill-hover)}
+.menu>.pop{position:absolute;right:0;top:calc(100% + 4px);z-index:40;min-width:190px;background:rgba(255,255,255,.96);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);border:1px solid rgba(0,0,0,.08);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.16);padding:5px;display:grid;gap:1px;text-align:left}
+.menu>.pop form{display:block;margin:0}
+.menu>.pop .btn,.menu>.pop a.btn{display:block;width:100%;text-align:left;background:transparent;font-weight:400;padding:7px 10px;border-radius:7px;color:var(--c-ink);font-size:var(--fs-base);text-decoration:none}
+.menu>.pop .btn:hover{background:var(--c-fill)}
+.menu>.pop .btn.danger{color:var(--c-ng);background:transparent}
+.menu>.pop hr{border:0;border-top:1px solid var(--c-line);margin:4px 6px}
+/* ---- まとめて操作の帯: 会社を選んだときだけ、画面の下に出す ---- */
+.bulkbar{position:sticky;bottom:14px;z-index:30;display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px auto 0;padding:10px 14px;background:rgba(29,29,31,.92);color:#fff;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.25);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);width:fit-content;max-width:100%}
+.bulkbar .btn{background:rgba(255,255,255,.16);color:#fff}
+.bulkbar .btn:hover{background:rgba(255,255,255,.26)}
+.bulkbar .btn.danger{background:rgba(255,69,58,.28);color:#fff}
+.bulkbar label{color:#fff;font-weight:400;margin:0;font-size:var(--fs-sm);display:inline-flex;gap:6px;align-items:center}
+.bulkbar select{width:auto}
+
 /* ---- 状態の札（色の意味は全画面共通：#111）---- */
 .tag{display:inline-block;padding:2px 9px;border-radius:6px;font-size:var(--fs-xs);font-weight:600;background:var(--c-off-bg);color:var(--c-off);white-space:nowrap}
 .tag.sent{background:var(--c-ok-bg);color:var(--c-ok)}
@@ -150,9 +191,6 @@ tr.histrow td{background:var(--c-surface-2);border-bottom:1px dashed var(--c-lin
 .chip{display:inline-block;background:var(--c-off-bg);color:var(--c-ink-2);border-radius:7px;padding:2px 10px;font-size:var(--fs-sm);text-decoration:none;white-space:nowrap}
 .chip:hover{background:var(--c-line)}
 .chip.ng{background:var(--c-ng-bg);color:var(--c-ng)}
-/* 要対応の行: ボタンが4つ同じ重さで並んでいたので、最初の1つ（いちばん効く操作）だけ濃く、残りは控えめにする */
-.todoacts>form:not(:first-child) .btn,.todoacts>a.btn:not(:first-child){background:transparent;color:var(--c-link);font-weight:400;padding-left:6px;padding-right:6px}
-.todoacts>form:first-child .btn,.todoacts>a.btn:first-child{font-weight:600}
 .actrow{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;margin-top:12px}
 .more[open]{flex:1 1 100%}
 .more>summary{display:inline-block;list-style:none;cursor:pointer}

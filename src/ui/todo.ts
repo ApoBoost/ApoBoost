@@ -3,7 +3,7 @@ import { STATUS_LABEL, OUTCOME_LABEL, CHANNEL_LABEL, channelMode, jst, type Camp
 import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
 import { esc, layout, n, type NavUser } from "./layout.js";
-import { post, thumb, ZOOM_SNIPPET } from "./parts.js";
+import { post, thumb, moreMenu, ZOOM_SNIPPET } from "./parts.js";
 
 // ---- 要対応（#50 #10 → #113〜#118 #124 で作り直し）----
 // 最初の版は2,000件超が同じ重さで並ぶだけで、開いた瞬間に閉じたくなる画面だった。
@@ -32,7 +32,8 @@ export function todoReason(j: Pick<Job, "status" | "result_text" | "channel">): 
   return "other";
 }
 
-/** 理由ごとに、意味のある操作だけを出す（#116） */
+/** 理由ごとに、意味のある操作だけを出す（#116）。
+ *  いちばん効く操作1つだけをボタンにして、残りは「…」メニューに畳む（以前は1行にボタンとリンクが4つ並んでいた） */
 export function todoActions(j: TodoRow, back: string): string {
   const b = `<input type="hidden" name="back" value="${esc(back)}">`;
   const open = post(`/jobs/${j.id}/assist`, "開いて入力", b + "", "").replace('class="inline"', 'class="inline" data-busy data-busytext="ブラウザを開いています…"');
@@ -41,19 +42,21 @@ export function todoActions(j: TodoRow, back: string): string {
   const dismiss = post(`/jobs/${j.id}/dismiss`, "見送る", b);
   const toEmail = j.email ? post(`/jobs/${j.id}/to-email`, "メールで送る", b) : "";
   const fix = `<a class="btn small" href="/jobs/${j.id}#fix">URLを直す</a>`;
-  return `<span class="todoacts">${pick()}</span>`;
-  function pick(): string {
+  const detail = `<a class="btn small" href="/jobs/${j.id}">くわしく見る</a>`;
+  const [main, ...rest] = pick().filter(Boolean);
+  return `<span class="todoacts">${main} ${moreMenu([...rest, "<hr>", detail])}</span>`;
+  function pick(): string[] {
   switch (todoReason(j)) {
-    case "captcha": return `${open} ${sent} ${toEmail} ${dismiss}`;
-    case "check": return `<a class="btn small" href="/jobs/${j.id}#answer">質問に答える</a> ${dismiss}`;
-    case "mailconfig": return `<a class="btn small" href="/senders">送信者の設定を直す</a> ${requeue}`;
-    case "input": return `${open} ${requeue} ${toEmail} ${dismiss}`;
-    case "blocked": return `${toEmail} ${open} ${sent} ${dismiss}`;
-    case "unsure": return `${sent} ${requeue} ${dismiss}`;
-    case "unreachable": return `${fix} ${toEmail} ${dismiss}`;
-    case "noform": return `${fix} ${toEmail} ${requeue} ${dismiss}`;
-    case "network": return `${requeue} ${dismiss}`;
-    default: return `${requeue} ${sent} ${dismiss}`;
+    case "captcha": return [open, sent, toEmail, dismiss];
+    case "check": return [`<a class="btn small" href="/jobs/${j.id}#answer">質問に答える</a>`, dismiss];
+    case "mailconfig": return [`<a class="btn small" href="/senders">送信者の設定を直す</a>`, requeue];
+    case "input": return [requeue, open, toEmail, dismiss];
+    case "blocked": return [toEmail || open, toEmail ? open : "", sent, dismiss];
+    case "unsure": return [sent, requeue, dismiss];
+    case "unreachable": return [fix, toEmail, dismiss];
+    case "noform": return [toEmail || fix, toEmail ? fix : "", requeue, dismiss];
+    case "network": return [requeue, dismiss];
+    default: return [requeue, sent, dismiss];
   }
   }
 }
@@ -64,31 +67,26 @@ export function todoView(rows: TodoRow[], kind: TodoKind, counts: Record<string,
   const KINDS: [TodoKind, string][] = [["", "すべて"], ["failed", "失敗"], ["check", "回答待ち"], ["captcha", "画像認証"], ["noform", "フォーム無し"], ["dismissed", "見送り"]];
   const back = `/todo${kind ? `?kind=${kind}` : ""}`;
   const tab = (k: TodoKind, label: string) => `<a class="${kind === k ? "on" : ""}" href="/todo${k ? `?kind=${k}` : ""}">${label}<span class="cnt">${n(counts[k || "all"] ?? 0)}</span></a>`;
+  const todayIds = new Set(opts.today.map((j) => j.id));
+  const reasonCell = (j: TodoRow, max: number) => { const t = (j.result_text || "").split("\n")[0]; return `<span class="tag ${j.status === "skip_captcha" ? "queued" : "failed"}">${esc(REASON_LABEL[todoReason(j)])}</span><span class="muted" data-nohelp title="${esc(t)}">${esc(t.replace(/^(入力エラー|サイト側で受け付けられませんでした|送信後の判定不能)[:：]\s*/, "").slice(0, max))}</span>`; };
+  const acts = (j: TodoRow) => kind === "dismissed" ? post(`/jobs/${j.id}/undismiss`, "要対応に戻す", `<input type="hidden" name="back" value="${esc(back)}">`) : todoActions(j, back);
+  // 1社＝1段。会社名・理由・更新日・操作だけ（スクリーンショットとくわしい理由は、会社を開いた先で見る）
   const row = (j: TodoRow) => `<tr>
 <td><input type="checkbox" name="ids" value="${j.id}" form="todobulk" onchange="foTodoCount()"></td>
-<td>${thumb(j)}</td>
-<td><a href="/jobs/${j.id}"><b>${esc(j.company_name)}</b></a><div class="muted" data-nohelp>${esc(j.domain || j.email)}・${esc(j.campaign_name)}</div></td>
-<td><span class="tag ${j.status === "skip_captcha" ? "queued" : "failed"}">${esc(REASON_LABEL[todoReason(j)])}</span><div class="small" style="margin-top:4px">${esc((j.result_text || "").split("\n")[0].slice(0, 70))}</div></td>
-<td class="small">${esc(jst(j.updated_at).slice(5))}</td>
-<td style="white-space:nowrap">${kind === "dismissed" ? post(`/jobs/${j.id}/undismiss`, "要対応に戻す", `<input type="hidden" name="back" value="${esc(back)}">`) : todoActions(j, back)}</td></tr>`;
-  const card = (j: TodoRow) => `<div class="c"><h3><a href="/jobs/${j.id}">${esc(j.company_name)}</a></h3>
-<span class="tag ${j.status === "skip_captcha" ? "queued" : "failed"}">${esc(REASON_LABEL[todoReason(j)])}</span>
-<div class="small" style="margin-top:6px">${esc((j.result_text || "").split("\n")[0].slice(0, 80))}</div>
-<div class="acts">${kind === "dismissed" ? post(`/jobs/${j.id}/undismiss`, "要対応に戻す", `<input type="hidden" name="back" value="${esc(back)}">`) : todoActions(j, back)}</div></div>`;
+<td class="cut"><a href="/jobs/${j.id}"><b>${esc(j.company_name)}</b></a>${todayIds.has(j.id) ? ` <span class="tag sending" title="送れる見込みが高く、新しいもの">今日</span>` : ""}<span class="muted" data-nohelp>${esc(j.domain || j.email)}</span></td>
+<td class="cut">${reasonCell(j, 60)}</td>
+<td class="small muted">${esc(jst(j.updated_at).slice(5, 10))}</td>
+<td class="acts">${acts(j)}</td></tr>`;
+  const card = (j: TodoRow) => `<div class="c"><h3><a href="/jobs/${j.id}">${esc(j.company_name)}</a>${todayIds.has(j.id) ? ` <span class="tag sending">今日</span>` : ""}</h3>
+<div class="small">${reasonCell(j, 40)}</div>
+<div class="acts">${acts(j)}</div></div>`;
   const pages = Math.max(1, Math.ceil(opts.total / opts.pageSize));
   const pager = pages > 1 ? `<div class="pager">${opts.page > 1 ? `<a class="btn small" href="${back}${back.includes("?") ? "&" : "?"}page=${opts.page - 1}">← 前へ</a>` : ""}<span>${opts.page} / ${pages} ページ（${n(opts.total)}社）</span>${opts.page < pages ? `<a class="btn small" href="${back}${back.includes("?") ? "&" : "?"}page=${opts.page + 1}">次へ →</a>` : ""}</div>` : "";
 
   return `<h1>要対応</h1>
 <p class="muted" data-nohelp>自動で送れなかった会社です。${opts.hideDays}日たったものは自動で「見送り」に移します（設定で変更できます）。</p>
 
-${kind === "" && opts.today.length ? `<div class="card" style="border-color:var(--c-brand);border-width:2px">
-<h2 style="margin-top:0">今日やる${opts.today.length}件</h2>
-<p class="muted" data-nohelp>送れる見込みが高く、新しいものから選んでいます。ここだけ片づければ十分です。</p>
-<table class="resp"><tr><th style="width:100px"></th><th>会社</th><th>理由</th><th style="width:360px">対応</th></tr>
-${opts.today.map((j) => `<tr><td>${thumb(j)}</td><td><a href="/jobs/${j.id}"><b>${esc(j.company_name)}</b></a><div class="muted" data-nohelp>${esc(j.domain || j.email)}</div></td><td><span class="tag ${j.status === "skip_captcha" ? "queued" : "failed"}">${esc(REASON_LABEL[todoReason(j)])}</span><div class="small" style="margin-top:4px">${esc((j.result_text || "").split("\n")[0].slice(0, 60))}</div></td><td style="white-space:nowrap">${todoActions(j, "/todo")}</td></tr>`).join("")}
-</table><div class="cards">${opts.today.map(card).join("")}</div>
-${(counts.captcha ?? 0) > 0 ? `<p style="margin:12px 0 0"><a class="btn" href="/todo/run?kind=captcha">画像認証の会社を続けて処理する（${n(counts.captcha)}社）→</a></p>` : ""}
-</div>` : ""}
+${kind === "" && opts.today.length ? `<p data-nohelp style="margin:0 0 14px"><span class="tag sending">今日</span> の印が付いた <b>${opts.today.length}件</b>（送れる見込みが高く、新しいもの）だけ片づければ十分です。${(counts.captcha ?? 0) > 0 ? ` <a class="btn small" href="/todo/run?kind=captcha" style="margin-left:6px">画像認証を続けて処理する（${n(counts.captcha)}社）</a>` : ""}</p>` : ""}
 
 ${kind === "" && opts.groups.length ? `<div class="card"><h2 style="margin-top:0">同じ原因のまとめ</h2>
 <p class="muted" data-nohelp>原因が同じものは、1回の操作でまとめて片づけられます。</p>
@@ -100,21 +98,21 @@ ${opts.groups.map((g) => `<tr><td><b>${esc(g.label)}</b></td><td><b>${n(g.n)}</b
 <div class="tabs">${KINDS.map(([k, label]) => tab(k, label)).join("")}</div>
 ${kind === "captcha" && rows.length ? `<p><a class="btn primary" href="/todo/run?kind=captcha">続けて処理する（1社ずつ順番に）→</a></p>` : ""}
 ${rows.length ? `
-<form id="todobulk" method="post" action="/todo/bulk" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px" onsubmit="return foTodoConfirm(this)">
-<input type="hidden" name="back" value="${esc(back)}">
-<span class="small" id="todosel">選択 0社</span>
-<select name="action" style="width:auto"><option value="">まとめて操作…</option>${kind === "dismissed" ? `<option value="undismiss">要対応に戻す</option>` : `<option value="requeue">もう一度送る（待機に戻す）</option><option value="to_email">メールで送る（アドレスがある会社）</option><option value="mark_sent">送信済みにする</option><option value="dismiss">見送る</option>`}<option value="suppress">除外リストに入れる（今後送らない）</option></select>
-<button class="btn small">実行</button>
-<label class="small" style="display:inline-flex;gap:6px;align-items:center;font-weight:400;margin:0"><input type="checkbox" name="all" value="1" style="width:auto" onchange="foTodoCount()">このタブの全 ${n(opts.total)}社を対象にする</label>
-<input type="hidden" name="kind" value="${esc(kind)}">
-</form>
-<table class="resp"><tr><th style="width:34px"><input type="checkbox" title="このページを全選択" onchange="document.querySelectorAll('input[name=ids][form=todobulk]').forEach(c=>c.checked=this.checked);foTodoCount()"></th><th style="width:100px"></th><th>会社</th><th>理由</th><th style="width:80px">更新</th><th style="width:380px">対応</th></tr>
+<table class="resp dense"><tr><th style="width:34px"><input type="checkbox" title="このページを全選択" onchange="document.querySelectorAll('input[name=ids][form=todobulk]').forEach(c=>c.checked=this.checked);foTodoCount()"></th><th>会社</th><th>理由</th><th style="width:64px">更新</th><th style="width:190px"></th></tr>
 ${rows.map(row).join("")}
 </table>
 <div class="cards">${rows.map(card).join("")}</div>
+<form id="todobulk" class="bulkbar" hidden method="post" action="/todo/bulk" onsubmit="return foTodoConfirm(this)">
+<input type="hidden" name="back" value="${esc(back)}"><input type="hidden" name="kind" value="${esc(kind)}">
+<b id="todosel">0社</b>
+<select name="action"><option value="">操作を選ぶ…</option>${kind === "dismissed" ? `<option value="undismiss">要対応に戻す</option>` : `<option value="requeue">もう一度送る（待機に戻す）</option><option value="to_email">メールで送る（アドレスがある会社）</option><option value="mark_sent">送信済みにする</option><option value="dismiss">見送る</option>`}<option value="suppress">除外リストに入れる（今後送らない）</option></select>
+<button class="btn small">実行</button>
+<label><input type="checkbox" name="all" value="1" onchange="foTodoCount()">このタブの全 ${n(opts.total)}社を対象にする</label>
+</form>
 ${pager}
 <script>
-function foTodoCount(){const all=document.querySelector('#todobulk input[name=all]');const k=document.querySelectorAll('input[name=ids][form=todobulk]:checked').length;document.getElementById("todosel").textContent=all&&all.checked?"このタブの全件":"選択 "+k+"社";}
+// まとめて操作の帯は、会社を1つ以上選んだときだけ出す（選ぶ前は意味がないので）
+function foTodoCount(){const bar=document.getElementById("todobulk");const all=bar.querySelector('input[name=all]');const k=document.querySelectorAll('input[name=ids][form=todobulk]:checked').length;document.getElementById("todosel").textContent=all&&all.checked?"このタブの全件":k+"社を選択中";bar.hidden=!(k>0||(all&&all.checked));}
 function foTodoConfirm(f){const a=f.action.value;if(!a){alert("操作を選んでください");return false;}const all=f.all&&f.all.checked;const k=document.querySelectorAll('input[name=ids][form=todobulk]:checked').length;if(!all&&!k){alert("会社を選んでください");return false;}const label=f.action.options[f.action.selectedIndex].text;return confirm((all?"このタブの全件":k+"社")+" を「"+label+"」にします。よろしいですか？");}
 </script>` : `<div class="card"><p>${kind === "dismissed" ? "見送った会社はありません。" : "対応が必要な会社はありません。"}</p></div>`}
 ${ZOOM_SNIPPET}`;

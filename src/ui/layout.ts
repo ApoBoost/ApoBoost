@@ -86,6 +86,13 @@ document.addEventListener("submit", (e) => {
 }, true);
 </script>
 <script>
+// 「…」メニュー: 外を押したら閉じる。1つ開いたら他は閉じる
+document.addEventListener("click", (e) => {
+  document.querySelectorAll("details.menu[open]").forEach((d) => { if (!d.contains(e.target) || (e.target.closest && e.target.closest(".pop a"))) d.removeAttribute("open"); });
+});
+addEventListener("keydown", (e) => { if (e.key === "Escape") document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open")); });
+</script>
+<script>
 // 入力途中の自動保存（data-draft を付けたフォーム: 送信者・キャンペーン）。
 // ご利用ガイドなど別の画面と行き来しても、書きかけの内容が消えないようにする。このブラウザの中だけに保存（パスワード・ファイルは保存しない）。
 // 保存ボタンを押した時点で消す（保存後に戻る画面にも同じフォームがあり、保存済みの内容を「復元」と出すと二重登録につながるため）。

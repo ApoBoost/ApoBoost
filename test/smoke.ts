@@ -120,7 +120,7 @@ try {
   {
     const post = (p: string, body: string) => fetch(`${BASE}${p}`, { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body });
     let body = await (await get("/todo")).text();
-    if (!body.includes("今日やる")) ng("要対応に「今日やる◯件」がありません");
+    if (!body.includes('<span class="tag sending">今日</span>')) ng("要対応に「今日」の印がありません");
     if (!body.includes("同じ原因のまとめ") || !body.includes("メールの設定が原因で送れなかった")) ng("要対応に「同じ原因のまとめ」がありません");
     // 開けないサイトには「開いて入力」を出さない（#116）
     const nf = await (await get("/todo?kind=noform")).text();
@@ -163,7 +163,7 @@ try {
   // ホームは、キャンペーンごとに進み具合と数字を出す
   {
     const home = await (await get("/")).text();
-    if (!home.includes("スモーク用キャンペーン") || !home.includes("今日の進み具合")) ng("ホームにキャンペーンごとの進み具合がありません");
+    if (!home.includes("スモーク用キャンペーン") || !home.includes('class="hrow"')) ng("ホームにキャンペーンごとの進み具合がありません");
   }
   // 起動中にエラーが出ていないこと
   if (/TypeError|ReferenceError|SqliteError/.test(out)) ng(`起動ログにエラー:\n${out.slice(-600)}`);

@@ -67,6 +67,12 @@ export const STATUS_LEGEND = `<div class="legend"><span><i style="background:var
 export const post = (action: string, label: string, extra = "", cls = "", confirmMsg = "") =>
   `<form method="post" action="${action}" class="inline"${confirmMsg ? ` onsubmit="return confirm('${confirmMsg}')"` : ""}>${extra}<button class="btn small ${cls}">${label}</button></form>`;
 
+/** 「…」メニュー。主な操作1つだけをボタンで出し、残りをここに畳む（1行にボタンが4つ並ぶのをやめる） */
+export const moreMenu = (items: string[]) => {
+  const list = items.filter(Boolean);
+  return list.length ? `<details class="menu"><summary aria-label="その他の操作" title="その他の操作">…</summary><div class="pop">${list.join("")}</div></details>` : "";
+};
+
 export function thumb(j: Pick<Job, "id" | "screenshot_path">): string {
   if (!j.screenshot_path) return "";
   const f = esc(j.screenshot_path.split("/").pop());
