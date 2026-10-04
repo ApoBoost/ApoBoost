@@ -128,11 +128,13 @@ export const HELP_WIDGET = `<style>
 #fo-help .typing i:nth-child(3){animation-delay:.3s}
 @keyframes fo-dot{0%,60%,100%{transform:translateY(0);opacity:.45}30%{transform:translateY(-4px);opacity:1}}
 @media (prefers-reduced-motion:reduce){#fo-help .typing i{animation:none}}
-#fo-help .opts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;margin:2px 0 6px}
+#fo-help .opts{display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin:2px 0 6px}
 #fo-help .opts button{font:inherit;font-size:13.5px;padding:7px 13px;border-radius:999px;border:1px solid var(--c-line-strong);background:#fff;color:var(--c-ink);cursor:pointer;text-align:left;line-height:1.4}
 #fo-help .opts button:hover{border-color:var(--c-brand);color:var(--c-brand)}
-#fo-help .opts button.sub{background:transparent;border-color:transparent;color:var(--c-ink-3)}
-#fo-help .opts .oh{flex:1 1 100%;text-align:right;font-size:11.5px;color:var(--c-ink-3);margin:4px 2px 0}
+#fo-help .opts button.sub{color:var(--c-brand)}
+#fo-help .opts button.end{background:transparent;border-color:transparent;color:var(--c-ng);font-size:12.5px;padding:4px 6px;margin-top:2px}
+#fo-help .opts button.end:hover{border-color:transparent;color:var(--c-ng);text-decoration:underline}
+#fo-help .opts .oh{text-align:right;font-size:11.5px;color:var(--c-ink-3);margin:4px 2px 0}
 #fo-help .ctx{align-self:stretch;background:#fff;border:1px solid var(--c-line);border-radius:12px;padding:9px 12px;font-size:12.5px;line-height:1.6}
 #fo-help .ctx b{display:block;font-size:13.5px}
 #fo-help .ctx dl{display:grid;grid-template-columns:auto 1fr;gap:1px 10px;margin:4px 0 0}
@@ -244,12 +246,12 @@ export const HELP_WIDGET = `<style>
       var wrap = el("div", "opts");
       list.forEach(function(o){
         if (o.head) { wrap.appendChild(el("div", "oh", o.head)); return; }
-        var b = el("button", o.sub ? "sub" : "", o.label); b.type = "button"; b.onclick = function(){ o.run(); }; wrap.appendChild(b);
+        var b = el("button", o.end ? "end" : o.sub ? "sub" : "", o.label); b.type = "button"; b.onclick = function(){ o.run(); }; wrap.appendChild(b);
       });
       log.appendChild(wrap); scroll();
     });
   }
-  var END = { label: "問い合わせを終了する", sub: true, run: function(){ endChat(); } };
+  var END = { label: "問い合わせを終了する", end: true, run: function(){ endChat(); } };
   function findItem(id){ var hit = null; TOPICS.forEach(function(t){ t.items.forEach(function(it){ if (it.id === id) hit = { it: it, t: t }; }); }); return hit; }
   function deskButtons(){
     var list = DESKS.map(function(d){ return { label: d[1], run: function(){ me(d[1]); desk(d[0]); } }; });
