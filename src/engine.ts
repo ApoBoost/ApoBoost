@@ -152,7 +152,10 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
   };
 
   try {
-    const formPage = await findContactForm(page, input.formUrl, input.siteUrl);
+    const note: { reason?: string } = {};
+    const formPage = await findContactForm(page, input.formUrl, input.siteUrl, note);
+    // 登録・応募フォームしか見つからなかった（人材会社の「スタッフ登録」など）。入力すると勝手に登録したことになるので送らない
+    if (!formPage && note.reason) return done("skip_no_form", `問い合わせ以外のフォームのため送らず（${note.reason}）`);
     if (!formPage) return done("skip_no_form", "問い合わせフォームが見つからない");
     log.push(`form: ${formPage}`);
 
@@ -454,7 +457,9 @@ export async function scanCompany(browser: Browser, input: { formUrl: string; si
         r.note = "サイトにアクセスできない";
       }
     }
-    const formPage = await findContactForm(page, input.formUrl, input.siteUrl);
+    const note: { reason?: string } = {};
+    const formPage = await findContactForm(page, input.formUrl, input.siteUrl, note);
+    if (!formPage && note.reason) r.note = `問い合わせ以外のフォーム（${note.reason}）`;
     if (formPage) {
       r.formUrl = formPage;
       const text: string = await page.evaluate(() => document.body?.innerText ?? "").catch(() => "");

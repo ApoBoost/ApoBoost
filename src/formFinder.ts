@@ -106,6 +106,95 @@ async function scanFrames(page: Page): Promise<boolean> {
   return false;
 }
 
+// ---- 問い合わせ以外のフォーム（求職者向けの登録・応募・会員登録）を見分ける ----
+// 人材会社のサイトでは「お問い合わせ」より「スタッフ登録」「お仕事をお探しの方」のフォームが目立つ場所にあり、
+// 営業リストのURLがそちらを指していることもある。そこに入力すると、勝手に人材登録や応募をしたことになってしまう（実例あり）。
+// 入力欄の中身（生年月日・希望職種・最寄駅…）と、ページの見出し・URL・ボタンの言葉から見分ける。
+// 迷ったら「問い合わせフォーム」として扱う（企業向けの問い合わせを取りこぼす害もあるため、断定できるときだけ外す）
+const NON_INQUIRY_SCRIPT = `
+(() => {
+  const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const forms = document.querySelectorAll('form');
+  let best = null, bestN = 0;
+  for (let i = 0; i < forms.length; i++) {
+    const f = forms[i];
+    if (f.getAttribute('role') === 'search' || f.querySelector('input[type=search], input[name="s"], input[name="q"]')) continue;
+    const ins = f.querySelectorAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]), textarea, select');
+    let n = 0; for (let k = 0; k < ins.length; k++) if (vis(ins[k])) n++;
+    if (f.querySelector('textarea')) n += 3; // 本文欄のあるフォームを優先
+    if (n > bestN) { bestN = n; best = f; }
+  }
+  // フォームの中の言葉（見出し・ラベル・ボタン）
+  const formText = best ? (best.innerText || '').replace(/\\s+/g, ' ').slice(0, 6000) : '';
+  // フォームの直前の見出し（フォームが何のためのものかを言っている）
+  let heading = '';
+  if (best) {
+    let el = best;
+    for (let hops = 0; el && hops < 6 && !heading; hops++) {
+      let p = el.previousElementSibling;
+      for (let k = 0; p && k < 4 && !heading; k++, p = p.previousElementSibling) {
+        if (/^H[1-4]$/.test(p.tagName) || p.querySelector('h1,h2,h3,h4')) heading = (p.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120);
+      }
+      el = el.parentElement;
+    }
+  }
+  const hs = document.querySelectorAll('h1, h2, h3, title, [class*="title"], [class*="heading"], legend');
+  const heads = []; for (let k = 0; k < hs.length && heads.length < 12; k++) { const t = (hs[k].innerText || hs[k].textContent || '').replace(/\\s+/g, ' ').trim(); if (t && t.length <= 80) heads.push(t); }
+  const btns = []; if (best) { const bs = best.querySelectorAll('button, input[type=submit], input[type=image]'); for (let k = 0; k < bs.length; k++) btns.push((bs[k].innerText || bs[k].value || bs[k].getAttribute('alt') || '').trim()); }
+  return { url: location.href, title: document.title || '', heading, heads: heads.join(' / '), btns: btns.join(' / '), formText, inputs: bestN };
+})()`;
+type FormPurpose = { url: string; title: string; heading: string; heads: string; btns: string; formText: string; inputs: number };
+
+// 求職者向けの入力欄。企業からの問い合わせでは聞かれない項目
+const JOBSEEKER_FIELD_RE = /(生年月日|年齢|性別|希望(職種|勤務地|給与|時給|月給|年収|勤務|業種|エリア|の働き方)|最寄(り)?駅|履歴書|職務経歴|職歴|保有資格|資格|学歴|就業(状況|形態|中)|現在の(職業|状況|お仕事)|雇用形態|勤務可能|扶養|国籍|在留|志望(動機)?|経験(職種|年数)|勤務開始)/g;
+// 登録・応募を表す言葉（見出し・URL・ボタン）
+const REGISTER_RE = /(人材登録|スタッフ登録|派遣登録|登録スタッフ|求職|お仕事(を)?(お)?(探|さが)し|仕事(を)?(お)?(探|さが)し|お仕事情報|登録フォーム|仮登録|本登録|web登録|エントリー|ご応募|応募(フォーム|する|はこちら|受付)|求人(へ|に)?(の)?応募|採用(エントリー|応募|フォーム|へのお問い?合わ?せ)|会員登録|新規登録|アカウント(登録|作成)|登録説明会|キャリア(相談|登録)|転職(相談|支援|サポート)|マイページ|entry|regist|recruit|jobseeker|signup|sign-up|apply)/i;
+// 「求職者向け」と断定できる言葉。「お問い合わせ」と並んでいても、こちらを優先する（「求職者の方のお問い合わせ」等）
+const JOBSEEKER_RE = /(求職者|お仕事(を)?(お)?(探|さが)し|仕事(を)?(お)?(探|さが)しの方|スタッフ登録|人材登録|派遣登録|働きたい方|転職をお考え|お仕事をご希望)/;
+// 企業向け・問い合わせを表す言葉
+const INQUIRY_RE = /(お問い?合わ?せ|お問合せ|問合せ|問い合せ|inquiry|contact|toiawase|ご相談|ご質問|ご依頼|お見積|見積)/i;
+const CORPORATE_RE = /(企業(の|ご)?(方|様|担当|向け)|法人(の|ご)?(方|様|向け)|採用(ご)?担当|人材(を)?(お)?探し|ご利用(企業|法人)|発注|お取引|求人(を)?(ご)?掲載|求人(の)?ご依頼|スタッフ(を)?(お)?探し)/;
+
+/** 問い合わせ以外のフォーム（求職者向けの登録・応募・会員登録）なら、その理由を返す。問い合わせフォームなら null */
+export async function nonInquiryReason(page: Page): Promise<string | null> {
+  let info: FormPurpose | null = null;
+  for (const fr of page.frames()) {
+    const r = await (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([fr.evaluate(NON_INQUIRY_SCRIPT) as Promise<FormPurpose>, new Promise<null>((res) => { timer = setTimeout(() => res(null), 3000); })]);
+      } catch { return null; } finally { if (timer) clearTimeout(timer); }
+    })();
+    if (r && r.inputs > 0 && (!info || r.inputs > info.inputs)) info = r;
+  }
+  if (!info) return null;
+  let path = "";
+  try { path = decodeURIComponent(new URL(info.url).pathname); } catch { path = info.url; }
+  const around = `${info.heading} ${info.heads} ${info.btns} ${info.title}`;
+  const context = `${path} ${around}`;
+  // 1) 入力欄が求職者向け（生年月日・希望職種・最寄駅…が3種類以上）
+  const seen = new Set<string>();
+  for (const m of info.formText.matchAll(JOBSEEKER_FIELD_RE)) seen.add(m[0].replace(/(生年月日|年齢|性別).*/, "$1"));
+  if (seen.size >= 3) return `求職者向けの登録フォーム（${[...seen].slice(0, 3).join("・")} などの欄）`;
+  // 2) 見出し・URLが「求職者向け」と言っていて、企業向けの言葉が無い
+  const js = JOBSEEKER_RE.exec(around) ?? JOBSEEKER_RE.exec(path);
+  if (js && !CORPORATE_RE.test(around)) return `求職者向けのページ（「${js[0]}」）`;
+  // 3) 登録・応募の言葉があり、問い合わせの言葉が無い
+  const rg = REGISTER_RE.exec(around) ?? REGISTER_RE.exec(path);
+  if (rg && !INQUIRY_RE.test(context) && !CORPORATE_RE.test(around)) return `登録・応募フォーム（「${rg[0]}」）`;
+  return null;
+}
+
+/** 問い合わせフォームとして使えるページか（フォームがあり、かつ問い合わせ以外のフォームではない）。
+ *  問い合わせ以外だったときは、その理由を note に残す（探索の最後まで見つからなかったときの説明に使う） */
+async function usableContactPage(page: Page, note?: { reason?: string }): Promise<boolean> {
+  if (!(await pageHasContactForm(page))) return false;
+  const why = await nonInquiryReason(page);
+  if (!why) return true;
+  if (note) note.reason = note.reason ? note.reason : `${why}: ${page.url()}`;
+  return false;
+}
+
 export async function pageHasContactForm(page: Page): Promise<boolean> {
   if (await scanFrames(page)) return true;
   // 外部フォームサービスを iframe で埋め込んでいるページ（#4）。
@@ -260,13 +349,13 @@ async function urlsFromSitemap(page: Page, origin: string): Promise<string[]> {
 }
 
 /** フォームのあるページへ遷移する。見つかれば最終URL、無ければ null */
-export async function findContactForm(page: Page, formUrl: string, siteUrl: string): Promise<string | null> {
+export async function findContactForm(page: Page, formUrl: string, siteUrl: string, note: { reason?: string } = {}): Promise<string | null> {
   const tried = new Set<string>();
   const tryUrl = async (u: string) => {
     if (!u || tried.has(u)) return false;
     tried.add(u);
     if (!(await safeGoto(page, u))) return false;
-    return pageHasContactForm(page);
+    return usableContactPage(page, note);
   };
 
   if (formUrl && (await tryUrl(normalize(formUrl)))) return page.url();
@@ -293,7 +382,7 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
   }
   // トップページ内のリンクから探す（フッターのリンクを優先: #1）
   if (opened) {
-    if (await pageHasContactForm(page)) return page.url();
+    if (await usableContactPage(page, note)) return page.url();
     const links: { href: string; text: string; footer: boolean }[] = await page.evaluate(() =>
       Array.from(document.querySelectorAll("a[href]")).map((a) => {
         const el = a as HTMLAnchorElement;
@@ -336,7 +425,7 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
     ).catch(() => []);
     for (const u of sub.slice(0, 2)) {
       if (!(await safeGoto(page, u))) continue;
-      if (await pageHasContactForm(page)) return page.url();
+      if (await usableContactPage(page, note)) return page.url();
       const link: string | null = await page.evaluate((reSrc) => {
         const re = new RegExp(reSrc, "i");
         const a = Array.from(document.querySelectorAll("a[href]")).find((x) => re.test(((x as HTMLAnchorElement).innerText || "") + " " + (x as HTMLAnchorElement).href));
@@ -348,7 +437,8 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
 
   // 最後の手段: トップに戻り「お問い合わせはこちら」等を押してモーダル/パネルを開く
   if (await safeGoto(page, site)) {
-    if (await tryClickTrigger(page)) return page.url();
+    // 押した先が登録・応募フォーム（「お問い合わせ・ご登録」のようなリンク）だったら使わない
+    if ((await tryClickTrigger(page)) && !(await nonInquiryReason(page).then((why) => { if (why && !note.reason) note.reason = `${why}: ${page.url()}`; return why; }))) return page.url();
   }
   return null;
 

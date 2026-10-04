@@ -99,6 +99,16 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === "/both/send" && post) return done("both");
 
+  // 12) 人材会社: リストのURLが「スタッフ登録」フォーム。サイト内の「企業の方のお問い合わせ」を探して、そちらに送る
+  if (p === "/staff/entry") return post ? (hit("staff_entry", b), send(page("登録完了", "<p>ご登録ありがとうございます。</p>"))) : send(page("スタッフ登録", `<h1>スタッフ登録フォーム</h1><p>お仕事をお探しの方はこちらからご登録ください。</p><form method="post"><table>
+<tr><th>お名前</th><td><input name="nm"></td></tr><tr><th>生年月日</th><td><input name="birth"></td></tr><tr><th>性別</th><td><input type="radio" name="sex" value="m">男 <input type="radio" name="sex" value="f">女</td></tr>
+<tr><th>希望職種</th><td><input name="job"></td></tr><tr><th>最寄駅</th><td><input name="st"></td></tr><tr><th>メールアドレス</th><td><input name="em"></td></tr><tr><th>電話番号</th><td><input name="tel"></td></tr>
+<tr><th>備考</th><td><textarea name="msg"></textarea></td></tr></table><button type="submit">登録する</button></form>`));
+  if (p === "/staff/") return send(page("人材派遣のダミー", `<h1>ダミー人材サービス</h1><p><a href="/staff/entry">スタッフ登録はこちら</a></p><footer><a href="/staff/contact">企業の方のお問い合わせ</a></footer>`));
+  if (p === "/staff/contact") return post ? done("staff") : send(page("お問い合わせ", `<h1>企業の方のお問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>")}<button type="submit">送信する</button></form>`));
+  // 13) 登録フォームしか無いサイト → 送らない
+  if (p === "/only-entry/") return send(page("ダミー派遣", `<h1>ダミー派遣</h1><p><a href="/only-entry/regist">お問い合わせ・ご登録</a></p>`));
+  if (p === "/only-entry/regist") return post ? (hit("only_entry", b), send(page("完了", "<p>登録を受け付けました。</p>"))) : send(page("ご登録", `<h1>お仕事をお探しの方 ご登録フォーム</h1><form method="post">${fields("<th>電話番号（必須）</th>")}<button type="submit">登録する</button></form>`));
   if (p === "/search") { hit("search", Object.fromEntries(url.searchParams)); return send(page("検索", "<p>検索結果</p>")); }
   send("not found", 404);
 });
@@ -113,10 +123,13 @@ const browser = await launchBrowser();
 const out: Record<string, { status: string; detail: string; log: string[] }> = {};
 let n = 0;
 try {
-  for (const k of ["kome", "imgreq", "minyuryoku", "alert", "plainerr", "imgbtn", "alink", "cf7ng", "proto", "kana", "both"]) {
+  const cases: [string, string, string][] = [...["kome", "imgreq", "minyuryoku", "alert", "plainerr", "imgbtn", "alink", "cf7ng", "proto", "kana", "both"].map((k): [string, string, string] => [k, `/${k}`, ""]),
+    ["staff", "/staff/entry", "/staff/"], ["onlyentry", "", "/only-entry/"]];
+  for (const [k, formPath, sitePath] of cases) {
     n++;
     // 会社ごとに別のホスト名にする（同じドメインへの連続送信の扱いに引っかからないように）
-    const r = await submitToCompany(browser, { jobId: 9000 + n, formUrl: `http://t${n}.localhost:${port}/${k}`, siteUrl: "", sender, subject: "ご案内", message: "はじめまして。サービスのご案内です。\nよろしくお願いいたします。" });
+    const host = `http://t${n}.localhost:${port}`;
+    const r = await submitToCompany(browser, { jobId: 9000 + n, formUrl: formPath ? host + formPath : "", siteUrl: sitePath ? host + sitePath : "", sender, subject: "ご案内", message: "はじめまして。サービスのご案内です。\nよろしくお願いいたします。" });
     out[k] = { status: r.status, detail: r.detail, log: r.log };
     console.log(`- ${k}: ${r.status} | ${r.detail.split("\n")[0]}`);
     if (process.env.FO_DEBUG) console.log(r.log.join("\n"));
@@ -142,6 +155,8 @@ sentOnce("proto", "Array.from を書き換えるサイトでも動く");
 sentOnce("kana", "「カタカナ以外の文字」を拾ってフリガナの空白を除く"); assert.equal(got.kana[0].kana, "ヤマダタロウ");
 sentOnce("both", "確認画面では送信を優先して押す");
 assert.equal(got.search, undefined, "検索フォームのボタンは押さない");
+sentOnce("staff", "スタッフ登録フォームではなく、企業向けの問い合わせに送る"); assert.equal(got.staff_entry, undefined, "staff: 登録フォームには入力しない");
+assert.equal(out.onlyentry.status, "skip_no_form"); assert.ok(out.onlyentry.detail.includes("問い合わせ以外のフォーム"), `onlyentry: ${out.onlyentry.detail}`); assert.equal(got.only_entry, undefined, "onlyentry: 登録フォームには入力しない");
 
 console.log("todo: ALL OK");
 process.exit(0);
