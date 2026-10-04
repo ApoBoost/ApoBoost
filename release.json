@@ -1,14 +1,14 @@
 {
-  "version": "1.0.4",
-  "notes": "画面のデザインを新しくしました（すっきりした配色、半透明のメニュー、絵文字をアイコンに）。一覧が最初から全部表示されるようになりました",
+  "version": "1.0.5",
+  "notes": "一覧を1社1行に詰め、「開始する」を画面の上に出しました。ホーム・要対応・設定・成果を見やすく作り直しています",
   "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-  "published_at": "2026-10-04T07:40:21.852Z",
+  "published_at": "2026-10-04T07:50:17.841Z",
   "channels": {
     "stable": {
-      "version": "1.0.4",
-      "notes": "画面のデザインを新しくしました（すっきりした配色、半透明のメニュー、絵文字をアイコンに）。一覧が最初から全部表示されるようになりました",
+      "version": "1.0.5",
+      "notes": "一覧を1社1行に詰め、「開始する」を画面の上に出しました。ホーム・要対応・設定・成果を見やすく作り直しています",
       "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-      "published_at": "2026-10-04T07:40:21.852Z"
+      "published_at": "2026-10-04T07:50:17.841Z"
     }
   }
 }
