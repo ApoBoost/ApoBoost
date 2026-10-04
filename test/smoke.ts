@@ -164,6 +164,7 @@ try {
   {
     const home = await (await get("/")).text();
     if (!home.includes("スモーク用キャンペーン") || !home.includes('class="hrow"')) ng("ホームにキャンペーンごとの進み具合がありません");
+    if (!home.includes('id="fo-help-btn"')) ng("右下の質問箱がありません");
   }
   // 起動中にエラーが出ていないこと
   if (/TypeError|ReferenceError|SqliteError/.test(out)) ng(`起動ログにエラー:\n${out.slice(-600)}`);
