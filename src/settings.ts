@@ -19,6 +19,7 @@ export const S = {
   notifyReply: "notify_reply",               // 1=アポ・返信が来たらすぐ通知
   listPageSize: "list_page_size",            // 送信一覧の1ページの件数
   sendPace: "send_pace",                     // フォーム送信の間隔: slow(8〜15秒・既定) | normal(5〜9秒) | fast(3〜5秒)
+  setupEmailSkipped: "setup_email_skipped",  // 1=はじめの設定で「フォームだけで使う」を選んだ（送信用メールの手順を済み扱いにする）
 } as const;
 
 export type SettingKey = (typeof S)[keyof typeof S];

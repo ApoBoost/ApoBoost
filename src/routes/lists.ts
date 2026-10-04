@@ -28,7 +28,7 @@ import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel
 import { errorPage } from "../ui/layout.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
-import { app, upload, db, safeAsync, adminOnly, redirectWith, takeFlash, me, appState, navUser, scope, fetchGoogleSheetCsv, suppImports, suppSyncKey, loadSuppSync, saveSuppSync, syncSuppressionsFor } from "../app/context.js";
+import { app, uploadSingle, db, safeAsync, adminOnly, redirectWith, takeFlash, me, appState, navUser, scope, fetchGoogleSheetCsv, suppImports, suppSyncKey, loadSuppSync, saveSuppSync, syncSuppressionsFor } from "../app/context.js";
 
 /** この画面の経路を登録する。server.ts から、ログイン確認などの共通処理のあとに呼ばれる */
 export function register(): void {
@@ -59,6 +59,8 @@ app.get("/suppressions", (req, res) => {
       configured: shareConfigured(),
       script: APPS_SCRIPT,
     },
+    // 管理者だけが変えられる設定は、一般ユーザーには中身だけを見せる（入力欄を出さない）
+    isAdmin: me(req).role === "admin",
   }), takeFlash(req), navUser(req), appState.updateReady));
 });
 
@@ -123,7 +125,7 @@ app.post("/suppressions/sync-now", safeAsync(async (req, res) => {
 }, () => "/suppressions", "取り込めませんでした"));
 
 /** 除外リストをCSVでまとめて追加 */
-app.post("/suppressions/import", upload.single("csv"), safeAsync(async (req, res) => {
+app.post("/suppressions/import", uploadSingle("csv", () => "/suppressions"), safeAsync(async (req, res) => {
   const pasted = String(req.body.pasted ?? "").trim();
   const sheetUrl = String(req.body.sheet_url ?? "").trim();
   try {

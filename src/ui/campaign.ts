@@ -1,5 +1,12 @@
 // キャンペーンの作成・編集フォームと、キャンペーン画面（準備／送信／結果）
-import { thumb, ZOOM_SNIPPET, moreMenu } from "./parts.js";
+import { thumb, ZOOM_SNIPPET, moreMenu, TEMPLATE_VAR_BUTTONS } from "./parts.js";
+
+/** 差し込みのボタンに出す説明 */
+const VAR_TIPS: Record<string, string> = {
+  会社名: "相手の会社名", 代表者: "相手の代表者名＋様（無ければ「ご担当者様」）", 業種: "相手の業種（リストにあれば）", 都道府県: "相手の所在地の都道府県（リストにあれば）",
+  自社名: "送信者の会社名", 担当者: "送信者の担当者名", 自社メール: "送信者のメール", 自社電話: "送信者の電話", 自社URL: "送信者のURL",
+  AI冒頭: "AIが書く書き出しの1〜2文（冒頭だけAIのモード。ほかのモードでは決まった一文）", 資料リンク: "資料の公開リンク（下の「資料の添付」で設定）",
+};
 import { STATUS_LABEL, OUTCOME_LABEL, CHANNEL_LABEL, channelMode, jst, type Campaign, type Job, type SenderProfile, type JobStatus } from "../db.js";
 import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
@@ -14,16 +21,6 @@ ${editId ? `<p><a href="/campaigns/${editId}">← キャンペーンに戻る</a
 <form method="post" action="${editId ? `/campaigns/${editId}/edit` : "/campaigns"}" class="card" enctype="multipart/form-data" data-draft="campaign-${editId ?? "new"}" id="campform">
 ${editId ? "" : `<div id="stepbar" class="tabs" style="margin-top:0"><a class="on" data-go="1">① 名前と送り方</a><a data-go="2">② 文面</a><a data-go="3">③ 上限と時間帯</a></div>`}
 <div data-step="1"><h2 style="margin-top:0">① 名前と送り方</h2>
-<label>グループ（任意）</label><input type="text" name="group_name" value="${d("group_name")}" list="fo-groups" placeholder="例：福岡 飲食 9月（空欄なら自動で決めます）" style="max-width:420px"><datalist id="fo-groups">${groups.map((g) => `<option value="${esc(g)}">`).join("")}</datalist>
-<p class="muted small" style="margin:4px 0 6px">同じグループのキャンペーン同士では、<b>同じ会社に重ねて送りません</b>（フォーム用とメール用に分けたときなど）。別のキャンペーンで<b>待機中・送信済み</b>の会社は取り込み時に除外し、送信直前にも確認します。<b>フォーム無し・失敗・画像認証</b>だった会社は連絡できていないので、同じグループの別キャンペーンで送れます。</p>
-${(() => {
-    const list = others.filter((o) => o.id !== editId);
-    if (!list.length) return "";
-    const mine = String(defaults.group_name ?? "");
-    return `<details ${mine ? "open" : ""} style="margin:0 0 12px"><summary style="cursor:pointer;font-weight:700">同じグループに入れるキャンペーンを選ぶ（昔のキャンペーンも選べます）</summary>
-<div style="max-height:220px;overflow:auto;border:1px solid var(--line,#e5e0d5);border-radius:8px;padding:8px 10px;margin-top:6px">${list.map((o) => `<label class="inline small" style="display:flex;gap:6px;align-items:center;font-weight:400;margin:3px 0"><input type="checkbox" name="group_members" value="${o.id}" ${mine && o.group_name === mine ? "checked" : ""} style="width:auto"> ${esc(o.name)}${o.group_name ? ` <span class="tag">グループ: ${esc(o.group_name)}</span>` : ` <span class="muted">（グループなし）</span>`}</label>`).join("")}</div>
-<p class="muted small" style="margin:4px 0 0">チェックしたキャンペーンをこのキャンペーンと同じグループにします。チェックを外したキャンペーンはこのグループから外れます。グループ名が空欄なら、チェックした中のグループ名、無ければこのキャンペーンの名前をグループ名にします。</p></details>`;
-  })()}
 <div class="row"><div><label>キャンペーン名</label><input type="text" name="name" value="${d("name")}" required placeholder="福岡 飲食 9月"></div>
 <div><label>送信者</label><select name="sender_id" required>${senders.map((s) => `<option value="${s.id}" ${defaults.sender_id === s.id ? "selected" : ""}>${esc(s.label)}（${esc(s.company)} ${esc(s.person)}）</option>`).join("")}</select>${senders.length ? "" : '<p class="muted">先に<a href="/senders">送信者</a>を登録してください</p>'}</div></div>
 <label>配信チャネル</label>
@@ -46,16 +43,43 @@ ${(() => {
 <b>ハイブリッド:</b> 冒頭1〜2文だけAIが書くので安い（約0.2円/件）ぶん、想定外の質問欄には対応できず、そのフォームは失敗になりやすくなります。<br>
 ※ チェック欄・選択肢はどのモードでも自動対応します。画像認証（CAPTCHA）はどのモードでも突破しません。</p>
 ${provider === "none" ? '<p class="muted small" data-nohelp>AIを使うモードは、<a href="/settings#s-ai">設定でAPIキーを登録</a>すると選べます（<a href="/guide#ai" target="_blank" rel="noopener">料金と手順</a>）。未登録のあいだはテンプレートで送られます。</p>' : ""}
-</div><div data-step="2"><h2>② 文面</h2>
-<label>件名（件名欄があるフォーム用）</label><input type="text" name="subject_text" value="${d("subject_text", "【ここに件名】のご案内")}">
+<details ${defaults.group_name ? "open" : ""} style="margin:14px 0 4px"><summary style="cursor:pointer;font-weight:700">グループ（任意）— 別のキャンペーンと同じ会社に重ねて送らないようにする</summary>
+<label>グループ名</label><input type="text" name="group_name" value="${d("group_name")}" list="fo-groups" placeholder="例：福岡 飲食 9月（空欄なら自動で決めます）" style="max-width:420px"><datalist id="fo-groups">${groups.map((g) => `<option value="${esc(g)}">`).join("")}</datalist>
+<p class="muted small" style="margin:4px 0 6px">同じグループのキャンペーン同士では、<b>同じ会社に重ねて送りません</b>（フォーム用とメール用に分けたときなど）。別のキャンペーンで<b>待機中・送信済み</b>の会社は取り込み時に除外し、送信直前にも確認します。<b>フォーム無し・失敗・画像認証</b>だった会社は連絡できていないので、同じグループの別キャンペーンで送れます。</p>
+${(() => {
+    const list = others.filter((o) => o.id !== editId);
+    if (!list.length) return "";
+    const mine = String(defaults.group_name ?? "");
+    return `<details ${mine ? "open" : ""} style="margin:0 0 12px"><summary style="cursor:pointer;font-weight:700">同じグループに入れるキャンペーンを選ぶ（昔のキャンペーンも選べます）</summary>
+<div style="max-height:220px;overflow:auto;border:1px solid var(--line,#e5e0d5);border-radius:8px;padding:8px 10px;margin-top:6px">${list.map((o) => `<label class="inline small" style="display:flex;gap:6px;align-items:center;font-weight:400;margin:3px 0"><input type="checkbox" name="group_members" value="${o.id}" ${mine && o.group_name === mine ? "checked" : ""} style="width:auto"> ${esc(o.name)}${o.group_name ? ` <span class="tag">グループ: ${esc(o.group_name)}</span>` : ` <span class="muted">（グループなし）</span>`}</label>`).join("")}</div>
+<p class="muted small" style="margin:4px 0 0">チェックしたキャンペーンをこのキャンペーンと同じグループにします。チェックを外したキャンペーンはこのグループから外れます。グループ名が空欄なら、チェックした中のグループ名、無ければこのキャンペーンの名前をグループ名にします。</p></details>`;
+  })()}
+</details>
+</div><div data-step="2"><h2 id="tpl">② 文面</h2>
+<label>件名（件名欄があるフォーム用）</label><input type="text" name="subject_text" value="${d("subject_text", "【ここに件名】のご案内")}" data-tplfield>
 <label>本文テンプレート</label>
-<p class="muted">使える差し込み: {{会社名}} {{代表者}}（無ければ「ご担当者様」） {{業種}} {{都道府県}} {{自社名}} {{担当者}} {{自社メール}} {{自社電話}} {{自社URL}} {{AI冒頭}} {{資料リンク}}</p>
+<div class="small" style="margin:0 0 6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center" id="tplvars"><span class="muted">差し込み（押すと、カーソルの位置に入ります）:</span>${TEMPLATE_VAR_BUTTONS.map((v) => `<button type="button" class="btn sub small" data-var="${esc(v)}" title="${esc(VAR_TIPS[v] ?? "")}">{{${esc(v)}}}</button>`).join("")}</div>
+<p class="muted small" style="margin:0 0 6px">{{代表者}} は相手の代表者名（無ければ「ご担当者様」）、{{自社…}} は送信者の情報が入ります。波括弧は半角で2つずつ（{{ と }}）。【ここに…】は自分の言葉に書き換えてください（残っていると開始できません）。</p>
 <div style="margin-bottom:6px"><label class="inline small">例文を挿入:
 <select id="tplpreset" style="width:auto;padding:4px 8px;max-width:360px"><option value="">業種・目的から選ぶと、件名と本文に入ります…</option>${TEMPLATE_LIBRARY.map((t) => `<option value="${esc(t.id)}">${esc(t.label)}</option>`).join("")}</select></label>
 <span class="muted small">※ 今の本文がある場合は置き換わります。【 】の中だけ自分の言葉に書き換えてください</span>
 <div id="tplnote" class="muted small" style="margin:4px 0 6px"></div></div>
-<textarea name="template_text" id="tpltext" style="min-height:320px">${d("template_text")}</textarea>
+<textarea name="template_text" id="tpltext" style="min-height:320px" data-tplfield>${d("template_text")}</textarea>
 <script>
+(() => {
+  // 差し込みのボタン。最後に触った件名・本文の欄（無ければ本文）の、カーソルの位置に入れる。
+  // 名前を手で打つと全角の波括弧や書き間違い（{{企業}} など）が起きやすく、そのまま相手に送られていた
+  let last = document.getElementById("tpltext");
+  document.querySelectorAll("[data-tplfield]").forEach((el) => el.addEventListener("focus", () => { last = el; }));
+  document.querySelectorAll("#tplvars [data-var]").forEach((b) => b.addEventListener("click", () => {
+    const el = last; if (!el) return;
+    const t = "{{" + b.dataset.var + "}}";
+    const s = el.selectionStart ?? el.value.length, e = el.selectionEnd ?? s;
+    el.value = el.value.slice(0, s) + t + el.value.slice(e);
+    el.focus(); el.setSelectionRange(s + t.length, s + t.length);
+    el.dispatchEvent(new Event("input", { bubbles: true })); // 下書きの保存に知らせる
+  }));
+})();
 (() => {
   // 業種別のひな形（#63）。選ぶと件名と本文に入る
   const T = ${JSON.stringify(Object.fromEntries(TEMPLATE_LIBRARY.map((t) => [t.id, { subject: t.subject, body: t.body, note: t.note }])))};
@@ -76,9 +100,9 @@ ${provider === "none" ? '<p class="muted small" data-nohelp>AIを使うモード
 <div style="border:1px solid var(--hive-200);border-radius:8px;padding:10px 12px;margin-top:8px">
 <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="ab_enabled" value="1" ${Number(defaults.ab_enabled ?? 0) ? "checked" : ""} style="width:auto">2つの文面を半分ずつ送って、反応を比べる（A/Bテスト）</label>
 <p class="muted small" style="margin:4px 0 8px">会社ごとに交互にA・Bを割り当てて送り、キャンペーン画面に「どちらが返信・アポを取れたか」を表示します。文面Bが空のときはAだけを送ります。</p>
-<label>件名（B）</label><input type="text" name="subject_b" value="${d("subject_b")}" placeholder="空ならAと同じ件名を使います">
-<label>本文（B）</label><textarea name="template_b" style="min-height:220px" placeholder="Aとは別の切り口の文面を入れてください">${d("template_b")}</textarea>
-<label>件名の別案（1行に1つ・任意）</label><textarea name="subject_alts" style="min-height:70px" placeholder="同じ件名を大量に送ると迷惑メール扱いされやすくなります。別案を入れると順番に使います">${d("subject_alts")}</textarea>
+<label>件名（B）</label><input type="text" name="subject_b" value="${d("subject_b")}" placeholder="空ならAと同じ件名を使います" data-tplfield>
+<label>本文（B）</label><textarea name="template_b" style="min-height:220px" placeholder="Aとは別の切り口の文面を入れてください" data-tplfield>${d("template_b")}</textarea>
+<label>件名の別案（1行に1つ・任意）</label><textarea name="subject_alts" style="min-height:70px" data-tplfield placeholder="同じ件名を大量に送ると迷惑メール扱いされやすくなります。別案を入れると順番に使います">${d("subject_alts")}</textarea>
 </div></details>
 <label>AIへの追加指示（任意）</label><input type="text" name="ai_instruction" value="${d("ai_instruction")}" placeholder="例: 採用課題に寄せる／飲食店向けに集客の話をする">
 </div><div data-step="3"><h2>③ 上限と時間帯</h2>
@@ -148,7 +172,7 @@ ${skipped.map((x) => `<tr><td>${esc(x.company)}</td><td class="small">${esc(x.re
 </table></details>` : ""}`;
 }
 
-export function campaignView(c: Campaign & { sender: SenderProfile }, jobs: Job[], counts: Record<string, number>, running: boolean, provider: string, extra: { preview?: { job: Job; subject: string; message: string; aiUsed: boolean; lint?: Lint[]; emailHtml?: string } | null; windowOk: boolean; sentToday: number; emailSentToday: number; scanning: boolean; unscanned: number; scanned: number; statusFilter?: string; qFilter?: string; outcomeFilter?: string; impFilter?: string; sortKey?: string; eta?: string; tab?: "prep" | "send" | "result"; page?: number; pageSize?: number; total?: number; companyTotal?: number; companyAll?: number; warmup?: { sent: number; limit: number; note: string } | null; ab?: { variant: string; sent: number; replied: number; appo: number }[]; undo?: { id: number; label: string; rows_count: number } | null; matched?: { n: number; sent: number }; attempts?: Record<string, number>; companyCounts?: Record<string, number>; outcomes: Record<string, number>; lastImport?: import("../csv.js").ImportSummary | null; retryTargets?: { id: number; company_name: string; status: string; result_text: string }[]; emailQueued?: number; period?: { todayForm: number; todayEmail: number; monthForm: number; monthEmail: number }; emailPaused?: { until: number; reason: string } | null; reactions?: { id: number; company_name: string; domain: string; email: string; channel: string; outcome: string; outcome_note: string; updated_at: string }[]; imports?: { key: string; label: string; at: string; total: number; sent: number; queued: number }[]; replyScan?: { enabled: boolean; checkedAt: string | null; error: string; checking: boolean } }) {
+export function campaignView(c: Campaign & { sender: SenderProfile }, jobs: Job[], counts: Record<string, number>, running: boolean, provider: string, extra: { preview?: { job: Job; subject: string; message: string; aiUsed: boolean; lint?: Lint[]; emailHtml?: string } | null; windowOk: boolean; sentToday: number; emailSentToday: number; scanning: boolean; unscanned: number; scanned: number; statusFilter?: string; qFilter?: string; outcomeFilter?: string; impFilter?: string; sortKey?: string; eta?: string; tab?: "prep" | "send" | "result"; page?: number; pageSize?: number; total?: number; companyTotal?: number; companyAll?: number; warmup?: { sent: number; limit: number; note: string } | null; ab?: { variant: string; sent: number; replied: number; appo: number }[]; undo?: { id: number; label: string; rows_count: number } | null; matched?: { n: number; sent: number }; attempts?: Record<string, number>; companyCounts?: Record<string, number>; outcomes: Record<string, number>; lastImport?: import("../csv.js").ImportSummary | null; retryTargets?: { id: number; company_name: string; status: string; result_text: string }[]; emailQueued?: number; period?: { todayForm: number; todayEmail: number; monthForm: number; monthEmail: number }; emailPaused?: { until: number; reason: string } | null; reactions?: { id: number; company_name: string; domain: string; email: string; channel: string; outcome: string; outcome_note: string; updated_at: string }[]; imports?: { key: string; label: string; at: string; total: number; sent: number; queued: number }[]; replyScan?: { enabled: boolean; checkedAt: string | null; error: string; checking: boolean }; stall?: { kind: string; text: string; blocking: boolean; href?: string; action?: string } | null; templateProblems?: string[] }) {
   // 「反応」欄の下に出す、返信の自動確認の状態（送信用メールの受信箱を15分ごとに読んで反応を自動記録している）
   const replyScanLine = () => {
     const r = extra.replyScan;
@@ -249,6 +273,19 @@ ${(() => {
 ${whys.length ? `<div class="ovwhy"><span class="muted">送れなかった理由</span>${whys.map((w) => `<a class="chip${w.ng ? " ng" : ""}" href="${link(w.keys[0])}" title="${esc(w.tip)}">${w.label} <b>${n(w.num)}</b></a>`).join("")}</div>` : ""}
 <div class="ovwhy" style="gap:6px 22px"><a href="/campaigns/${c.id}?tab=result#reactions" style="color:inherit;text-decoration:none"><span class="muted">返信</span> <b>${n(all)}</b>社${all ? `<span class="muted">（</span>アポ <b style="color:var(--c-ok)">${n(app)}</b><span class="muted">・</span>断り <b${dec ? ' style="color:var(--c-ng)"' : ""}>${n(dec)}</b><span class="muted">・</span>その他 <b>${n(other)}</b><span class="muted">）</span>` : ""}${rateText ? ` <span class="muted">${rateText}</span>` : ""}</a>${p ? `<a href="/stats?campaign=${c.id}" style="color:inherit;text-decoration:none"><span class="muted">今日</span> <b>${n(p.todayForm + p.todayEmail)}</b>社　<span class="muted">今月</span> <b>${n(p.monthForm + p.monthEmail)}</b>社</a>` : ""}</div>
 </div>`;
+  })()}
+${(() => {
+    // 文面の書き換え忘れ・差し込み名の間違い。開始のときにも同じ検査で止めるので、押す前にここで分かるようにする
+    const probs = extra.templateProblems ?? [];
+    if (!probs.length) return "";
+    return `<div class="flash" style="background:var(--c-ng-bg);color:var(--c-ng);display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap" data-nohelp>${IC_WARN}<div style="flex:1;min-width:240px"><b>文面に直すところがあります（このままでは開始できません）</b><ul style="margin:4px 0 0;padding-left:1.2em">${probs.slice(0, 6).map((x) => `<li class="small">${esc(x)}</li>`).join("")}${probs.length > 6 ? `<li class="small">ほか ${n(probs.length - 6)}件</li>` : ""}</ul></div><a class="btn small" href="/campaigns/${c.id}/edit#tpl">文面を直す</a></div>`;
+  })()}
+${(() => {
+    // いま送りが進まない理由（経路で1つに決めたもの）。「時間待ち」だけでは、なぜ進まないのか分からなかった
+    const st = extra.stall;
+    if (!st) return "";
+    const ng = st.kind === "auto";
+    return `<div class="flash" style="background:${ng ? "var(--c-ng-bg)" : "var(--c-warn-bg)"};color:${ng ? "var(--c-ng)" : "var(--c-warn)"};display:flex;gap:10px;align-items:center;flex-wrap:wrap" data-nohelp>${ng ? IC_WARN : ""}<span style="flex:1;min-width:240px">${st.blocking ? "<b>いま送っていない理由:</b> " : ""}${esc(st.text)}</span>${st.href && st.action ? `<a class="btn small" href="${esc(st.href)}">${esc(st.action)}</a>` : ""}</div>`;
   })()}
 
 ${tabsNav}

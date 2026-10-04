@@ -36,6 +36,10 @@ const RULES: Rule[] = [
   { re: /does not support .*on (mac|ubuntu|win)/i, jp: "このOSでは Playwright のブラウザを入れられません。Google Chrome が入っていればそちらを自動で使います" },
   { re: /Element is not (visible|enabled)|is not an? <?(input|select|textarea)/i, jp: "入力欄を操作できませんでした（画面の作りが特殊な可能性）" },
   { re: /frame was detached|Frame has been detached/i, jp: "ページが切り替わって操作できませんでした" },
+  // 画面から送った内容の読み取り（multer）。大きな貼り付け・ファイルで出る
+  { re: /Field value too long|LIMIT_FIELD_VALUE/i, jp: "貼り付けた内容が大きすぎます。ファイルで取り込むか、分けて貼り付けてください" },
+  { re: /File too large|LIMIT_FILE_SIZE/i, jp: "ファイルが大きすぎます。ファイルを分けてから取り込んでください" },
+  { re: /Unexpected end of form|Multipart: Boundary not found/i, jp: "送信が途中で切れました。もう一度お試しください" },
   // CSV（csv-parse）。取り込みが英語のエラーで止まると、どこを直せばよいか分からない
   { re: /Invalid Opening Quote|Invalid Closing Quote|Quote Not Closed|CSV_QUOTE_NOT_CLOSED|CSV_INVALID_CLOSING_QUOTE|INVALID_OPENING_QUOTE/i, jp: "CSVの中に「\"」（ダブルクォーテーション）の数が合わない行があり、表として読めませんでした。そのセルの「\"」を消すか全角の「”」に直してから取り込んでください" },
   { re: /Invalid Record Length|CSV_RECORD_INCONSISTENT|CSV_INVALID_ARGUMENT|Invalid option delimiter/i, jp: "CSVの列の数や区切りがそろっていない行があり、表として読めませんでした。Excelやスプレッドシートで開いて「CSV（UTF-8）」で保存し直してください" },

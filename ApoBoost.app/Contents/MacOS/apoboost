@@ -5,6 +5,14 @@
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 LAUNCHER="$ROOT/ApoBoost起動.command"
 
+# ダウンロードしたままの .app を開くと、macOS が安全のため .app だけを別の場所（…/AppTranslocation/…）に写して動かす。
+# そこにはApoBoostのフォルダが無いので、「見つかりません」と出て起動できない。原因と開き方を案内する
+case "$0" in
+  */AppTranslocation/*)
+    osascript -e 'display alert "ApoBoost.app をこの場所からは開けません" message "ダウンロードしたばかりのため、macOS が ApoBoost.app を別の場所に移して開いています。ApoBoost のフォルダの中にある「ApoBoost起動.command」をダブルクリックして開いてください（初回は「開く」の確認が出ます）。"'
+    exit 1 ;;
+esac
+
 if [ ! -f "$LAUNCHER" ]; then
   osascript -e 'display alert "ApoBoostが見つかりません" message "このアイコンは、ApoBoostのフォルダの中に置いたまま使ってください（フォルダの外に移動すると起動できません）。"'
   exit 1

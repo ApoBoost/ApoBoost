@@ -24,9 +24,12 @@ ${history.map((h) => `<li style="padding:6px 0 10px 14px;position:relative">
   return `<h1>${esc(j.company_name)} ${statusTag(j.status)}</h1>
 <p><a href="/campaigns/${c.id}">← ${esc(c.name)}</a></p>
 ${timeline}
-<div class="${j.screenshot_path ? "row" : ""}"><div class="card"><b>フォームURL:</b> <a href="${esc(j.form_url)}" target="_blank">${esc(j.form_url)}</a><br><b>企業URL:</b> ${esc(j.site_url)}<br><b>業種:</b> ${esc(j.industry)} / ${esc(j.sub_industry)}<br><b>試行:</b> ${j.attempts}回 <b>送信:</b> ${esc(jst(j.sent_at) || "-")}
+<div class="${j.screenshot_path ? "row" : ""}"><div class="card"><b>フォームURL:</b> ${/^https?:\/\//i.test(j.form_url || "") ? `<a href="${esc(j.form_url)}" target="_blank" rel="noopener">${esc(j.form_url)}</a>` : esc(j.form_url || "-")}<br><b>企業URL:</b> ${esc(j.site_url)}<br><b>業種:</b> ${esc(j.industry)} / ${esc(j.sub_industry)}<br><b>試行:</b> ${j.attempts}回 <b>送信:</b> ${esc(jst(j.sent_at) || "-")}
 <h2>結果・ログ ${errKind(j) ? `<span class="errkind">${esc(errKind(j))}</span>` : ""}</h2><pre>${esc(j.result_text)}</pre>
-<form method="post" action="/jobs/${j.id}/retry" class="inline" data-busy><button class="btn sub" data-busytext="再試行中…">再試行</button></form>
+${
+  // 再試行は「送れなかった」会社だけ。送信済みに出すと二重送信になる。
+  // 重複・再送禁止期間・除外・お断りで止めた会社（skip_duplicate など）にも出さない（再送禁止期間は送信の直前には見直さないため、安全装置を外してしまう）
+  ["failed", "skip_no_form", "skip_captcha"].includes(j.status) ? `<form method="post" action="/jobs/${j.id}/retry" class="inline" data-busy><button class="btn sub" data-busytext="再試行中…">再試行</button></form>` : ""}
 <form method="post" action="/jobs/${j.id}/assist" class="inline" data-busy><button class="btn sub" data-busytext="ブラウザで入力中…" title="このパソコンにブラウザを開き、フォームを入力した状態で止めます（送信は押しません）">ブラウザで開いて自動入力（送信しない）</button></form>
 ${j.status !== "sent" ? `<form method="post" action="/jobs/${j.id}/mark-sent" class="inline" onsubmit="return confirm('この会社を「送信済み（手動）」にします。手動で送った分の消し込みに使ってください。よろしいですか？')"><button class="btn sub">手動で送信済みにする</button></form>` : ""}
 ${j.status === "failed" || j.status === "skip_no_form" || j.status === "skip_captcha" ? `

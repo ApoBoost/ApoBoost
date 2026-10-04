@@ -20,10 +20,16 @@ npm start                        # → http://localhost:3210
 ```
 
 初回は、起動したPCのブラウザに「管理者のIDとパスワードを決める」画面（`/welcome`）が出ます（このPC自身から開いたときだけ。ほかの端末からは出ません）。`ADMIN_USER` / `ADMIN_PASSWORD` を環境変数で渡せば、画面を出さずにその値で作ります。
-同じフォルダで2つ目を起動しても、「すでに起動しています」と出てブラウザを開くだけで終わります（送信中の仕事には触りません）。
+同じフォルダで2つ目を起動しても、「すでに起動しています」と出てブラウザを開くだけで終わります（送信中の仕事には触りません）。前の方が終了待ち（`/healthz` が `stopping: true`）なら、終わるのを待ってから起動します（最長130秒）。
 `npm start` は `scripts/run.mjs` 経由で、アップデート後の自動再起動（終了コード75）に対応します。`npm run dev` は素の起動で、再起動しません。
+`scripts/run.mjs` は起動のたびに、node のフォルダを PATH の先頭に足す・better-sqlite3 が今の Node.js に合わなければ `npm rebuild`・Playwright の Chromium が無ければ入れる（Chrome / Edge があれば裏で入れて先に起動）、をします。
 
-環境変数: `PORT`(3210) / `DATA_DIR`(./data) / `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` / `CHROMIUM_PATH` / `HEADLESS=0`(ブラウザを見ながらデバッグ) / `COOKIE_SECURE`
+利用者のPCでは、起動ファイル（`ApoBoost起動.command` / `.bat`）が Node.js の有無と版を見て、無い・古いときは nodejs.org の公式配布物をフォルダ内の `runtime/` に落として使います（gitignore 済み。アップデートでも消えない）。版とハッシュは各起動ファイルの先頭1か所。
+
+環境変数: `PORT`(3210) / `DATA_DIR`(./data) / `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` / `CHROMIUM_PATH` / `HEADLESS=0`(ブラウザを見ながらデバッグ) / `COOKIE_SECURE` / `APOBOOST_NO_AUTOSTART=1`
+
+**確認用に別ポート・別データで起動するときは、このPCの本物の自動起動を書き換えないこと。** `PORT` か `DATA_DIR` を既定から変えた起動、または `APOBOOST_NO_AUTOSTART=1` では、自動起動の登録・書き直しをしません（`src/autostart.ts` の `autostartBlockedReason`）。例:
+`PORT=3221 CLEAN_PORT=0 FO_OPEN=0 GAME=0 SUPPORT_URL= APOBOOST_NO_AUTOSTART=1 DATA_DIR=$(mktemp -d) npm run dev`（止めるときは `lsof -ti:3221 | xargs kill`）
 
 AIのAPIキーは**設定画面（管理者のみ）からの登録が優先**され、`data/` 内のDBに保存されます（gitには載らない）。環境変数はそのフォールバック。**キーをコードやリポジトリに書かないこと**（利用先ごとに各自のキーを登録してもらう方式。開発者のキーを配布物に入れると全利用先の分が開発者に課金される）。
 

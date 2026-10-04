@@ -42,6 +42,9 @@ input:focus{outline:0;border-color:#0071E3;box-shadow:0 0 0 4px rgba(0,113,227,.
 @media (prefers-reduced-motion:reduce){body,.box,.logo,.logo::after{animation:none!important}button{transition:none}}
 .note{background:#F5F5F7;color:#6E6E73;border-radius:8px;padding:9px 12px;font-size:12px;line-height:1.6;margin:14px 0 0}
 .info{background:#E8F2FD;color:#0B4F94;border-radius:8px;padding:9px 12px;font-size:13px;line-height:1.6;margin-bottom:6px}
+.check{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:#1D1D1F;margin:18px 0 0;cursor:pointer}
+.check input{width:auto;margin:2px 0 0;flex:none}
+.hint{color:#6E6E73;font-size:12px;line-height:1.6;margin:4px 0 0 24px}
 `;
 
 /** ログイン画面（ヘッダー無しの独立レイアウト）。notice は「管理者がまだいない」ときの案内など */
@@ -64,7 +67,14 @@ ${opts.error ? `<div class="err">${esc(opts.error)}</div>` : ""}
 
 /** 初回設定: 最初の管理者のログインIDとパスワードを本人に決めてもらう（このPCから開いたときだけ出る）。
  *  ターミナルに出したIDとパスワードを読み飛ばしてログインできない、という導入時のつまずきをなくすため */
-export function firstAdminPage(opts: { error?: string; username?: string } = {}): string {
+export function firstAdminPage(opts: { error?: string; username?: string; autostart?: { supported: boolean; checked: boolean; placeNote?: string } } = {}): string {
+  // パソコンの起動時に自動で立ち上げる（おすすめ・既定でオン）。「黒い画面を閉じて止まる」「再起動したあと起動し忘れる」が、
+  // 問い合わせの中でいちばん多いため、最初の設定のときに一緒に決めてもらう。あとから 設定 → 動作チェック で切り替えられる
+  const auto = opts.autostart?.supported
+    ? `<label class="check"><input type="checkbox" name="autostart" value="1"${opts.autostart.checked ? " checked" : ""}>パソコンの起動時に自動で立ち上げる（おすすめ）</label>
+<p class="hint">黒い画面を閉じたり、パソコンを再起動したりしても、次のログインから自動で動きます。あとから「動作チェック」の画面で切り替えられます。${opts.autostart.placeNote ? `<br>${esc(opts.autostart.placeNote)}` : ""}</p>
+<input type="hidden" name="autostart_shown" value="1">`
+    : "";
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>はじめに | ApoBoost</title>
 <style>
@@ -76,6 +86,7 @@ ${opts.error ? `<div class="err">${esc(opts.error)}</div>` : ""}
 <label>ログインID（半角英数字・._- の3〜32文字）</label><input name="username" value="${esc(opts.username ?? "")}" autocomplete="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9._\\-]{3,32}">
 <label>パスワード（8文字以上）</label><input name="password" type="password" autocomplete="new-password" autofocus required minlength="8">
 <label>パスワード（確認のためもう一度）</label><input name="password2" type="password" autocomplete="new-password" required minlength="8">
+${auto}
 <button>決めてはじめる</button>
 <p class="note">このIDとパスワードで次回からログインします。控えておいてください。メンバーのアカウントは、あとから「ユーザー管理」で発行できます。</p>
 <img class="buddy" src="/assets/mascot.png?v=1" alt="" onerror="this.remove()">

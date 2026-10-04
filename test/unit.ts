@@ -16,7 +16,7 @@ const { phrasesFor, learnFromCorrection, classifyReply, clearReplyRulesCache } =
 const { S, setting, settingOn, saveSettingValue, settingNum } = await import("../src/settings.js");
 const { TEMPLATE_LIBRARY } = await import("../src/templates.js");
 const { createBackup, listBackups, requestRestore, pendingRestore, cancelRestore } = await import("../src/backup.js");
-const { splitAddress, classify } = await import("../src/formFiller.js");
+const { splitAddress, classify, dialogSaysSent } = await import("../src/formFiller.js");
 const { excludedKeywords, matchExcludedKeyword } = await import("../src/csv.js");
 const { logError, recentLogs } = await import("../src/applog.js");
 const { getDb } = await import("../src/db.js");
@@ -34,6 +34,14 @@ const fi = (sig: string, type = "text") => ({ idx: 0, tag: "input", type, name: 
 eq("classify: type=tel の郵便番号は郵便番号", classify(fi("例）1234567 | 郵便番号 | zip || 郵便番号 住所", "tel")), "postal");
 eq("classify: type=tel のFAXは入れない", classify(fi("FAX | fax || FAX番号", "tel")), "ignore");
 eq("classify: type=tel の電話は電話", classify(fi("例) 042-643-6261 | telephone-number || 電話番号", "tel")), "tel");
+// 送信直後のポップアップ（alert）が完了の知らせか。確認・警告・打ち消しは完了にしない
+eq("dialog: 送信しました は完了", dialogSaysSent("送信しました"), true);
+eq("dialog: Thanks for contacting us! は完了", dialogSaysSent("Thanks for contacting us!"), true);
+eq("dialog: 送信してよろしいですか は完了でない", dialogSaysSent("この内容で送信しました。よろしいですか？"), false);
+eq("dialog: 入力の警告は完了でない", dialogSaysSent("お電話を入力してください"), false);
+eq("dialog: 送信に失敗しました は完了でない", dialogSaysSent("送信に失敗しました"), false);
+eq("dialog: まだ送信は完了していません は完了でない", dialogSaysSent("まだ送信は完了していません"), false);
+eq("dialog: 確認メールの予告だけでは完了にしない", dialogSaysSent("ご入力ありがとうございます"), false);
 
 // ---- jp.ts: 英語エラーの日本語化 ----
 ok("jp: DNSエラー", jpError(new Error("net::ERR_NAME_NOT_RESOLVED at https://x")).includes("サイトが見つかりません"));
@@ -270,6 +278,151 @@ saveSettingValue(S.excludedIndustries, "");
   // 結果のお知らせに内部の値（sent など）を出さない
   eq("結果: 日本語の状態名", resultNote({ status: "sent", result_text: "送信完了を確認\n詳細" }), "送信済み（送信完了を確認）");
   ok("結果: 知らない状態でも英語を出さない", !/[a-z]/.test(resultNote({ status: "weird" })));
+
+  // 見出し: 括弧の中が注記のときだけ外す（1周目で全部外すようにしたら、別の列を会社URL・会社メールとして拾っていた）
+  eq("見出し: 「URL（Indeed）」より HP を会社URLにする", rep(["会社名", "HP", "URL（Indeed）"]), { 企業名: "会社名", 企業URL: "HP" });
+  eq("見出し: 個人のメールを会社メールにしない", rep(["会社名", "メール（担当者個人）", "Mail(個人)"]), { 企業名: "会社名" });
+  eq("見出し: 「企業名（英数字不可）」を読み仮名扱いにしない", parseCompanyCsv("企業名（英数字不可）,HP\n株式会社A,https://a.example.jp/\n").map((r) => [r.company_name, r.site_url]), [["株式会社A", "https://a.example.jp/"]]);
+  eq("見出し: 注記の括弧は外す", ["会社名（必須）", "URL（例：https://example.com）", "メール（問い合わせ用）", "電話番号（ハイフンなし）"].map(normHeader), ["会社名", "url", "メール", "電話番号"]);
+  ok("見出し: 英語表記の列は別扱い", normHeader("会社名(英語表記)") !== "会社名");
+  eq("見出し: 素の URL と HP があれば HP", rep(["会社名", "URL", "HP"])["企業URL"], "HP");
+}
+
+// ---- 文面の検査・進まない理由・今日の数・お知らせの持ち主・大きすぎる貼り付け（2周目）----
+{
+  const { templateProblems, normalizeTemplateBraces, suggestTemplateVar, TEMPLATE_VARS, TEMPLATE_VAR_BUTTONS } = await import("../src/ui/parts.js");
+  const { DEFAULT_TEMPLATE, DEFAULT_SUBJECT, renderTemplate, buildVars } = await import("../src/message.js");
+  const ctx = await import("../src/app/context.js");
+  const { sentTodaySql, SENT_TODAY_SQL } = await import("../src/db.js");
+  const { sentToday } = await import("../src/worker.js");
+  const db = getDb();
+
+  // 文面の検査
+  const okTpl = "{{会社名}}\n{{代表者}}\n\n突然のご連絡失礼いたします。{{自社名}}の{{担当者}}と申します。\n弊社はテストサービスを提供しております。\n{{自社メール}}";
+  eq("文面: 正しい文面は問題なし", templateProblems({ subject_text: "{{会社名}}様へのご案内", template_text: okTpl }), []);
+  {
+    const p = templateProblems({ subject_text: DEFAULT_SUBJECT, template_text: DEFAULT_TEMPLATE });
+    ok("文面: 初期値の件名の【ここに】を見つける", p.some((x) => x.startsWith("件名に【ここに")), JSON.stringify(p));
+    ok("文面: 初期値の本文の【ここに】を見つける", p.some((x) => x.startsWith("本文に【ここに")), JSON.stringify(p));
+  }
+  ok("文面: {{企業}} に {{会社名}} を勧める", templateProblems({ subject_text: "ご案内", template_text: "{{企業}} 御中\n" + okTpl }).some((x) => x.includes("{{企業}} は使えない") && x.includes("{{会社名}} のことですか")));
+  eq("文面: 近い名前", [suggestTemplateVar("社名"), suggestTemplateVar("自社電話番号"), suggestTemplateVar("ＡＩ冒頭"), suggestTemplateVar("まったく関係ない言葉")], ["会社名", "自社電話", "AI冒頭", ""]);
+  ok("文面: 一重の {会社名} を止める", templateProblems({ template_text: "{会社名} 御中\n" + okTpl }).some((x) => x.includes("「{会社名}」") && x.includes("{{会社名}}")));
+  ok("文面: 閉じ忘れ {{会社名} を止める", templateProblems({ template_text: "{{会社名} 御中\n" + okTpl }).some((x) => x.includes("「{{会社名}」")));
+  ok("文面: 全角の ｛｛会社名｝｝ を止める", templateProblems({ template_text: "｛｛会社名｝｝ 御中\n" + okTpl }).length > 0);
+  eq("文面: 保存時に全角の二重波括弧を半角にそろえる", normalizeTemplateBraces("｛｛会社名｝｝ ｛{担当者}｝ ｛飾り｝"), "{{会社名}} {{担当者}} ｛飾り｝");
+  eq("文面: そろえたあとは問題なし", templateProblems({ template_text: normalizeTemplateBraces("｛｛会社名｝｝ 御中\n" + okTpl) }), []);
+  eq("文面: 空白入り {{ 会社名 }} は使える", templateProblems({ template_text: "{{ 会社名 }} 御中\n" + okTpl }), []);
+  ok("文面: 本文が空なら止める", templateProblems({ subject_text: "ご案内", template_text: "  " }).some((x) => x.includes("本文が空")));
+  eq("文面: A/Bを使わないときは本文Bを見ない", templateProblems({ template_text: okTpl, template_b: "【ここに】", ab_enabled: 0 }), []);
+  ok("文面: A/Bを使うときは本文Bと件名Bも見る", templateProblems({ template_text: okTpl, template_b: "{{企業}}", subject_b: "【ここに件名】", ab_enabled: 1 }).length === 2);
+  ok("文面: 件名の別案も見る", templateProblems({ template_text: okTpl, subject_alts: "ご案内\n【ここに別案】" }).some((x) => x.startsWith("件名の別案")));
+  // 差し込み名の一覧は message.ts の buildVars から取っている。実際に置き換わる名前と一致すること
+  {
+    const vars = { ...buildVars({ company_name: "A社", industry: "", sub_industry: "", prefecture: "", representative: "" }, { company: "B社", person: "田中", email: "", tel: "", url: "" } as never), 資料リンク: "", AI冒頭: "" };
+    ok("文面: 一覧の名前はすべて置き換わる", TEMPLATE_VARS.every((v) => !renderTemplate(`{{${v}}}`, vars).includes("{{")));
+    ok("文面: ボタンの名前は一覧の中にある", TEMPLATE_VAR_BUTTONS.length >= 10 && TEMPLATE_VAR_BUTTONS.every((v) => TEMPLATE_VARS.includes(v)));
+  }
+  // ひな形: 書き換える所はすべて【ここに…】の形（検査に掛かるように）。【ここに】を埋めれば問題が残らない
+  ok("ひな形: 【 】はすべて【ここに…】", TEMPLATE_LIBRARY.every((t) => !/【(?!ここに)/.test(t.subject + t.body)), TEMPLATE_LIBRARY.filter((t) => /【(?!ここに)/.test(t.subject + t.body)).map((t) => t.id).join(","));
+  ok("ひな形: 【ここに】を埋めれば問題なし", TEMPLATE_LIBRARY.every((t) => templateProblems({ subject_text: t.subject.replace(/【ここに[^】]*】/g, "X"), template_text: t.body.replace(/【ここに[^】]*】/g, "X") }).length === 0));
+
+  // 「今日」の数は上限の判定と同じ（戻りメールで失敗に変わった分も数える）
+  eq("今日: 別名付きの条件", sentTodaySql("j."), SENT_TODAY_SQL.replace(/sent_at/g, "j.sent_at"));
+  const sid = Number(db.prepare("INSERT INTO sender_profiles(label, company, person, email) VALUES('s2','テスト社','担当','me2@example.jp')").run().lastInsertRowid);
+  const mk = (o: Record<string, unknown> = {}) => {
+    const c = { name: "進まない理由", status: "running", mode: "template", channel: "form_first", weekdays_only: 0, send_window_start: 0, send_window_end: 24, daily_limit: 100, email_daily_limit: 100, owner_user_id: null, ...o };
+    const keys = Object.keys(c);
+    return Number(db.prepare(`INSERT INTO form_campaigns(sender_id, ${keys.join(",")}) VALUES(?, ${keys.map(() => "?").join(",")})`).run(sid, ...Object.values(c) as never[]).lastInsertRowid);
+  };
+  const job = (cid: number, o: Record<string, unknown> = {}) => {
+    const j = { company_name: "株式会社テスト", domain: `t${Math.random().toString(36).slice(2, 8)}.example.jp`, status: "queued", channel: "form", ...o };
+    const keys = Object.keys(j);
+    return Number(db.prepare(`INSERT INTO form_jobs(campaign_id, ${keys.join(",")}) VALUES(?, ${keys.map(() => "?").join(",")})`).run(cid, ...Object.values(j) as never[]).lastInsertRowid);
+  };
+  const camp = (id: number) => db.prepare("SELECT * FROM form_campaigns WHERE id=?").get(id) as never;
+  {
+    const cid = mk();
+    job(cid, { status: "sent", sent_at: new Date().toISOString().replace("T", " ").slice(0, 19) });
+    job(cid, { status: "failed", channel: "email", sent_at: new Date().toISOString().replace("T", " ").slice(0, 19), result_text: "戻りメール" });
+    eq("今日: 戻りメールで失敗に変わった分も数える", [sentToday(cid, "form"), sentToday(cid, "email")], [1, 1]);
+    eq("進まない理由: 待機が無ければ無し", ctx.campaignStall(camp(cid)), null);
+    job(cid, { channel: "email", retry_after: "2999-01-01 00:00:00" });
+    eq("進まない理由: 再送待ちだけなら再送待ち", ctx.campaignStall(camp(cid))?.kind, "retry");
+  }
+  {
+    const cid = mk({ daily_limit: 1 });
+    job(cid, { status: "sent", sent_at: new Date().toISOString().replace("T", " ").slice(0, 19) });
+    job(cid);
+    const st = ctx.campaignStall(camp(cid));
+    eq("進まない理由: フォームの上限", [st?.kind, st?.blocking], ["limit", true]);
+  }
+  {
+    const h = new Date(Date.now() + 9 * 3600_000).getUTCHours();
+    const cid = h < 23 ? mk({ send_window_start: h + 1, send_window_end: 24 }) : mk({ send_window_start: 0, send_window_end: 1 });
+    job(cid);
+    const st = ctx.campaignStall(camp(cid));
+    ok("進まない理由: 時間帯の外", st?.kind === "window" && st.text.includes("次の送信は"), JSON.stringify(st));
+  }
+  {
+    const cid = mk({ mode: "ai" });
+    job(cid);
+    db.prepare("INSERT INTO settings(key,value) VALUES('ai_pause',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify({ until: Date.now() + 10 * 60_000, reason: "混雑" }));
+    eq("進まない理由: AIの一時停止", ctx.campaignStall(camp(cid))?.kind, "ai");
+    db.prepare("DELETE FROM settings WHERE key='ai_pause'").run();
+  }
+  {
+    // worker が自動で止めたとき（pause_reason がまだ無い版）: 待機に戻した会社の結果の文から理由を拾い、直すボタンを付ける
+    const cid = mk({ status: "paused" });
+    job(cid, { result_text: `文面の差し込みに間違いがあるため待機に戻しました${ctx.AUTO_PAUSE_MARK}: 差し込みが置き換わっていません: {{企業}}` });
+    const st = ctx.campaignStall(camp(cid));
+    ok("進まない理由: 自動の一時停止の理由と直す先", st?.kind === "auto" && st.text.includes("{{企業}}") && st.href === `/campaigns/${cid}/edit`, JSON.stringify(st));
+    db.prepare("UPDATE form_campaigns SET pause_reason='AIで文面を作れないため: APIキーが正しくありません' WHERE id=?").run(cid);
+    eq("進まない理由: pause_reason があればそれを使う", ctx.campaignStall(camp(cid))?.href, "/settings#s-ai");
+    // 文面の間違いの説明に「AI」の文字が入っていても（{{AI}} の書き間違い）、AIの設定へは案内しない
+    db.prepare("UPDATE form_campaigns SET pause_reason='文面に直す所があるため: 件名の差し込みが置き換わっていません: {{AI}}' WHERE id=?").run(cid);
+    eq("進まない理由: 文面の間違いはAIの設定へ案内しない", ctx.campaignStall(camp(cid))?.href, `/campaigns/${cid}/edit`);
+    db.prepare("UPDATE form_campaigns SET status='paused', pause_reason='' WHERE id=?").run(cid);
+    db.prepare("UPDATE form_jobs SET result_text='' WHERE campaign_id=?").run(cid);
+    eq("進まない理由: 手で止めたものは自動停止と言わない", ctx.campaignStall(camp(cid)), null);
+  }
+
+  // お知らせ（/events）: 一般ユーザーには自分のキャンペーンのものだけ
+  {
+    const { eventVisibleTo } = await import("../src/routes/pages.js");
+    const mine = mk({ name: "Aさんの案件", owner_user_id: 901 });
+    const other = mk({ name: "Bさんの案件", owner_user_id: 902 });
+    const reqA = { user: { id: 901, role: "member" } } as never, admin = { user: { id: 1, role: "admin" } } as never;
+    const ev = (title: string, body: string, key?: string) => ({ title, body, key });
+    ok("お知らせ: 自分のキャンペーンは出す", eventVisibleTo(reqA, ev("送信が完了しました", "「Aさんの案件」の待機がすべて終わりました")));
+    ok("お知らせ: 他の人のキャンペーンは出さない", !eventVisibleTo(reqA, ev("送信が完了しました", "「Bさんの案件」の待機がすべて終わりました")));
+    ok("お知らせ: key があれば key で決める", eventVisibleTo(reqA, ev("x", "", `done:${mine}`)) && !eventVisibleTo(reqA, ev("x", "", `done:${other}`)));
+    ok("お知らせ: 全員のまとめは一般ユーザーに出さない", !eventVisibleTo(reqA, ev("今日のまとめ", "送信 10件")));
+    ok("お知らせ: 更新のお知らせは全員に出す", eventVisibleTo(reqA, ev("新しい版に更新しました", "v1 に更新")));
+    ok("お知らせ: 管理者には全部出す", eventVisibleTo(admin, ev("送信が完了しました", "「Bさんの案件」の待機がすべて終わりました")));
+  }
+
+  // 大きすぎる貼り付け: 500のエラーページではなく、元の画面に戻して日本語で知らせる
+  {
+    const express = (await import("express")).default;
+    const http = await import("node:http");
+    const app2 = express();
+    app2.post("/x", ctx.uploadSingle("csv", () => "/back"), (_req, res) => { res.send("ok"); });
+    const server = app2.listen(0, "127.0.0.1");
+    await new Promise((r) => server.once("listening", r));
+    const port = (server.address() as { port: number }).port;
+    const boundary = "----fotest";
+    const big = "a".repeat(21 * 1024 * 1024);
+    const body = `--${boundary}\r\nContent-Disposition: form-data; name="pasted"\r\n\r\n${big}\r\n--${boundary}--\r\n`;
+    const r = await new Promise<{ status: number; location: string }>((resolve, reject) => {
+      const rq = http.request({ host: "127.0.0.1", port, path: "/x", method: "POST", headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "content-length": Buffer.byteLength(body) } }, (rs) => { rs.resume(); resolve({ status: rs.statusCode ?? 0, location: String(rs.headers.location ?? "") }); });
+      rq.on("error", reject);
+      rq.end(body);
+    });
+    server.close();
+    eq("貼り付け: 大きすぎるときは元の画面に戻す", [r.status, r.location], [302, "/back"]);
+    ok("貼り付け: 理由を日本語で出す", ctx.takeFlash({ path: "/back" } as never).includes("貼り付けが大きすぎます"));
+  }
 }
 
 // ---- formFiller.ts: 住所の分割 ----
@@ -544,6 +697,260 @@ ok("applog: 書いて読める", recentLogs(5).some((r) => r.text === "テスト
       globalThis.fetch = realFetch;
       db.prepare("DELETE FROM settings WHERE key IN ('ai_provider','ai_api_key','ai_pause')").run();
     }
+  }
+  await new Promise<void>((r) => server.close(() => r()));
+}
+
+// ---- メール2周目: 宛先の表記ゆれ・アカウント側の制限・上限と二重送信・フリーメール・送信者の入力 ----
+// 実在のメールサーバーにはつながない。このテストの中で 127.0.0.1 に立てる偽のSMTPサーバーだけを使う
+{
+  const net = await import("node:net");
+  const em = await import("../src/email.js");
+  const { normalizeEmail, isOptedOut, optOut, domainSuppressed, classifySmtpError, explainSmtpError, maybeAccountSide, emailPause, clearEmailPause, unreadReplyAddress } = em;
+  const { processJob, sentTodayBySender, claimJobForManual } = await import("../src/worker.js");
+  const { importRowsToCampaign } = await import("../src/csv.js");
+  const { validateSender } = await import("../src/app/context.js");
+  const db = getDb();
+  const smtpE = (o: Record<string, unknown>) => Object.assign(new Error(String(o.message ?? "")), o);
+
+  // ① 宛先アドレスの表記ゆれ
+  for (const [raw, want] of [
+    ["mailto:Info@A.jp", "info@a.jp"], ["<info@a.jp>", "info@a.jp"], ["info@a.jp,", "info@a.jp"], ["info@a.jp;", "info@a.jp"],
+    ["info@a.jp。", "info@a.jp"], ["info@a.jp(代表)", "info@a.jp"], ["info@a.jp（代表）", "info@a.jp"], ["ｉｎｆｏ＠ａ．ｊｐ", "info@a.jp"],
+    ["a@x.jp/b@x.jp", "a@x.jp"], ["a@x.jp、b@x.jp", "a@x.jp"], ["田中<info@a.jp>", "info@a.jp"], ["mailto:info@a.jp?subject=%E9%85%8D", "info@a.jp"],
+    [" info@a.jp ", "info@a.jp"], ["info@a", ""], ["なし", ""], ["info@@a.jp", ""], ["", ""], ["info＠", ""],
+  ] as [string, string][]) eq(`アドレスをそろえる: ${JSON.stringify(raw)}`, normalizeEmail(raw), want);
+
+  // 飾り付きのまま保存されている古い配信停止も、照合のときにそろえて効かせる（行は書き換えない）
+  db.prepare("INSERT INTO email_optouts(email, reason) VALUES('mailto:legacy@old.example','旧版の登録')").run();
+  ok("配信停止: 古い飾り付きの行にも当たる", isOptedOut("legacy@old.example"));
+  ok("配信停止: 照合する側の飾りもそろえる", isOptedOut("<LEGACY@old.example>,"));
+  ok("配信停止: 関係ないアドレスは当たらない", !isOptedOut("other@old.example"));
+  eq("配信停止: 古い行は書き換えない", (db.prepare("SELECT COUNT(*) n FROM email_optouts WHERE email='mailto:legacy@old.example'").get() as { n: number }).n, 1);
+  optOut("<Stop@New.example>,", "テスト");
+  ok("配信停止: そろえた形で登録する", Boolean(db.prepare("SELECT 1 FROM email_optouts WHERE email='stop@new.example'").get()));
+
+  // 偽のSMTPサーバー。RCPT と本文（DATA）の返事を切り替えられる。受け取った宛先を控える
+  type M2 = { rcpt?: string; end?: string; onData?: () => void };
+  let m2: M2 = {};
+  const rcpts: string[] = [];
+  const server = net.createServer((sock) => {
+    let buf = "", inData = false, authWait = false;
+    const say = (l: string) => { if (!sock.destroyed) sock.write(l + "\r\n"); };
+    say("220 fake2.local ESMTP");
+    sock.on("error", () => {});
+    sock.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      for (;;) {
+        if (inData) {
+          const end = buf.indexOf("\r\n.\r\n");
+          if (end < 0) return;
+          buf = buf.slice(end + 5); inData = false;
+          m2.onData?.();
+          say(m2.end ?? "250 2.0.0 queued");
+          continue;
+        }
+        const i = buf.indexOf("\r\n");
+        if (i < 0) return;
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        const cmd = line.toUpperCase();
+        if (authWait) { authWait = false; say("235 2.7.0 ok"); }
+        else if (cmd.startsWith("EHLO")) say("250-fake2.local\r\n250-AUTH PLAIN\r\n250 8BITMIME");
+        else if (cmd === "AUTH PLAIN") { authWait = true; say("334 "); }
+        else if (cmd.startsWith("AUTH PLAIN")) say("235 2.7.0 ok");
+        else if (cmd.startsWith("RCPT TO")) { rcpts.push(line.slice(8).trim()); say(m2.rcpt ?? "250 ok"); }
+        else if (cmd === "DATA") { inData = true; say("354 go"); }
+        else if (cmd === "QUIT") { say("221 bye"); sock.end(); }
+        else say("250 ok");
+      }
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as { port: number }).port;
+  const mkSender = (label: string, smtpUser: string) => db.prepare(`INSERT INTO sender_profiles(label,company,person,email,reply_email,smtp_user,smtp_pass,smtp_host,smtp_port,address) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    .run(label, "株式会社送信テスト", "田中 太郎", smtpUser, "", smtpUser, "pass", "127.0.0.1", port, "東京都港区1-1").lastInsertRowid as number;
+  const sender = (id: number) => db.prepare("SELECT * FROM sender_profiles WHERE id=?").get(id) as never;
+  const tpl = "{{会社名}}\nご担当者様\n\n突然のご連絡失礼いたします。株式会社送信テストの田中と申します。\n\n弊社は中小企業向けに、問い合わせ対応を楽にする仕組みをご提供しております。\n貴社の業務の手間を減らすお手伝いができればと思い、ご連絡いたしました。\n\nご興味があれば本メールにご返信ください。\n田中 太郎\n\n※本メッセージが不要な場合は、お手数ですがその旨ご連絡ください。以後のご連絡は控えさせていただきます。";
+  const mkCamp = (name: string, senderId: number, limit = 100) => db.prepare(`INSERT INTO form_campaigns(name,sender_id,mode,subject_text,template_text,channel,email_warmup,email_daily_limit) VALUES(?,?,?,?,?,?,0,?)`)
+    .run(name, senderId, "template", "ご案内", tpl, "email", limit).lastInsertRowid as number;
+  const mkJob = (camp: number, name: string, email: string, domain = email.split("@")[1] ?? "") => db.prepare(`INSERT INTO form_jobs(campaign_id,company_name,email,domain,channel,status) VALUES(?,?,?,?,'email','queued')`)
+    .run(camp, name, email, domain).lastInsertRowid as number;
+  type Row = { status: string; result_text: string; email: string; domain: string; retry_after: string | null; temp_tries: number; prev_status: string; sent_at: string | null };
+  const row = (id: number) => db.prepare("SELECT status, result_text, email, domain, retry_after, temp_tries, prev_status, sent_at FROM form_jobs WHERE id=?").get(id) as Row;
+  const noBrowser = null as never;
+
+  // ① 送信直前: 飾り付きの古い行も、そろえた宛先で送り、配信停止・同じアドレス・官公庁の照合が効く
+  {
+    const sN = mkSender("正規化", "norm@sender.example");
+    const c = mkCamp("表記ゆれ", sN);
+    const j1 = mkJob(c, "株式会社飾り", "mailto:Info@Norm.example", "norm.example>");
+    rcpts.length = 0; m2 = {};
+    await processJob(noBrowser, j1);
+    eq("飾り付き: 送れる", row(j1).status, "sent");
+    eq("飾り付き: そろえた宛先に送る", rcpts, ["<info@norm.example>"]);
+    eq("飾り付き: そろえた形で保存し直す（返信・戻りメールの照合のため）", [row(j1).email, row(j1).domain], ["info@norm.example", "norm.example"]);
+    const j2 = mkJob(c, "株式会社配信停止済み", "<legacy@old.example>");
+    await processJob(noBrowser, j2);
+    eq("飾り付き: 配信停止済みには送らない", row(j2).status, "skip_optout");
+    const j3 = mkJob(c, "株式会社グループ別社", "INFO@norm.example", "group-other.example");
+    rcpts.length = 0;
+    await processJob(noBrowser, j3);
+    eq("同じアドレス: 再送禁止の期間内なら送らない", row(j3).status, "skip_duplicate");
+    eq("同じアドレス: 送っていない", rcpts.length, 0);
+    const j4 = mkJob(c, "株式会社壊れ", "info@@broken");
+    await processJob(noBrowser, j4);
+    eq("読めないアドレス: 失敗にする", row(j4).status, "failed");
+    ok("読めないアドレス: 理由が分かる", row(j4).result_text.includes("メールアドレスの形が正しくない"), row(j4).result_text);
+    const j5 = mkJob(c, "株式会社官公庁テスト", "soumu@city.example.lg.jp", "city.example.lg.jp>");
+    await processJob(noBrowser, j5);
+    eq("崩れたドメインの官公庁: 送信直前に外す", row(j5).status, "skip_suppressed");
+  }
+
+  // ① ④ 取り込み: 表記ゆれ・同じアドレス・フリーメールはアドレス単位
+  {
+    const sI = mkSender("取り込み", "imp@sender.example");
+    const c = mkCamp("取り込みテスト", sI);
+    const other = mkCamp("過去の送信", sI);
+    db.prepare(`INSERT INTO form_jobs(campaign_id,company_name,email,domain,channel,status,sent_at) VALUES(?,?,?,?,'email','sent',datetime('now','-3 days'))`).run(other, "前に送ったGmailの会社", "sent@gmail.com", "gmail.com");
+    db.prepare(`INSERT INTO form_jobs(campaign_id,company_name,email,domain,channel,status,sent_at) VALUES(?,?,?,?,'email','sent',datetime('now','-3 days'))`).run(other, "前に送った会社", "info@sentco.example", "sentco.example");
+    db.prepare("INSERT INTO form_suppressions(domain, reason) VALUES('gmail.com','断り・返信から自動判定（旧版で入った行）')").run();
+    const base = { form_url: "", site_url: "", industry: "", sub_industry: "", prefecture: "", representative: "" };
+    const rows = [
+      { ...base, company_name: "株式会社共通A", email: "mailto:info@group.example" },
+      { ...base, company_name: "株式会社共通B", email: "info@group.example", site_url: "https://b-site.example/" },
+      { ...base, company_name: "太郎商店", email: "taro@gmail.com" },
+      { ...base, company_name: "花子商店", email: "hanako@gmail.com" },
+      { ...base, company_name: "太郎商店（重複）", email: "taro@gmail.com" },
+      { ...base, company_name: "前に送ったGmailの会社（再）", email: "SENT@gmail.com" },
+      { ...base, company_name: "前に送った会社の別アドレス", email: "sales@sentco.example" },
+      { ...base, company_name: "配信停止の会社", email: "<legacy@old.example>" },
+      { ...base, company_name: "読めない会社", email: "info＠bad" },
+      { ...base, company_name: "全角の会社", email: "ｍａｉｌ＠ｚｅｎｋａｋｕ．ｅｘａｍｐｌｅ" },
+    ];
+    const sum = importRowsToCampaign(c, rows);
+    const st = (name: string) => db.prepare("SELECT status, email, domain, result_text FROM form_jobs WHERE campaign_id=? AND company_name=?").get(c, name) as { status: string; email: string; domain: string; result_text: string } | undefined;
+    eq("取り込み: mailto: を外して保存・ドメインも正しい", [st("株式会社共通A")?.email, st("株式会社共通A")?.domain], ["info@group.example", "group.example"]);
+    eq("取り込み: サイトURLが違っても同じアドレスは重複", st("株式会社共通B"), undefined);
+    eq("取り込み: フリーメールは別アドレスなら別の会社", [st("太郎商店")?.status, st("花子商店")?.status], ["queued", "queued"]);
+    eq("取り込み: フリーメールでも同じアドレスは重複", st("太郎商店（重複）"), undefined);
+    eq("取り込み: 同じアドレスに再送禁止の期間内に送っていれば外す", st("前に送ったGmailの会社（再）")?.status, "skip_duplicate");
+    eq("取り込み: 会社のドメインの再送禁止は従来どおり", st("前に送った会社の別アドレス")?.status, "skip_duplicate");
+    eq("取り込み: 飾り付きの配信停止にも当たる", st("配信停止の会社")?.status, "skip_optout");
+    eq("取り込み: 全角のアドレスも読める", st("全角の会社")?.email, "mail@zenkaku.example");
+    ok("取り込み: 読めないアドレスは理由を出す", sum.excludedRows.some((x) => x.company === "読めない会社" && x.reason.includes("形が読めない")), JSON.stringify(sum.excludedRows));
+    ok("除外: 1社の断りで入ったフリーメールのドメイン行では、ほかの会社を止めない", !domainSuppressed("gmail.com"));
+    db.prepare("UPDATE form_suppressions SET reason='手動で追加' WHERE domain='gmail.com'").run();
+    ok("除外: 利用者が手で入れたフリーメールのドメインは従来どおり効く", domainSuppressed("gmail.com"));
+    db.prepare("DELETE FROM form_suppressions WHERE domain='gmail.com'").run();
+  }
+
+  // ② アカウント側の制限: 別の宛先で3件続いたらアカウントごと止めて、全社を待機に戻す
+  {
+    eq("421 は拡張コードに関係なくアカウントを止める", classifySmtpError(smtpE({ code: "EENVELOPE", command: "RCPT TO", responseCode: 421, message: "421 4.3.0 Temporary System Problem" })), { kind: "pause", minutes: 30, penalty: false });
+    ok("本文の段階の 5xx はアカウント側かもしれない", maybeAccountSide(smtpE({ code: "EMESSAGE", command: "DATA", responseCode: 550, message: "550 5.7.1 content rejected" })));
+    ok("宛先の 5xx（RCPT）は宛先の問題", !maybeAccountSide(smtpE({ code: "EENVELOPE", command: "RCPT TO", responseCode: 550, message: "550 5.1.1 user unknown" })));
+    eq("587番で STARTTLS を始められなければアカウントごと止める", classifySmtpError(smtpE({ code: "ETLS", command: "STARTTLS", responseCode: 502, message: "Error upgrading connection with STARTTLS" })).kind, "pause");
+    ok("STARTTLS の説明", /STARTTLS/.test(explainSmtpError(smtpE({ code: "ETLS", command: "STARTTLS", responseCode: 502, message: "Error upgrading connection with STARTTLS" }), { smtp_host: "mail.example.jp", smtp_port: 587 } as never)));
+
+    const sS = mkSender("制限", "streak@sender.example");
+    const c = mkCamp("アカウント制限", sS);
+    m2 = { rcpt: "451 4.7.500 Server busy. Please try again later" };
+    const a = mkJob(c, "株式会社一", "info@one.example"), b = mkJob(c, "株式会社二", "info@two.example"), d = mkJob(c, "株式会社三", "info@three.example");
+    await processJob(noBrowser, a);
+    eq("一時エラー1件目: その会社だけ再送待ち", [row(a).status, Boolean(row(a).retry_after), row(a).temp_tries], ["queued", true, 1]);
+    ok("一時エラー1件目: アカウントは止めない", !emailPause(sender(sS)));
+    await processJob(noBrowser, b);
+    ok("一時エラー2件目: まだ止めない", !emailPause(sender(sS)));
+    await processJob(noBrowser, d);
+    ok("一時エラー3件目（別の宛先）: アカウントを止める", Boolean(emailPause(sender(sS))));
+    eq("止めたら先の2件も待機に戻し、待ち時間と回数を戻す", [row(a).status, row(a).retry_after, row(a).temp_tries, row(b).temp_tries], ["queued", null, 0, 0]);
+    eq("止めたら3件目は回数を数えない", [row(d).status, row(d).temp_tries], ["queued", 0]);
+    ok("止めた理由が分かる", row(d).result_text.includes("送信用アカウント側の制限"), row(d).result_text);
+    clearEmailPause(sender(sS));
+
+    // 間に送れたら数え直す
+    const e1 = mkJob(c, "株式会社四", "info@four.example"), e2 = mkJob(c, "株式会社五", "info@five.example"), e3 = mkJob(c, "株式会社六", "info@six.example"), e4 = mkJob(c, "株式会社七", "info@seven.example");
+    await processJob(noBrowser, e1);
+    await processJob(noBrowser, e2);
+    m2 = {};
+    await processJob(noBrowser, e3);
+    eq("間に送れた: 送れる", row(e3).status, "sent");
+    m2 = { rcpt: "451 4.7.500 Server busy" };
+    await processJob(noBrowser, e4);
+    ok("間に送れたら数え直す（止めない）", !emailPause(sender(sS)));
+
+    // 回数は列に持つ: 間に「一時停止のため待機」が入っても 0 に戻らない
+    const t = mkJob(c, "株式会社回数", "info@tries.example");
+    db.prepare("UPDATE form_jobs SET temp_tries=2, result_text='メール送信を一時停止中のため待機に戻しました: テスト' WHERE id=?").run(t);
+    db.prepare("DELETE FROM settings WHERE key LIKE 'email_streak:%'").run();
+    await processJob(noBrowser, t);
+    eq("回数: 待機戻しを挟んでも数えている（3回目で失敗）", row(t).status, "failed");
+
+    // 本文の段階の 5xx（内容で断られた）も、別の宛先で3件続けばアカウントごと止め、失敗にした分も戻す
+    db.prepare("DELETE FROM settings WHERE key LIKE 'email_streak:%'").run();
+    m2 = { end: "550 5.7.1 Message content rejected" };
+    const p1 = mkJob(c, "株式会社本文一", "info@body1.example"), p2 = mkJob(c, "株式会社本文二", "info@body2.example"), p3 = mkJob(c, "株式会社本文三", "info@body3.example");
+    await processJob(noBrowser, p1);
+    eq("本文で断られた1件目: その会社は失敗", row(p1).status, "failed");
+    await processJob(noBrowser, p2);
+    await processJob(noBrowser, p3);
+    const p = emailPause(sender(sS));
+    ok("本文で断られた3件目: アカウントを止める", Boolean(p));
+    eq("本文で断られた: 先に失敗にした分も待機に戻す", [row(p1).status, row(p2).status, row(p3).status], ["queued", "queued", "queued"]);
+    ok("24時間以内に2回目なら長めに止める（3時間）", Boolean(p) && p!.until - Date.now() > 2 * 3600_000);
+    clearEmailPause(sender(sS));
+    m2 = {};
+  }
+
+  // ③ 画面からの送信も上限を守る・送信中は二重に送らない・送っている途中の会社も今日の数に入る
+  {
+    const sL = mkSender("上限", "limit@sender.example");
+    const c = mkCamp("上限テスト", sL, 1);
+    const first = mkJob(c, "株式会社一通目", "info@first.example");
+    const before = sentTodayBySender(sL);
+    let during = -1;
+    m2 = { onData: () => { during = sentTodayBySender(sL); } };
+    await processJob(noBrowser, first);
+    m2 = {};
+    eq("枠の先取り: 送っている途中も今日の数に入る", during, before + 1);
+    eq("枠の先取り: 送り終わっても二重に数えない", sentTodayBySender(sL), before + 1);
+    const second = mkJob(c, "株式会社二通目", "info@second.example");
+    db.prepare("UPDATE form_jobs SET status='failed', result_text='メール送信エラー: テスト' WHERE id=?").run(second);
+    ok("手動の再試行: 送信中でなければ始められる", claimJobForManual(second));
+    eq("手動の再試行: 直前の失敗を履歴に残す", row(second).prev_status, "failed");
+    ok("手動の再試行: 送信中の会社には二度押しできない", !claimJobForManual(second));
+    rcpts.length = 0;
+    await processJob(noBrowser, second);
+    eq("上限: 画面から送っても上限なら送らず待機に戻す", row(second).status, "queued");
+    ok("上限: 理由が分かる", row(second).result_text.includes("今日のメール上限"), row(second).result_text);
+    eq("上限: 送っていない", rcpts.length, 0);
+    // 送信済みの会社には、手動でも始められない（画面の確認からブラウザ起動までのあいだに自動の送信が終わった場合の二重送信）
+    const done = mkJob(c, "株式会社送信済み", "info@done.example");
+    db.prepare("UPDATE form_jobs SET status='sent' WHERE id=?").run(done);
+    ok("手動の再試行: 送信済みの会社には始められない", !claimJobForManual(done) && row(done).status === "sent");
+    // 手動で送り直すときは、宛先の一時エラーの回数を数え直す。結果の文に残った「再送待ち（2/2回目…」から前の回数が復活しない
+    const waiting = mkJob(c, "株式会社再送待ち", "info@wait.example");
+    db.prepare("UPDATE form_jobs SET status='queued', temp_tries=2, retry_after=datetime('now','+30 minutes'), result_text='一時エラーで再送待ち（2/2回目・120分後）: テスト' WHERE id=?").run(waiting);
+    ok("手動の再試行: 再送待ちの会社も始められる", claimJobForManual(waiting));
+    ok("手動の再試行: 回数と待ち時間と文を数え直す", row(waiting).temp_tries === 0 && row(waiting).retry_after === null && !/^一時エラーで再送待ち/.test(row(waiting).result_text), JSON.stringify(row(waiting)));
+  }
+
+  // ⑧ 返信先が送信用アカウントと違う
+  eq("返信先: 送信用と違えば知らせる", unreadReplyAddress({ smtp_user: "sales@x.example", reply_email: "tanaka@x.example", email: "a@x.example" }), "tanaka@x.example");
+  eq("返信先: 同じなら何もしない（大文字・小文字の違いは同じ）", unreadReplyAddress({ smtp_user: "Sales@x.example", reply_email: "", email: "sales@x.example" }), null);
+  eq("返信先: ユーザー名がアドレスの形でなければ比べない", unreadReplyAddress({ smtp_user: "user123", reply_email: "", email: "a@x.example" }), null);
+
+  // 送信者の入力: 送信用アドレス・差出人アドレス・ポート
+  {
+    const base = { company: "株式会社A", person: "田中 太郎", email: "a@example.jp" };
+    const b1: Record<string, unknown> = { ...base, smtp_port: "４６５", from_email: "Ｓａｌｅｓ＠Ｘ．ｊｐ", smtp_user: " sales@x.jp " };
+    eq("送信者: 全角のポート・アドレスは半角にそろえて受け付ける", validateSender(b1), null);
+    eq("送信者: そろえた値を保存する", [b1.smtp_port, b1.from_email, b1.smtp_user], ["465", "sales@x.jp", "sales@x.jp"]);
+    ok("送信者: ポートに文字は弾く", validateSender({ ...base, smtp_port: "465番" }) !== null);
+    ok("送信者: ポートの範囲外は弾く", validateSender({ ...base, smtp_port: "70000" }) !== null);
+    ok("送信者: 送信用アドレスの空白は弾く", validateSender({ ...base, smtp_user: "sales @x.jp" }) !== null);
+    ok("送信者: 差出人アドレスの形が違えば弾く", validateSender({ ...base, from_email: "sales@" }) !== null);
+    eq("送信者: アドレスの形でないユーザー名（プロバイダのID）は通す", validateSender({ ...base, smtp_user: "user123" }), null);
   }
   await new Promise<void>((r) => server.close(() => r()));
 }

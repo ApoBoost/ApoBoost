@@ -4,6 +4,7 @@ import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
 import { esc, layout, n, type NavUser, IC_MAIL, IC_FORM, IC_WARN } from "./layout.js";
 import { post } from "./parts.js";
+import { unreadReplyAddress } from "../email.js";
 
 export function senderForm(s?: Partial<SenderProfile>) {
   const v = (k: keyof SenderProfile) => esc(s?.[k] ?? "");
@@ -54,12 +55,13 @@ ${list.length ? list.map((s) => {
 <summary style="cursor:pointer;padding:16px 18px;display:flex;gap:10px 18px;align-items:center;flex-wrap:wrap;list-style:none">
   <span style="min-width:200px"><b>${esc(s.label || s.company)}</b><br><span class="muted" data-nohelp>${esc(s.company)} ${esc(s.person)}</span></span>
   <span class="small" style="min-width:210px">${mailOk ? `${IC_MAIL} ${esc(s.smtp_user)}` : `${IC_FORM} フォーム送信のみ`}</span>
-  <span>${iss.length ? iss.map((i) => `<span class="tag failed" style="margin:2px 4px 2px 0">${esc(i)}</span>`).join("") : `<span class="tag sent">設定OK</span>`}${ex?.paused ? ` <span class="tag failed">メール一時停止中</span>` : ""}</span>
+  <span>${iss.length ? iss.map((i) => `<span class="tag failed" style="margin:2px 4px 2px 0">${esc(i)}</span>`).join("") : `<span class="tag sent">設定OK</span>`}${ex?.paused ? ` <span class="tag failed">メール一時停止中</span>` : ""}${mailOk && unreadReplyAddress(s) ? ` <span class="tag failed">返信を自動で読めません</span>` : ""}</span>
   ${mailOk && ex ? `<span class="small" style="margin-left:auto;text-align:right">今日のメール <b>${n(ex.sentToday)} / ${n(ex.limit)}通</b>${ex.note ? `<br><span class="muted" data-nohelp>${esc(ex.note)}</span>` : ""}</span>` : `<span style="margin-left:auto"></span>`}
   <span class="btn small">編集</span>
 </summary>
 <div style="padding:0 18px 18px;border-top:1px solid var(--c-line)">
 ${ex?.paused ? `<p class="small" style="color:var(--ng)">${IC_WARN} ${esc(ex.paused)}</p>` : ""}
+${mailOk && unreadReplyAddress(s) ? `<p class="small" style="color:var(--ng)">${IC_WARN} 返信先（${esc(unreadReplyAddress(s) ?? "")}）が送信用メールアドレス（${esc(s.smtp_user)}）と違います。返信先が別の受信箱なら、返信や「断り」はこのアプリでは読めず、断った相手にまた送ってしまうおそれがあります。断りは手で除外リストに入れるか、返信先を送信用メールアドレスにしてください（同じ受信箱に届く別名なら問題ありません。「配信停止」の申し出は送信用メールアドレス宛てに届くので自動で除外されます）</p>` : ""}
 <p class="muted" data-nohelp>利用中のキャンペーン: ${usage[s.id] ?? 0}件</p>
 ${senderForm(draft && draft.id === s.id ? { ...s, ...draft.values, id: s.id } : s)}
 ${mailOk ? `<form method="post" action="/senders/${s.id}/test" class="inline" data-busy data-busytext="接続を確認中…"><button class="btn small">メールの接続をテストする</button></form>` : ""}

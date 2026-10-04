@@ -6,7 +6,7 @@ import os from "node:os";
 import { SCREENSHOT_DIR, type SenderProfile, type JobStatus } from "./db.js";
 import { detectRefusal, CAPTCHA_CHECK_SCRIPT, CHALLENGE_RE } from "./detect.js";
 import { findContactForm, detectFormService } from "./formFinder.js";
-import { collectFields, fillFields, clickNextButton, judgeOutcome, classify, hasHiddenTextarea, pageText, collectUnknownQuestions, toPendingQuestions, aiAnswerUnknownFields, allSubmitButtonsDisabled, fillRequiredLeftovers, fillAriaChoices, describeInvalidFields, clickBackButton, checkConfirmAgreements, type PendingQuestion, type FieldInfo } from "./formFiller.js";
+import { collectFields, fillFields, clickNextButton, judgeOutcome, classify, hasHiddenTextarea, pageText, collectUnknownQuestions, toPendingQuestions, aiAnswerUnknownFields, allSubmitButtonsDisabled, fillRequiredLeftovers, fillAriaChoices, describeInvalidFields, clickBackButton, checkConfirmAgreements, timed, snapshotFilled, filledWereCleared, dialogSaysSent, type PendingQuestion, type FieldInfo, type ClickNet } from "./formFiller.js";
 import { extractLegalName } from "./company.js";
 import { llm } from "./message.js";
 
@@ -39,7 +39,7 @@ export type SubmitResult = {
 /** フォームのあるフレーム（iframe の埋め込みフォーム）の中に、見える CAPTCHA があるか。
  *  親ページの querySelectorAll は iframe の中を見ないので、iframe 内の reCAPTCHA / hCaptcha を見落として送っていた */
 async function captchaIn(page: Page, target: Page | Frame): Promise<string | null> {
-  const top = (await page.evaluate(CAPTCHA_CHECK_SCRIPT).catch(() => null)) as string | null;
+  const top = (await timed(page.evaluate(CAPTCHA_CHECK_SCRIPT)).catch(() => null)) as string | null;
   if (top || target === page) return top;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -146,10 +146,44 @@ export async function openAndFill(
   }
 }
 
+/** 1社分の見張り。ページが固まって evaluate やクリックが返らないと、その会社で送信処理ごと止まり、キャンペーン全体が進まなくなる。
+ *  時間（既定4分。FO_SUBMIT_LIMIT_MS で変えられる）を過ぎたら切り上げる。ボタンを押したあとなら届いている可能性があるので
+ *  「送信後の判定不能」（自動では送り直さない）、押す前なら「例外: timeout」（自動の再試行に回してよい） */
+type Watch = { pressed: boolean; over: boolean; page?: Page; ctx?: BrowserContext; log: string[] };
+
 export async function submitToCompany(browser: Browser, input: SubmitInput): Promise<SubmitResult> {
-  const log: string[] = [];
+  const w: Watch = { pressed: false, over: false, log: [] };
+  const limit = Number(process.env.FO_SUBMIT_LIMIT_MS) || 4 * 60_000;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const watchdog = new Promise<SubmitResult>((resolve) => {
+    timer = setTimeout(async () => {
+      w.over = true;
+      const span = limit >= 60_000 ? `${Math.round(limit / 60_000)}分` : `${Math.round(limit / 1000)}秒`;
+      w.log.push(`watchdog: ${span}たっても終わらないため切り上げ`);
+      const shot = path.join(SCREENSHOT_DIR, `job-${input.jobId}.png`);
+      let screenshot = "";
+      if (w.page) { try { await timed(w.page.screenshot({ path: shot, fullPage: false, timeout: 5000 }), 6000, "スクリーンショット"); screenshot = shot; } catch {} }
+      const finalUrl = (() => { try { return w.page?.url() ?? ""; } catch { return ""; } })();
+      await timed(w.ctx?.close() ?? Promise.resolve(), 10000, "ブラウザを閉じる処理").catch(() => {});
+      resolve(w.pressed
+        ? { status: "failed", detail: `送信後の判定不能: ボタンを押したあとページが固まり、${span}たっても結果を確認できませんでした\n二重送信を避けるため、自動では送り直しません`, finalUrl, screenshot, log: w.log, pressed: true }
+        : { status: "failed", detail: `例外: timeout（ページが固まり、${span}たっても入力が終わりませんでした）`, finalUrl, screenshot, log: w.log, pressed: false });
+    }, limit);
+  });
+  try {
+    return await Promise.race([submitOnce(browser, input, w), watchdog]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function submitOnce(browser: Browser, input: SubmitInput, w: Watch): Promise<SubmitResult> {
+  const log: string[] = w.log;
   const ctx = await newContext(browser);
   const page = await ctx.newPage();
+  w.ctx = ctx; w.page = page;
+  // 見張りで切り上げたあとに閉じ忘れないよう、ここまで来たのが切り上げ後なら閉じる
+  if (w.over) await ctx.close().catch(() => {});
   // サイトが出す警告のポップアップ（alert）。これまでは黙って閉じていたので、
   // 「お電話を入力してください」と言われていても気づけず、確認ボタンを押し続けていた。文言を控えておき、入力エラーとして扱う
   const dialogs: string[] = [];
@@ -158,6 +192,8 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
   let pressed = false; // 送信・確認ボタンを押したか（押したあとの例外は「送信後の判定不能」にして、自動で送り直させない）
   const done = async (status: JobStatus, detail: string, pendingQuestions?: PendingQuestion[]): Promise<SubmitResult> => {
     let screenshot = "";
+    // 見張りで切り上げ済み（結果はもう返してある）。スクリーンショットを上書きしない
+    if (w.over) return { status, detail, finalUrl: "", screenshot: "", log, pendingQuestions, pressed };
     try {
       await page.screenshot({ path: shot, fullPage: false });
       screenshot = shot;
@@ -180,7 +216,7 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
     const refusal = detectRefusal(textBefore);
     if (refusal && !input.ignoreRefusal) return done("skip_refused", `営業お断り文言: 「${refusal}」`);
 
-    const captcha = await page.evaluate(CAPTCHA_CHECK_SCRIPT).catch(() => null);
+    const captcha = await timed(page.evaluate(CAPTCHA_CHECK_SCRIPT)).catch(() => null);
     if (captcha) return done("skip_captcha", `CAPTCHAあり (${captcha})`);
 
     // フォーム本体があるフレームを選ぶ（埋め込みフォーム対応）。
@@ -277,7 +313,9 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
     if (input.dryRun) return done("queued", "テスト入力のみ（送信していない）");
 
     const fieldCountBefore = fields.length;
-    const urlBefore = page.url(); // 送信ボタンを押す前のURL（ページが切り替わったかの判定に使う）
+    // いまのURL。iframe の埋め込みフォームは、フォームのある枠の URL（親ページの URL は送信しても変わらない）
+    const urlOf = () => (target !== page && !(target as Frame).isDetached() ? (target as Frame).url() : page.url());
+    const urlBefore = urlOf(); // 送信ボタンを押す前のURL（ページが切り替わったかの判定に使う）
     // 結果の判定。押した直後でページが切り替わっている途中だと evaluate が落ちる（Execution context was destroyed）ので、
     // 読み込みを待って1回だけやり直す。以前はここで例外になり、送信済みかもしれないのに自動の再試行に回っていた（二重送信）
     const judge = async (afterSubmit: boolean) => {
@@ -302,12 +340,29 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
     // 5回まで: 確認→送信→（エラーなら戻って入れ直し）→確認→送信、の流れに足りる回数（#121）
     for (let round = 0; round < 5; round++) {
       dialogs.length = 0;
-      const urlAtRound = page.url();
-      const kind = await clickNextButton(target, page, log, { preferSubmit: advanced });
+      const urlAtRound = urlOf();
+      // 押す前に入っていた文字欄・本文欄の値（押したあとに全部消えたか＝Ajax 送信のあとのリセットかを見る）
+      const filledAtRound = await snapshotFilled(target);
+      const net: ClickNet = {};
+      // 見張り（1社の時間切れ）には「押したかもしれない」を押す前に伝えておく。clickNextButton は押したあと数十秒待つので、
+      // 戻ってから立てると、その待ちの最中に時間切れになったとき「押していない＝自動で送り直してよい」と読まれ、二重送信になる
+      w.pressed = true;
+      const kind = await clickNextButton(target, page, log, { preferSubmit: advanced, net });
       if (kind !== "none") pressed = true;
+      else w.pressed = pressed; // 押せるボタンが無かった。これまでのラウンドで押していなければ「押していない」に戻す
+      // フォームのあった枠（iframe）が外された（親ページごと移った等）。以後はページ全体で見る
+      if (target !== page && (target as Frame).isDetached()) { target = page; log.push("フォームの枠が無くなった → ページ全体で判定"); }
       // ボタンを押したときにサイトが出した警告（alert）のうち、入力の不備を言っているもの
-      const warned = dialogs.find((m) => /(入力|記入|選択|必須|未入力|正しく|エラー|チェック|同意|ください|下さい)/.test(m) && !/よろしい(です|でしょう)か/.test(m));
+      const warned = dialogs.find((m) => /(入力|記入|選択|必須|未入力|正しく|エラー|チェック|同意|ください|下さい)/.test(m) && !/よろしい(です|でしょう)か/.test(m) && !dialogSaysSent(m));
       if (warned) log.push(`サイトの警告: ${warned}`);
+      if (kind !== "none") {
+        // 押した先が 404 / 405 / 500 などのエラー応答、またはブラウザのエラー画面。入力欄が無くなっても届いてはいない
+        // （以前は「フォームが消えた＝送信済み」にしていた）。POST のあとのリダイレクト先だけがエラーのときは、送信自体は受け付けられた可能性がある
+        const http = net.httpStatus ?? 0;
+        if (http >= 400 && (net.redirected || net.postOk)) return done("failed", `送信後の判定不能: 送信後の移動先がエラーでした（HTTP ${http}）。送信自体は受け付けられた可能性があります\n二重送信を避けるため、自動では送り直しません`);
+        if (http >= 400) return done("failed", `サイト側で受け付けられませんでした（HTTP ${http}${http === 404 ? " ページが見つかりません" : http === 405 ? " 受け付けない送り方" : http >= 500 ? " サイトのエラー" : ""}）\nフォームの送信先が古い・壊れている可能性があります。メールアドレスが分かればメールで、無ければ手動での送信か見送りになります`);
+        if (/^chrome-error:/.test(page.url()) || (target !== page && /^chrome-error:/.test(urlOf()))) return done("failed", "サイト側で受け付けられませんでした（送信先が応答せず、ブラウザのエラー画面になりました）\nメールアドレスが分かればメールで、無ければ手動での送信か見送りになります");
+      }
       if (kind === "none") {
         // 確認ボタンを押した先が、エラーや拒否のページだった（入力欄も送信ボタンも無い）場合は、その内容を理由にする
         const why = await judge(false);
@@ -336,10 +391,21 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
         if (/bframe/.test(String(cap2))) return done("skip_captcha", `送信時に画像認証（reCAPTCHA）が表示され未送信 (${cap2})`);
         return done("skip_captcha", `確認画面にCAPTCHA (${cap2})`);
       }
+      // 押した直後にサイトが出したポップアップが完了の知らせ（alert('送信しました') 等）。画面に完了文言が出ないサイトがある
+      const okDialog = dialogs.find(dialogSaysSent);
+      if (okDialog) return done("sent", `完了のポップアップを検知: 「${okDialog.slice(0, 60)}」`);
       let outcome = await judge(kind === "submit");
       if (outcome.status === "unsure" && warned) outcome = { status: "failed", detail: `入力エラー: ${warned}` };
       log.push(`judge[${round}]: ${outcome.status} ${outcome.detail}`);
       if (outcome.status === "sent") return done("sent", outcome.detail);
+      // 押す前に入れた文字欄・本文欄が、ページが移らないまま全部空になった（Ajax 送信のあとの form.reset()）。
+      // 欄に required があると「必須なのに空＝入力エラー」と読んで埋め直し、もう一度送っていた（二重送信）。
+      // ページの読み込み直しがあったとき（サーバーが入力エラーの画面を返した）は従来どおり入れ直す
+      if ((outcome.status === "unsure" || (outcome.status === "failed" && outcome.detail.startsWith("入力エラー") && !net.navigated && !warned))
+        && !outcome.detail.startsWith("確認画面") && urlOf() === urlAtRound && (await filledWereCleared(target, filledAtRound))) {
+        log.push(`押したあと入力内容が全部消えた（${Object.keys(filledAtRound).length}欄）→ 埋め直さない`);
+        return done("failed", "送信後の判定不能: ボタンを押したあと、入力した内容が全部消えました（画面が切り替わらない送信で、送られた可能性が高いです。完了の表示は読み取れませんでした）\n二重送信を避けるため、自動では送り直しません。相手からの返信や自動返信メールで届いたかを確認してください");
+      }
       if (outcome.status === "unsure" && outcome.detail.startsWith("確認画面")) {
         // ボタン名では確認ボタンと分からなかったが確認画面に進んでいた → 次のラウンドで「送信する」を押す
         log.push("確認画面を検知 → 送信ボタンを押す");
@@ -353,7 +419,7 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
       // 確認・送信ボタンを押しても入力画面のまま（URLも入力欄もそのまま）で、エラーの文言も拾えなかった。
       // 多くは、空のままの必須欄（任意と判断して入れなかった電話番号など）をブラウザやサイトが止めている。
       // 入力エラーと同じ扱いにして、電話番号なども入れて1回だけやり直す
-      if (outcome.status === "unsure" && page.url() === urlAtRound && !outcome.detail.startsWith("確認画面")) {
+      if (outcome.status === "unsure" && urlOf() === urlAtRound && !outcome.detail.startsWith("確認画面")) {
         const here = await collectFields(target).catch(() => [] as FieldInfo[]);
         const stillForm = here.length >= fieldCountBefore && here.some((f) => classify(f) === "message");
         const bad = stillForm ? await describeInvalidFields(target) : [];
@@ -404,7 +470,7 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
         // 確認画面に未入力の必須項目（同意チェック等）が残っていれば埋める
         const more = await collectFields(target).catch(() => [] as FieldInfo[]);
         // 確認画面へ進めた（URLが変わった、または入力欄が減った）。次からは「送信」を優先して押す
-        if (page.url() !== urlAtRound || more.length < fieldCountBefore) advanced = true;
+        if (urlOf() !== urlAtRound || more.length < fieldCountBefore) advanced = true;
         if (more.length) {
           const r2 = await fillFields(target, more, { sender: input.sender, subject: input.subject, message: input.message });
           if (r2.filled.length) log.push(`confirm-page filled: ${r2.filled.join(",")}`);
@@ -511,7 +577,14 @@ export async function scanCompany(browser: Browser, input: { formUrl: string; si
       const text: string = await page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
       r.refused = detectRefusal(text);
       if (input.companyName && !r.legalName) r.legalName = extractLegalName(input.companyName, text); // フォームページのフッター等からも
-      r.captcha = (await page.evaluate(CAPTCHA_CHECK_SCRIPT).catch(() => null)) as string | null;
+      r.captcha = (await timed(page.evaluate(CAPTCHA_CHECK_SCRIPT)).catch(() => null)) as string | null;
+      // iframe の埋め込みフォームの中の CAPTCHA も見る（親ページからは見えない。送信時と同じく、本文欄のある枠だけ）
+      for (const fr of r.captcha ? [] : page.frames()) {
+        if (fr === page.mainFrame()) continue;
+        if (!(await timed(fr.evaluate(() => !!document.querySelector("textarea"))).catch(() => false))) continue;
+        const c = (await timed(fr.evaluate(CAPTCHA_CHECK_SCRIPT)).catch(() => null)) as string | null;
+        if (c) { r.captcha = c; break; }
+      }
       for (const e of await collectEmails(page)) if (!r.emails.includes(e)) r.emails.push(e);
     } else if (!r.note) r.note = "フォームが見つからない";
   } catch (e) {

@@ -29,7 +29,7 @@ import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel
 import { errorPage } from "./ui/layout.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "./views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, needsFirstSetup, type AuthedRequest } from "./auth.js";
-import { app, ASSETS_DIR, CLEAN_PORT, navUser, notFound, shareUrls } from "./app/context.js";
+import { app, appState, ASSETS_DIR, CLEAN_PORT, navUser, notFound, shareUrls } from "./app/context.js";
 import * as authRoutes from "./routes/auth.js";
 import * as todoRoutes from "./routes/todo.js";
 import * as jobsRoutes from "./routes/jobs.js";
@@ -43,6 +43,10 @@ import { startBackground } from "./app/background.js";
 
 app.use(express.urlencoded({ extended: false }));
 app.use("/assets", express.static(ASSETS_DIR, { maxAge: "1h" }));
+// 動いているのが ApoBoost か・終了待ちか、を答える（ログイン不要）。二重起動したときに、新しい方がこれを見て
+// 「すでに起動している」のか「前の ApoBoost が終わるのを待てばよい」のかを決める（下の EADDRINUSE の処理）。
+// ログイン確認より前に置く（初回設定がまだのPCでは、ログイン確認が /welcome に転送してしまうため）
+app.get("/healthz", (_req, res) => { res.setHeader("cache-control", "no-store"); res.json({ app: "apoboost", stopping: appState.stopping }); });
 app.use(authMiddleware);
 
 // 画面ごとの経路を登録する（順番は元の server.ts と同じ並び）
@@ -88,18 +92,64 @@ async function apoboostAlreadyThere(): Promise<boolean> {
   } catch { return false; }
 }
 
+/** 動いている ApoBoost が、終了の合図を受けて送信の終わりを待っているところか。
+ *  /healthz が無い古い版・ApoBoost 以外・応答が無いときは false（これまでどおり「すでに起動しています」として扱う） */
+async function previousIsStopping(): Promise<boolean> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${PORT}/healthz`, { redirect: "manual", signal: AbortSignal.timeout(3000) });
+    if (!r.ok) return false;
+    const j = (await r.json()) as { app?: string; stopping?: boolean };
+    return j.app === "apoboost" && j.stopping === true;
+  } catch { return false; }
+}
+
+// 前の ApoBoost が終わるのを待つときの、待ち受けをやり直す間隔と打ち切り。
+// 前の方は送信中の会社を最大120秒待ってから終わる（worker.ts の drainForShutdown）ので、それより少し長く待つ
+const RETRY_EVERY_MS = 2_000;
+const RETRY_FOR_MS = 130_000;
+let waitingSince = 0;
+
 // 待ち受けを先に始め、できてから裏の仕事（送信中のまま止まった会社の後始末・送信の自動再開など）を動かす。
 // 以前は裏の仕事が先に動いたため、2つ目を起動すると、動いている1つ目が送信中の会社を「失敗」にしてしまい、
 // さらにポートの取り合いに負けても（想定外のエラーとして握りつぶされて）プロセスが残り、送信の再開が二重に動く恐れがあった
 const server = app.listen(PORT);
+server.on("error", onListenError);
 
-server.once("error", (e: NodeJS.ErrnoException) => {
+function onListenError(e: NodeJS.ErrnoException): void {
   if (e.code !== "EADDRINUSE") {
     console.error(`[apoboost] ポート ${PORT} で待ち受けできませんでした（${e.code ?? e.message}）。パソコンを再起動してから、もう一度起動してください`);
     process.exit(1);
   }
-  // 終了コードは 0 にする。Mac の自動起動（launchd の KeepAlive）は 0 以外で終わると起動し直すため、
-  // 0 以外だと「すでに起動している」のに10秒おきに起動を繰り返してしまう。起動役（run.mjs）も 75 以外は再起動しない
+  // 前の ApoBoost が「送信の終わりを待って終了する」ところだった（止めてすぐ起動し直した・アップデート後に開き直した、など）。
+  // 以前はここで「すでに起動しています」と言って閉じていたため、前の方が終わると何も動いていない状態になっていた。
+  // 終わりしだい待ち受けできるよう、2秒おきにやり直す（130秒で打ち切り）
+  if (waitingSince) {
+    if (Date.now() - waitingSince < RETRY_FOR_MS) { setTimeout(() => server.listen(PORT), RETRY_EVERY_MS); return; }
+    console.log("\n============================================================");
+    console.log("  前の ApoBoost が終わらなかったため、起動できませんでした。");
+    console.log("  しばらく待ってから、もう一度起動してください。");
+    console.log("============================================================\n");
+    setTimeout(() => process.exit(0), 300);
+    return;
+  }
+  previousIsStopping().then((stopping) => {
+    if (stopping) {
+      waitingSince = Date.now();
+      console.log("\n============================================================");
+      console.log("  前の ApoBoost が送信の終わりを待っています。終わりしだい起動します。");
+      console.log("  （最長で2分ほどです。この画面は閉じずにお待ちください）");
+      console.log("============================================================\n");
+      setTimeout(() => server.listen(PORT), RETRY_EVERY_MS);
+      return;
+    }
+    alreadyRunning();
+  });
+}
+
+/** すでに ApoBoost（またはほかのソフト）がこのポートで動いているときの案内。
+ *  終了コードは 0 にする。Mac の自動起動（launchd の KeepAlive）は 0 以外で終わると起動し直すため、
+ *  0 以外だと「すでに起動している」のに10秒おきに起動を繰り返してしまう。起動役（run.mjs）も 75 以外は再起動しない */
+function alreadyRunning(): void {
   apoboostAlreadyThere().then((ours) => {
     console.log("\n============================================================");
     if (ours) {
@@ -115,9 +165,10 @@ server.once("error", (e: NodeJS.ErrnoException) => {
     // ブラウザを開く命令が出ていくのを少し待ってから終わる
     setTimeout(() => process.exit(0), 300);
   });
-});
+}
 
 server.once("listening", () => {
+  if (waitingSince) console.log("[apoboost] 前の ApoBoost が終わったので、起動しました");
   startBackground();
   let first: { username: string; password: string } | null = null;
   try { first = ensureFirstAdmin(); } catch (e) { console.error(`[apoboost] 管理者を作れませんでした（ADMIN_USER / ADMIN_PASSWORD を確かめてください）: ${(e as Error).message}`); }

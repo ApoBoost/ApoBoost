@@ -1,6 +1,6 @@
 // メール送信（自分のGmail / Google Workspace 等のSMTP）。差出人はクライアント自身のアカウント。
 import nodemailer from "nodemailer";
-import { getDb, getSetting, setSetting, type SenderProfile } from "./db.js";
+import { getDb, getSetting, setSetting, FREE_MAIL_DOMAINS, type SenderProfile } from "./db.js";
 
 export function senderEmailOk(sender: SenderProfile): { ok: boolean; reason?: string; from: string } {
   if (!sender.smtp_user || !sender.smtp_pass) return { ok: false, reason: "送信用メールアカウント（ユーザー名・アプリパスワード）が未設定です", from: "" };
@@ -43,6 +43,10 @@ function transport(sender: SenderProfile, extra: { logger?: MailLogger; timeoutM
   const port = Number(sender.smtp_port) || 465;
   return nodemailer.createTransport({
     host: (sender.smtp_host || "smtp.gmail.com").trim(), port, secure: port === 465,
+    // 587番は「途中から暗号化（STARTTLS）」の約束の番号。nodemailer は既定だと、サーバーが STARTTLS を出さないとき
+    // そのまま暗号化せずにパスワードを送ってしまう（通信に割り込まれるとパスワードが抜かれる）。587番のときだけ必須にする。
+    // 25番などの独自サーバーには STARTTLS の無いものがあり、そこまで必須にすると今まで送れていた人が送れなくなるので触らない
+    ...(port === 587 ? { requireTLS: true } : {}),
     auth: { user: (sender.smtp_user || "").trim(), pass: normalizePass(sender.smtp_pass) },
     // 既定の待ち時間（接続2分・無通信10分）だと、つながらないときに1社で何分も止まる。
     // 無通信の判定は「何も届かない時間」なので、大きな添付でも送っている間は切れない
@@ -93,6 +97,7 @@ export function explainSmtpError(e: unknown, sender: SenderProfile): string {
     if (/icloud|me\.com|mac\.com/i.test(host)) return "iCloudにログインを拒否されました。Apple IDの設定で「App用パスワード」を作り、それをパスワード欄に入れてください";
     return `メールサーバー（${host}）にログインを拒否されました。送信用メールアドレス（ユーザー名）とパスワードを確認してください`;
   }
+  if (command === "STARTTLS") return `メールサーバー（${host}:${sender.smtp_port || 465}）で暗号化（STARTTLS）を始められませんでした。587番は暗号化してから送る約束の番号なので、暗号化できないまま送ることはしません。ポートを465にして試すか、プロバイダの案内どおりの設定にしてください`;
   if (/wrong version number|Greeting never received|ssl3_get_record|EPROTO\b|packet length too long/i.test(raw)) return `ポート番号（${sender.smtp_port || 465}）と暗号化の方式が合っていないようです。465番は最初から暗号化（SSL/TLS）、587番は途中から暗号化（STARTTLS）です。プロバイダの案内どおり465か587を入れてください（分からなければ465）`;
   if (/self.signed|unable to verify|certificate|CERT_/i.test(raw)) return "メールサーバーの証明書を確認できませんでした。セキュリティソフト（ESET・カスペルスキー等）や社内ネットワークがメール通信に割り込んでいる可能性があります。ソフトの「メール保護／SSLスキャン」をオフにするか、送信者プロフィールの「セキュリティソフトの影響で送れない場合」にチェックを入れてください";
   if (command === "MAIL FROM" && (rc === 553 || SENDER_REJECT_RE.test(raw))) return "差出人のアドレスを、この送信用アカウントでは使えないと断られました。送信者の「差出人として表示するアドレス」を空にするか、送信用アカウントで送信を許可されたアドレス（Gmailなら「他のアドレスからメールを送信」に登録したもの）にしてください";
@@ -101,7 +106,9 @@ export function explainSmtpError(e: unknown, sender: SenderProfile): string {
   if (/\b5\.1\.1\b|user unknown|does not exist|no such user|address not found|recipient address rejected/i.test(raw)) return "宛先のメールアドレスが存在しません（アドレスの書き間違い・退職・廃止の可能性）";
   if (/\b5\.2\.2\b|mailbox (is )?full|over ?quota|quota exceeded/i.test(raw)) return "相手の受信箱がいっぱいで受け取ってもらえませんでした";
   if (/\b5\.3\.4\b|size exceeds|message (is )?too (large|big)|larger than allowed/i.test(raw)) return "メールが大きすぎて送れませんでした。添付ファイルを小さくするか、資料はリンクで送ってください";
-  if (rc >= 400 && rc < 500) return `相手のメールサーバーが一時的に受け取りを断りました（${rc}）。時間を置いて自動で送り直します`;
+  if (rc === 421) return `送信用のメールサーバー（${host}）が一時的に受け付けを止めました（421）。しばらく待ってから自動で再開します`;
+  // 接続先は自分の送信サーバーなので、4xx は相手側とは限らない（送信用アカウントの一時的な制限のことが多い）
+  if (rc >= 400 && rc < 500) return `メールサーバーが一時的に受け付けませんでした（${rc}）。時間を置いて自動で送り直します`;
   if (rc >= 500 && /\b5\.7\.\d+\b|spam|policy|blocked|rejected/i.test(raw)) return `相手のメールサーバーに受け取りを拒否されました（${rc}・迷惑メール対策や受信制限の可能性）`;
   return raw.slice(0, 200);
 }
@@ -136,6 +143,9 @@ export function classifySmtpError(e: unknown): SmtpErrorClass {
   if (code === "EAUTH" || command.startsWith("AUTH") || ((rc === 534 || rc === 535) && !command) || AUTH_RE.test(raw)) return { kind: "pause", minutes: 60, penalty: true };
   // Gmail の「しばらく待ってから」（送りすぎ・ログインのしすぎ）。宛先ではなくこちらのアカウントへの制限
   if (/\b(421|454)[- ]?4\.7\.0\b/.test(raw)) return { kind: "pause", minutes: 60, penalty: true };
+  // 421 は「サーバーがこの接続を受け付けられない（閉じる）」で、拡張コード（4.3.0 等）が何であっても宛先ではなく
+  // 送信サーバー側の都合。以前は宛先の一時エラー扱いで、1社ずつ「再送待ち」→ 3回で失敗、と全社に広がっていた
+  if (rc === 421) return { kind: "pause", minutes: 30, penalty: false };
   // 差出人（MAIL FROM）の段階で断られた＝送信用アカウントや差出人アドレスの問題。どの会社に送っても同じ
   if (command === "MAIL FROM" && rc) {
     if (rc < 500) return { kind: "pause", minutes: 15, penalty: false };
@@ -147,8 +157,22 @@ export function classifySmtpError(e: unknown): SmtpErrorClass {
   if (!rc && (["ECONNECTION", "ETIMEDOUT", "ESOCKET", "EDNS", "ETLS", "EPROXY"].includes(code) || NET_RE.test(raw))) return { kind: "pause", minutes: 10, penalty: false };
   // 接続直後（あいさつ・EHLO）での 4xx/5xx はサーバー側の都合。宛先とは関係ない
   if (command === "CONN" || command === "EHLO" || command === "HELO") return { kind: "pause", minutes: 10, penalty: false };
+  // 587番で暗号化（STARTTLS）を始められない＝サーバーの設定の問題。どの会社に送っても同じなので、1社ずつ失敗にしない
+  if (command === "STARTTLS") return { kind: "pause", minutes: 60, penalty: false };
   if (rc >= 400 && rc < 500) return { kind: "temporary" };
   return { kind: "permanent" };
+}
+
+/** 送信用アカウント側の問題かもしれないエラーか。
+ *  接続先は自分の送信サーバー（Gmail 等）なので、宛先を受け付けた後の 4xx（RCPT・DATA）や、本文（DATA）の段階での 5xx
+ *  （本文・添付の内容で断られた）は、相手ではなくこちらのアカウントや文面の問題であることが多い。
+ *  1社だけなら相手の都合かもしれないので、worker.ts が「別の宛先で続けて起きたか」を数えて、続いたらアカウントごと止める */
+export function maybeAccountSide(e: unknown): boolean {
+  const c = classifySmtpError(e);
+  if (c.kind === "temporary") return true;
+  if (c.kind !== "permanent") return false;
+  const { command, rc } = smtpErr(e);
+  return command === "DATA" && rc >= 500;
 }
 
 /** エラーが「一時停止すべき種類」なら停止時間（分）、そうでなければ null（古い呼び出し元のため残す） */
@@ -182,11 +206,107 @@ export async function testSmtp(sender: SenderProfile, timeoutMs = 10_000): Promi
   }
 }
 
+// ---- 宛先アドレスの表記ゆれ ----
+// 営業リストのメール欄には「mailto:info@a.jp」「<info@a.jp>」「info@a.jp,」「info@a.jp(代表)」「ｉｎｆｏ＠ａ．ｊｐ」
+// 「a@x.jp/b@x.jp」のような書き方が混ざる。nodemailer は飾りを外して info@a.jp に送るが、
+// 配信停止・除外・再送禁止の照合は保存した文字列のまま完全一致で引いていたため、配信停止済みでも送ってしまっていた。
+// 取り込み・手修正・事前チェック・配信停止の登録と照合・送信直前を、すべてこの1つでそろえる
+
+// 厳しめの形。ローカル部は記号を許す（携帯のアドレスの「..」も実在する）が、空白・括弧・全角は通さない
+const STRICT_EMAIL_RE = /^[a-z0-9!#$%&'*+=?^_`{|}~.-]+@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:[a-z]{2,}|xn--[a-z0-9-]+)$/;
+
+/** 宛先アドレスをそろえる。NFKC（全角→半角）→ 括弧書きを外す → 区切りで分ける → mailto: と <> を外す →
+ *  末尾の , ; . 、。 を外す → 小文字 → 厳しめの形で確かめる。複数書かれていれば先頭の1件。読めなければ "" */
+export function normalizeEmail(raw: string | null | undefined): string {
+  const s = String(raw ?? "")
+    .normalize("NFKC")
+    .replace(/[​-‍⁠﻿]/g, "")
+    // 「(代表)」「（営業部）」「【総務】」のような書き添え
+    .replace(/\([^)]*\)|【[^】]*】|「[^」]*」|〔[^〕]*〕/g, " ")
+    // 「田中<info@a.jp>」のように名前とくっついた <…> は中身だけにする
+    .replace(/<([^<>\s]+@[^<>\s]+)>/g, " $1 ");
+  for (const tok of s.split(/[\s,;\/、，；|]+/)) {
+    const t = tok
+      .replace(/^mailto:/i, "")
+      .replace(/\?.*$/, "") // mailto:info@a.jp?subject=… の後ろ
+      .replace(/^[<"'\[]+|[>"'\]]+$/g, "")
+      .replace(/[.,;:。、]+$/, "")
+      .toLowerCase();
+    if (t.includes("@") && STRICT_EMAIL_RE.test(t)) return t;
+  }
+  return "";
+}
+
+/** SQL の中で norm_email(列) を使えるようにした DB を返す。返信・戻りメールの突き合わせで、
+ *  飾り付きのまま保存された古い行（mailto: 付き等）も同じアドレスとして引くために使う（行は書き換えない） */
+const normFnReady = new WeakSet<object>();
+export function dbWithNormEmail() {
+  const db = getDb();
+  if (!normFnReady.has(db)) {
+    db.function("norm_email", { deterministic: true }, (v: unknown) => normalizeEmail(String(v ?? "")));
+    normFnReady.add(db);
+  }
+  return db;
+}
+/** j.email が addr（そろえた形）に当たる、の SQL。完全一致を先に見て、含むものだけそろえて比べる（全件をそろえると重いため）。
+ *  引数は addr を3回渡す */
+export const JOB_EMAIL_MATCH_SQL = "(lower(j.email)=? OR (instr(lower(j.email), ?) > 0 AND norm_email(j.email)=?))";
+
+/** アドレスのドメイン（そろえた後）。読めなければ "" */
+export function emailDomain(raw: string): string {
+  return normalizeEmail(raw).split("@")[1] ?? "";
+}
+
+/** フリーメール（gmail.com・yahoo.co.jp・携帯キャリアなど）。ドメインが同じでも別の会社なので、
+ *  重複・再送禁止・断りはアドレス単位で扱う（一覧は db.ts の FREE_MAIL_DOMAINS の1か所） */
+export function isFreeMailDomain(domain: string): boolean {
+  return FREE_MAIL_DOMAINS.has(String(domain ?? "").trim().toLowerCase());
+}
+
+// 以前の版は、1社の「断り」でその会社のドメインを除外リストに入れていた。フリーメールの会社だと「gmail.com」が入り、
+// 以後すべての Gmail の会社が除外になっていた。その会社のアドレスは配信停止に入っているので、こうして入った
+// フリーメールのドメイン行はドメインとしては照合しない（利用者が手で入れたものは従来どおり効かせる）
+const PER_COMPANY_SUPP_RE = /^(断り|要対応の画面から除外)/;
+
+/** 除外リスト（ドメイン）に当たるか */
+export function domainSuppressed(domain: string): boolean {
+  const d = String(domain ?? "").trim().toLowerCase();
+  if (!d) return false;
+  const row = getDb().prepare("SELECT reason FROM form_suppressions WHERE domain=?").get(d) as { reason: string } | undefined;
+  if (!row) return false;
+  return !(isFreeMailDomain(d) && PER_COMPANY_SUPP_RE.test(row.reason ?? ""));
+}
+
+/** 飾り付きのまま保存された古い配信停止の行（mailto: や <> 付き・全角など）を、そろえた形にしたもの。
+ *  行の書き換えはしない（配布済みのデータを壊さないため）。照合のときにそろえて比べる */
+function oddOptouts(): Set<string> {
+  const rows = getDb().prepare("SELECT email FROM email_optouts WHERE email GLOB '*[^a-z0-9@._+-]*'").all() as { email: string }[];
+  return new Set(rows.map((r) => normalizeEmail(r.email)).filter(Boolean));
+}
+
+/** 配信停止の全アドレス（そろえた形）。取り込みのように何千行も照合するときに1回だけ作って使う */
+export function optedOutSet(): Set<string> {
+  const rows = getDb().prepare("SELECT email FROM email_optouts").all() as { email: string }[];
+  const out = new Set<string>();
+  for (const r of rows) {
+    const e = String(r.email ?? "").trim().toLowerCase();
+    if (e) out.add(e);
+    const n = normalizeEmail(e);
+    if (n) out.add(n);
+  }
+  return out;
+}
+
 export function isOptedOut(email: string): boolean {
-  return Boolean(getDb().prepare("SELECT 1 FROM email_optouts WHERE email=?").get(email.trim().toLowerCase()));
+  const raw = String(email ?? "").trim().toLowerCase();
+  const n = normalizeEmail(raw);
+  if (!raw) return false;
+  if (getDb().prepare("SELECT 1 FROM email_optouts WHERE email IN (?,?)").get(n || raw, raw)) return true;
+  return Boolean(n) && oddOptouts().has(n);
 }
 export function optOut(email: string, reason: string, ownerUserId?: number) {
-  const e = email.trim().toLowerCase();
+  // そろえた形で登録する（形として読めないものは従来どおりそのまま。手で入れた値を黙って捨てないため）
+  const e = normalizeEmail(email) || String(email ?? "").trim().toLowerCase();
   if (e) getDb().prepare("INSERT OR IGNORE INTO email_optouts (email, reason, owner_user_id) VALUES (?,?,?)").run(e, reason, ownerUserId ?? null);
 }
 
@@ -218,6 +338,19 @@ export function unsubscribeAddress(sender: Pick<SenderProfile, "smtp_user" | "re
   // ユーザー名がメールアドレスの形でないサービス（プロバイダのアカウントID等）では、従来どおり返信先にする
   const user = (sender.smtp_user || "").trim();
   return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(user) ? user : sender.reply_email || sender.email;
+}
+
+/** 返信先（Reply-To。reply_email か email）が、受信箱を読んでいる送信用アカウント（smtp_user）と違えば、その返信先。
+ *  返信の自動確認は smtp_user の受信箱しか読まないので、返信や「断り」は記録されず、断った相手にまた送ってしまう恐れがある。
+ *  既定の Reply-To は利用者が決めたとおりのまま変えず、送信者の画面で知らせるだけにする（同じ受信箱に届く別名なら問題ない）。
+ *  smtp_user がアドレスの形でない（プロバイダのID等）ときは比べられないので null */
+export function unreadReplyAddress(sender: Pick<SenderProfile, "smtp_user" | "reply_email" | "email">): string | null {
+  const user = normalizeEmail(sender.smtp_user);
+  if (!user) return null;
+  const replyRaw = (sender.reply_email || sender.email || "").trim();
+  const reply = normalizeEmail(replyRaw);
+  if (!replyRaw || reply === user) return null;
+  return reply || replyRaw;
 }
 
 /** 返信先と配信停止の受付先が違うときの、本文末尾の案内文。返信に引用されたときに「断り」と誤判定しないよう、

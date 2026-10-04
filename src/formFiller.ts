@@ -1,5 +1,5 @@
 // フォームの項目を見つけて入力し、確認画面を経て送信し、結果を判定する。
-import type { Page, Frame } from "playwright";
+import type { Page, Frame, Request, Response } from "playwright";
 import type { SenderProfile } from "./db.js";
 
 export type FieldInfo = {
@@ -245,11 +245,55 @@ const COLLECT_SCRIPT = `
 
 /** 見えていない textarea（段階式フォームの2ページ目など）があるか */
 export async function hasHiddenTextarea(target: Page | Frame): Promise<boolean> {
-  return target.evaluate(() => Array.from(document.querySelectorAll("form textarea")).some((t) => { const r = t.getBoundingClientRect(); return r.width === 0 || r.height === 0; })).catch(() => false);
+  return timed(target.evaluate(() => Array.from(document.querySelectorAll("form textarea")).some((t) => { const r = t.getBoundingClientRect(); return r.width === 0 || r.height === 0; }))).catch(() => false);
+}
+
+/** ページ内の処理（evaluate）に時間制限をつける。時間切れは例外（"timeout: …"）にする。
+ *  固まったページで evaluate が返らず、1社の処理ごとキャンペーン全体が止まっていたため。
+ *  undefined や空配列を返すと「入力欄が無い＝送信済み」等と読み違えるので、呼び出し側の catch に任せる */
+export function timed<T>(p: Promise<T>, ms = 5000, what = "ページ内の処理"): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(`timeout: ${what}が${Math.round(ms / 1000)}秒で終わりません`)), ms); })])
+    .finally(() => { if (timer) clearTimeout(timer); });
 }
 
 export async function collectFields(target: Page | Frame): Promise<FieldInfo[]> {
-  return (await target.evaluate(COLLECT_SCRIPT)) as FieldInfo[];
+  return (await timed(target.evaluate(COLLECT_SCRIPT), 10000, "入力欄の収集")) as FieldInfo[];
+}
+
+/** 押す前に入力してあった文字欄・本文欄に印（data-fo-kept）を付け、その値を控える。
+ *  押したあとに全部消えたか（画面が変わらない Ajax 送信のあとの form.reset()）を filledWereCleared で見る */
+export async function snapshotFilled(target: Page | Frame): Promise<Record<string, string>> {
+  return timed(target.evaluate(() => {
+    const out: Record<string, string> = {};
+    let k = 0;
+    document.querySelectorAll("[data-fo-kept]").forEach((e) => e.removeAttribute("data-fo-kept"));
+    document.querySelectorAll("textarea, input").forEach((e) => {
+      const i = e as HTMLInputElement;
+      if (i.tagName === "INPUT" && !["text", "email", "tel", "url", "number", ""].includes((i.getAttribute("type") || "").toLowerCase())) return;
+      const r = i.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0 || !(i.value || "").trim()) return;
+      i.setAttribute("data-fo-kept", String(k));
+      out[String(k)] = i.value;
+      k++;
+    });
+    return out;
+  }), 5000, "入力値の確認").catch(() => ({}));
+}
+/** snapshotFilled で控えた欄が、欄そのものは残ったまま全部空（元の値でない）になったか。
+ *  欄ごと無くなった（画面内の確認ステップへ切り替わった等）ときや、調べられないときは false */
+export async function filledWereCleared(target: Page | Frame, before: Record<string, string>): Promise<boolean> {
+  if (!Object.keys(before).length) return false;
+  return timed(target.evaluate((b) => {
+    let kept = 0, present = 0;
+    for (const k of Object.keys(b)) {
+      const e = document.querySelector('[data-fo-kept="' + k + '"]') as HTMLInputElement | null;
+      if (!e) continue;
+      present++;
+      if (e.value === b[k]) kept++;
+    }
+    return present === Object.keys(b).length && kept === 0;
+  }, before), 5000, "入力値の確認").catch(() => false);
 }
 
 export type FillValues = {
@@ -371,7 +415,12 @@ export async function fillFields(target: Page | Frame, fields: FieldInfo[], v: F
   const report: FillReport = { filled: [], unfilled: [], hasMessage: false, log: [] };
 
   // メッセージ欄を含むフォームだけを対象にする（検索フォームやニュースレター欄を誤って埋めない）
-  const msgField = fields.find((f) => classify(f) === "message" && f.tag === "textarea") ?? fields.find((f) => classify(f) === "message");
+  // textarea が2つ（「お問い合わせ内容」と「備考」等）あると、両方に営業文面が入っていた。本文を入れるのは1つだけにする。
+  // 自分のラベルが「内容／本文／お問い合わせ／message」のものを優先し、無ければ最初の textarea
+  const msgAreas = fields.filter((f) => classify(f) === "message" && f.tag === "textarea");
+  const ownOf = (f: FieldInfo) => f.sig.split(" || ")[0];
+  const MAIN_MSG = /(内容|本文|お問い?合わ?せ|問合せ|message|メッセージ)/i, SUB_MSG = /(備考|補足|その他|remarks|note)/i;
+  const msgField = msgAreas.find((f) => MAIN_MSG.test(ownOf(f)) && !SUB_MSG.test(ownOf(f))) ?? msgAreas.find((f) => MAIN_MSG.test(ownOf(f))) ?? msgAreas[0] ?? fields.find((f) => classify(f) === "message");
   if (!msgField && opts.requireMessage !== false) return report;
   // 段階式フォームの1ページ目（本文欄はまだ出ていない）は、見えている欄を全部対象にする
   const scoped = msgField ? fields.filter((f) => f.formIndex === msgField.formIndex) : fields;
@@ -497,7 +546,10 @@ export async function fillFields(target: Page | Frame, fields: FieldInfo[], v: F
       const inCheckedGroup = cat !== "agree" && !!groupKey(f) && checkedGroups.has(groupKey(f));
       const shouldCheck = cat === "agree" || ((f.required || (cat === "type" && nth === 1)) && !inCheckedGroup);
       if (shouldCheck && !f.checked) {
-        ok = await ensureChecked(target, f);
+        // 選択肢の群（同じ name・同じ設問）は、ラジオと同じく営業の問い合わせに近いものを選ぶ（先頭の「採用について」等をそのまま選ばない）
+        const members = cat !== "agree" && groupKey(f) ? scoped.filter((x) => x.type === "checkbox" && !x.checked && groupKey(x) === groupKey(f) && catOf(x) !== "agree") : [];
+        const pick = members.length >= 2 ? (pickOption(members.map((g) => ({ f: g, text: g.sig.split(" || ")[0] })), cat)?.f ?? f) : f;
+        ok = await ensureChecked(target, pick);
         // 同意（プライバシーポリシー等）に自動でチェックを入れたことは記録に残す。
         // 「勝手に同意した」と言われたときに、何に同意したのかを説明できるようにしておく
         if (ok && cat === "agree") report.log.push(`同意チェックを自動でチェック: 「${(f.sig.split(" || ")[0] || "同意").slice(0, 40)}」`);
@@ -517,6 +569,12 @@ export async function fillFields(target: Page | Frame, fields: FieldInfo[], v: F
     } else {
       switch (cat) {
         case "message": {
+          // 本文の欄（msgField）以外の textarea（備考など）には営業文面を入れない。必須なら「特になし」、任意なら空のまま
+          if (f.tag === "textarea" && msgField?.tag === "textarea" && f.idx !== msgField.idx) {
+            if (f.required || opts.normalize) ok = await setText(f, "特になし"); // 入力エラー後の埋め直しでは、必須の印が読めなかった場合に備えて入れる
+            else { report.log.push(`本文以外の textarea は空のまま idx=${f.idx}`); continue; }
+            break;
+          }
           const msg = fitMessage(v.message, f.maxlength);
           if (msg.length < v.message.length) report.log.push(`本文を${f.maxlength}文字に短縮`);
           ok = await setText(f, msg); if (ok) report.hasMessage = true; break;
@@ -651,7 +709,7 @@ export async function fillAriaChoices(target: Page | Frame, log: string[], opts:
   type G = { g: number; kind: "radio" | "checkbox"; label: string; options: { i: number; text: string }[] };
   let groups: G[] = [];
   try {
-    groups = await target.evaluate((requiredOnly) => {
+    groups = await timed(target.evaluate((requiredOnly) => {
       const out: { g: number; kind: "radio" | "checkbox"; label: string; options: { i: number; text: string }[] }[] = [];
       const vis = (el: Element) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
       const isRequired = (box: Element) => {
@@ -684,7 +742,7 @@ export async function fillAriaChoices(target: Page | Frame, log: string[], opts:
         out.push({ g, kind: "checkbox", label: labelOf(box), options: opts.map((o, i) => { o.setAttribute("data-fo-aria", `${g}-${i}`); return { i, text: (o.getAttribute("aria-label") || (o as HTMLElement).innerText || "").trim() }; }) });
       });
       return out;
-    }, opts.requiredOnly !== false);
+    }, opts.requiredOnly !== false));
   } catch { return 0; }
   let filled = 0;
   for (const g of groups) {
@@ -703,7 +761,7 @@ export async function fillAriaChoices(target: Page | Frame, log: string[], opts:
  *  「送信ボタンが有効になりません」だけでは、人が直すときにどの欄を見ればよいか分からなかった */
 export async function describeInvalidFields(target: Page | Frame): Promise<string[]> {
   try {
-    return await target.evaluate(() => {
+    return await timed(target.evaluate(() => {
       const out: string[] = [];
       const vis = (el: Element) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
       const label = (el: Element) => {
@@ -724,21 +782,21 @@ export async function describeInvalidFields(target: Page | Frame): Promise<strin
         if (out.length >= 5) break;
       }
       return out;
-    });
+    }));
   } catch { return []; }
 }
 
 /** 確認画面などの「戻る」を押す（#121）。「前画面に戻って正しく入力してください」と言われたときに使う */
 export async function clickBackButton(target: Page | Frame, page: Page): Promise<boolean> {
   try {
-    const idx = await target.evaluate(() => {
+    const idx = await timed(target.evaluate(() => {
       const vis = (el: Element) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
       const els = Array.from(document.querySelectorAll('button, input[type=button], input[type=submit], a, [role=button]')).filter(vis);
       const hit = els.find((el) => /^(前(の)?(画面|ページ)?(に|へ)?)?(戻る|もどる|修正(する)?|入力(画面)?(に|へ)戻る|back)$/i.test((((el as HTMLElement).innerText || (el as HTMLInputElement).value || "")).replace(/[\s<>＜＞«»←]/g, "")));
       if (!hit) return false;
       hit.setAttribute("data-fo-back", "1");
       return true;
-    });
+    }));
     if (!idx) { await page.goBack({ timeout: 8000 }).catch(() => {}); return true; }
     await target.locator('[data-fo-back="1"]').first().click({ timeout: 4000 });
     await page.waitForLoadState("domcontentloaded", { timeout: 8000 }).catch(() => {});
@@ -989,8 +1047,9 @@ const BUTTONS_SCRIPT = `
     const r = el.getBoundingClientRect(); const st = getComputedStyle(el);
     if (r.width === 0 || r.height === 0 || st.display === 'none' || st.visibility === 'hidden') continue;
     const tag = el.tagName;
-    // div等をボタン扱いするのは、テキストが短い（=ボタンらしい）ものだけ。大きなコンテナを誤クリックしない
-    if (!/^(BUTTON|INPUT|A)$/.test(tag) && ((el.innerText || '').trim().length > 40 || el.querySelector('input,textarea,select'))) continue;
+    // div等をボタン扱いするのは、テキストが短い（=ボタンらしい）ものだけ。大きなコンテナを誤クリックしない。
+    // 本物のボタンを包む箱（<div class="btn-wrap"><button>送信する</button></div>）も候補にしない（箱の真ん中を押してもボタンに当たらない）
+    if (!/^(BUTTON|INPUT|A)$/.test(tag) && ((el.innerText || '').trim().length > 40 || el.querySelector('input,textarea,select,button,a,[role=button]'))) continue;
     // 中の画像の alt（画像だけのボタン。<a><img alt="送信する"></a> など）
     let alt = '';
     const imgs = el.querySelectorAll ? el.querySelectorAll('img[alt]') : [];
@@ -1006,19 +1065,26 @@ const BUTTONS_SCRIPT = `
       const stays = href === '' || href.charAt(0) === '#' || /^javascript:/i.test(href) || !!el.closest('form');
       if (!stays || !text || text.length > 20) continue;
     }
+    // ヘッダー・フッターの箱か。body や全体を包むラッパー（<body class="header-fixed"> 等）に class が当たっただけのものは数えない
+    // （当たると、固定表示のポップアップ検知とフォーム外のリンクが全部だめになっていた）
+    const inChrome = (sel) => { const h = el.closest(sel); return !!h && h !== document.body && h !== document.documentElement && !h.querySelector('textarea[data-fo-idx]'); };
     let leaves = false;
+    let leavesReal = false; // 実URLで別のページへ移る <a>（href が空・#・javascript:・onclick あり・role=button のものは含めない）
     if (tag === 'A') {
       // 別タブで開くリンク（プライバシーポリシー等）は送信ボタンではない
       if ((el.getAttribute('target') || '').toLowerCase() === '_blank') continue;
       // ヘッダー・ナビ・フッターにある、別のページへ移るリンク（「お申し込み」等の案内ボタン）は押さない。
       // 押すと別ページへ移り「フォームが消えた＝送信済み」と誤判定していた
       const href2 = (el.getAttribute('href') || '').trim();
-      if (href2 && href2.charAt(0) !== '#' && !/^javascript:/i.test(href2) && !el.getAttribute('onclick') && !el.closest('form')) {
+      if (href2 && href2.charAt(0) !== '#' && !/^javascript:/i.test(href2) && !el.getAttribute('onclick')) {
         let other = true;
         try { const u = new URL(el.href, location.href); other = u.pathname !== location.pathname || u.origin !== location.origin; } catch (e) {}
-        if (other && el.closest('header, nav, footer, [class*="header"], [id*="header"], [class*="footer"], [id*="footer"]')) continue;
+        // フォームの中でも、別ページへ移るリンクは別ページへ移るリンクとして扱う。
+        // 「個人情報の取扱いを確認」「利用規約はこちら」のようなリンクは、確認ボタンとして押していたので候補から外す
+        if (other && /(プライバシー|個人情報|規約|ポリシー|policy|privacy|terms|こちら)/i.test(text) && !/(送信|確定)/.test(text)) continue;
+        if (other && !el.closest('form') && inChrome('header, nav, footer, [class*="header"], [id*="header"], [class*="footer"], [id*="footer"]')) continue;
         // それ以外の場所（追従する案内ボタン等）は、ほかに押せるボタンが無いときだけ使う（確認画面の送信が send.php へのリンク、という古いサイトがある）
-        if (other) leaves = true;
+        if (other) { leaves = true; leavesReal = !el.getAttribute('role'); }
       }
     }
     // 検索フォームのボタンか（サイト内検索を「送信ボタン」として押さない）
@@ -1034,11 +1100,15 @@ const BUTTONS_SCRIPT = `
     el.setAttribute('data-fo-btn', String(i));
     // ページ内ポップアップ（確認ダイアログ等）の中のボタンか。明示的なダイアログ要素か、画面に固定表示された重なり（position:fixed で z-index が高い）の中
     let inDialog = !!el.closest('dialog[open],[role=dialog],[role=alertdialog],[aria-modal=true],[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],[class*="popup"],[class*="lightbox"]');
-    // 固定表示のヘッダー・追従する案内ボタン（「お申し込み」等の <a>）はポップアップではない
-    const fixedOk = !el.closest('header, nav, [class*="header"], [id*="header"]') && !(tag === 'A' && !form);
+    // 固定表示のヘッダー・追従する案内ボタン（「お申し込み」等の実URLの <a>）はポップアップではない
+    const fixedOk = !inChrome('header, nav, [class*="header"], [id*="header"]') && !leavesReal;
     for (let a = el.parentElement; fixedOk && !inDialog && a && a !== document.body; a = a.parentElement) {
       const cs = getComputedStyle(a);
-      if (cs.position === 'fixed' && Number(cs.zIndex) >= 10) inDialog = true;
+      if (cs.position === 'fixed' && Number(cs.zIndex) >= 10) {
+        // フォーム外の <a>（href="#" 等）は、重なりが画面の幅・高さの半分以上を覆うときだけポップアップとみなす（隅に追従する案内ボタンと分ける）
+        if (tag === 'A' && !form) { const ar = a.getBoundingClientRect(); if (ar.width >= window.innerWidth / 2 && ar.height >= window.innerHeight / 2) inDialog = true; }
+        else inDialog = true;
+      }
     }
     out.push({ idx: i, text, type: (el.getAttribute('type') || tag).toLowerCase(), inForm: !!form, disabled: !!el.disabled, inDialog, search, near: !!scope && scope.contains(el), leaves });
     i++;
@@ -1050,7 +1120,7 @@ type Btn = { idx: number; text: string; type: string; inForm: boolean; disabled:
 
 /** 送信系ボタンはあるのに全部 disabled か（React系フォームが入力を認識していないサイン） */
 export async function allSubmitButtonsDisabled(target: Page | Frame): Promise<boolean> {
-  return target.evaluate(
+  return timed(target.evaluate(
     ([submitSrc, backSrc]) => {
       const submitRe = new RegExp(submitSrc, "i");
       const backRe = new RegExp(backSrc, "i");
@@ -1064,17 +1134,23 @@ export async function allSubmitButtonsDisabled(target: Page | Frame): Promise<bo
       return cands.length > 0 && cands.every((el) => (el as HTMLButtonElement).disabled || el.getAttribute("aria-disabled") === "true");
     },
     [SUBMIT_RE.source, BACK_RE.source] as [string, string],
-  ).catch(() => false);
+  )).catch(() => false);
 }
 
 /** 確認または送信のボタンを押す。
  *  preferSubmit: すでに確認画面へ進んだあと。確認と送信の両方があれば送信を選ぶ（確認ボタンを押し続けて抜けられなくなるのを防ぐ） */
-export async function clickNextButton(target: Page | Frame, page: Page, log: string[], opts: { preferSubmit?: boolean } = {}): Promise<"confirm" | "submit" | "none"> {
+/** ボタンを押したあとの通信のようす（clickNextButton が書き込む）。
+ *  navigated: 押したあとにページ（またはフォームの枠）が読み込み直された。httpStatus: その最後の応答の HTTP ステータス。
+ *  redirected: その応答が、POST 等のリダイレクト（3xx）の先だった（＝送信自体は受け付けられた可能性がある）。
+ *  postOk: 押したあと、同じサイトへの POST がエラーでない応答を返した（Ajax で送ってから JS で完了ページへ移る、等） */
+export type ClickNet = { navigated?: boolean; httpStatus?: number; httpUrl?: string; redirected?: boolean; postOk?: boolean };
+
+export async function clickNextButton(target: Page | Frame, page: Page, log: string[], opts: { preferSubmit?: boolean; net?: ClickNet } = {}): Promise<"confirm" | "submit" | "none"> {
   // 押した直後でページが切り替わっている途中だと evaluate が落ちる（Execution context was destroyed）。読み込みを待って1回だけやり直す
-  const btns = (await target.evaluate(BUTTONS_SCRIPT).catch(async () => {
+  const btns = (await timed(target.evaluate(BUTTONS_SCRIPT), 8000, "ボタンの収集").catch(async () => {
     await page.waitForLoadState("domcontentloaded", { timeout: 8000 }).catch(() => {});
     await page.waitForTimeout(800);
-    return target.evaluate(BUTTONS_SCRIPT);
+    return timed(target.evaluate(BUTTONS_SCRIPT), 8000, "ボタンの収集");
   })) as Btn[];
   let usable = btns.filter((b) => !BACK_RE.test(b.text) && !b.disabled && !b.search && !NOT_SUBMIT_RE.test(b.text));
   // 確認ポップアップが開いていれば、その中の送信・確認ボタンを優先する（di-v.co.jp の実例:
@@ -1101,7 +1177,7 @@ export async function clickNextButton(target: Page | Frame, page: Page, log: str
   if (!target_) {
     // ボタンが見つからないとき: 入力済みフォームを JS で直接 submit する（SPA やアイコンだけのボタンへの最後の手段）。
     // 確認画面には入力欄が無い（値は hidden で持っている）ので、そのときは hidden をいちばん多く持つフォームを送る
-    const ok = await target.evaluate((afterConfirm) => {
+    const ok = await timed(target.evaluate((afterConfirm) => {
       // 本文欄のフォームを送る（先頭の [data-fo-idx] はヘッダーの検索欄のことがある）
       let f = (document.querySelector("textarea[data-fo-idx]") ?? document.querySelector("[data-fo-idx]"))?.closest("form") ?? null;
       if (f && (f.getAttribute("role") === "search" || f.querySelector('input[type=search], input[name="s"], input[name="q"]'))) f = null;
@@ -1118,7 +1194,7 @@ export async function clickNextButton(target: Page | Frame, page: Page, log: str
       if (!f) return false;
       if (f.requestSubmit) f.requestSubmit(); else f.submit();
       return true;
-    }, !!opts.preferSubmit).catch(() => false);
+    }, !!opts.preferSubmit)).catch(() => false);
     if (ok) {
       log.push("送信ボタン不検出 → form.requestSubmit() で送信");
       await page.waitForTimeout(2500);
@@ -1130,26 +1206,68 @@ export async function clickNextButton(target: Page | Frame, page: Page, log: str
   const kind = target_ === confirm ? "confirm" : "submit";
   log.push(`click[${kind}] "${target_.text}"`);
   const before = page.url();
+  // 押したあとの通信を見張る。画面が変わらない Ajax 送信は POST の完了を待ち（以前は実質5.5秒しか待たず、完了表示の前に判定していた）、
+  // ページが移ったときは、その応答が 404 / 405 / 500 などのエラーかを見る（エラー画面を「フォームが消えた＝送信済み」にしていた）
+  const tFrame = "mainFrame" in target ? target.mainFrame() : target;
+  const posts = new Set<Request>();
+  let navRes: Response | null = null;
+  let postOk = false;
+  const hostOf = (u: string) => { try { return new URL(u).host; } catch { return ""; } };
+  const formHost = hostOf(tFrame.url());
+  const onReq = (r: Request) => { if (r.method() === "POST") posts.add(r); };
+  const onFin = (r: Request) => { posts.delete(r); };
+  const onRes = (r: Response) => {
+    try {
+      const rq = r.request();
+      if (rq.method() === "POST" && r.status() < 400 && hostOf(r.url()) === formHost) postOk = true;
+      if (rq.isNavigationRequest() && (rq.frame() === tFrame || rq.frame() === page.mainFrame())) navRes = r;
+    } catch { /* 見張りの失敗で送信を止めない */ }
+  };
+  page.on("request", onReq); page.on("requestfinished", onFin); page.on("requestfailed", onFin); page.on("response", onRes);
+  const t0 = Date.now();
   try {
-    await Promise.all([
-      page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {}),
-      target.locator(`[data-fo-btn="${target_.idx}"]`).first().click({ timeout: 5000 }),
-    ]);
-  } catch (e) {
-    log.push(`click失敗: ${String(e).slice(0, 100)}`);
-    // JS で submit を試す
-    try { await target.locator(`[data-fo-btn="${target_.idx}"]`).first().evaluate((el: Element) => { const b = el as HTMLButtonElement; if (b.form) { if (b.form.requestSubmit) b.form.requestSubmit(); else b.form.submit(); } else b.click(); }); } catch {}
+    try {
+      await Promise.all([
+        page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {}),
+        target.locator(`[data-fo-btn="${target_.idx}"]`).first().click({ timeout: 5000 }),
+      ]);
+    } catch (e) {
+      log.push(`click失敗: ${String(e).slice(0, 100)}`);
+      // JS で submit を試す。押すはずだったボタンを requestSubmit に渡す（MW WP Form など、押したボタンの名前で確認／送信を分けるフォームがある）。
+      // type=button のボタンは JS の処理で動くので、フォームを直接送らずにクリックだけ起こす（確認ポップアップを飛ばして送らない）
+      try {
+        await timed(target.locator(`[data-fo-btn="${target_.idx}"]`).first().evaluate((el: Element) => {
+          const b = el as HTMLButtonElement;
+          const t = (b.getAttribute("type") || (b.tagName === "BUTTON" ? "submit" : "")).toLowerCase();
+          if (b.form && (t === "submit" || t === "image")) { if (b.form.requestSubmit) { try { b.form.requestSubmit(b); } catch (err) { b.form.requestSubmit(); } } else b.form.submit(); }
+          else b.click();
+        }), 5000, "送信");
+      } catch {}
+    }
+    await page.waitForTimeout(2500);
+    await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+    // 押したあとに始まった POST（Ajax 送信）が終わるまで待つ（押してから最大15秒）。終わったあとの完了表示・alert も少し待つ
+    if (posts.size) {
+      while (posts.size && Date.now() - t0 < 15000) await page.waitForTimeout(250);
+      await page.waitForTimeout(600);
+    }
+  } finally {
+    page.off("request", onReq); page.off("requestfinished", onFin); page.off("requestfailed", onFin); page.off("response", onRes);
   }
-  await page.waitForTimeout(2500);
-  await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
   if (page.url() !== before) log.push(`url→ ${page.url()}`);
+  if (opts.net) {
+    const nr = navRes as Response | null;
+    opts.net.navigated = !!nr;
+    opts.net.postOk = postOk;
+    if (nr) { opts.net.httpStatus = nr.status(); opts.net.httpUrl = nr.url(); opts.net.redirected = !!nr.request().redirectedFrom(); }
+  }
   return kind;
 }
 
 // ---- 結果判定 ----
 // 「お問い合わせいただきありがとうございます。担当者より、追ってご連絡いたします。」（aidas.co.jp の実例）のように
 // 「〜いただき／頂きありがとう」「担当者より追ってご連絡」の形を知らず判定不能→失敗扱いになっていたため追加
-const SUCCESS_RE = /((お問い?合わ?せ|ご連絡|ご送信|送信|ご応募|ご依頼|ご相談|ご登録|お申し?込み)(を)?(いただき|頂き)(まして)?[、,]?(誠に|大変|本当に)?(ありがとう|有難う|有り難う)|(担当(者)?|スタッフ|係)(より|から)[、,]?(追って|改めて|折り返し|後ほど|のちほど)?[、,]?(ご?連絡|ご?返信|ご?回答)(いた|致|させていただ|を差し上げ)|追って(ご?連絡|ご?返信)(いた|致|させていただ)|送信(が|は)?(完了|されました|いたしました|しました|致しました)|送信ありがとう|(ご|お)?回答(を)?(いただき|頂き)?(まして)?[、,]?(誠に|大変)?(ありがとう|有難う|有り難う)|お問い?合わ?せ(を)?(ありがとう|受け付け|承り|受付)|ありがとうございま(す|した)。?(お問い?合わ?せ|送信|受付)|受け付けました|受付(が)?完了|承りました|thank you for (contacting|your (message|inquiry|submission))|(message|inquiry|form)( has been| was)? (sent|submitted|received)|submitted successfully|successfully sent|自動返信(の)?メール(を)?(お送り|送付|送信|送らせて)|確認(の)?メール(を)?(お送り|送付|送信)|正常に(送信|受け付け|受付|完了)|(送信|受付|受け付け|お申し?込み|申込)(が|を)?(完了|終了)(いたし|致)?(ました)?|ご入力(いただき)?(誠に)?ありがとう|受付番号|お問い?合わ?せ番号)/i;
+const SUCCESS_RE = /((お問い?合わ?せ|ご連絡|ご送信|送信|ご応募|ご依頼|ご相談|ご登録|お申し?込み)(を)?(いただき|頂き)(まして)?[、,]?(誠に|大変|本当に)?(ありがとう|有難う|有り難う)|(担当(者)?|スタッフ|係)(より|から)[、,]?(追って|改めて|折り返し|後ほど|のちほど)?[、,]?(ご?連絡|ご?返信|ご?回答)(いた|致|させていただ|を差し上げ)|追って(ご?連絡|ご?返信)(いた|致|させていただ)|送信(が|は)?(完了|されました|いたしました|しました|致しました)|送信ありがとう|(ご|お)?回答(を)?(いただき|頂き)?(まして)?[、,]?(誠に|大変)?(ありがとう|有難う|有り難う)|お問い?合わ?せ(を)?(ありがとう|受け付け|承り|受付)|ありがとうございま(す|した)。?(お問い?合わ?せ|送信|受付)|受け付けました|受付(が)?完了|承りました|thank you for (contacting|your (message|inquiry|submission))|(message|inquiry|form)( has been| was)? (sent|submitted|received)|submitted successfully|successfully sent|自動返信(の)?メール(を)?(お送り|送付|送信|送らせて)|確認(の)?メール(を)?(お送り|送付|送信)|正常に(送信|受け付け|受付|完了)|(送信|受付|受け付け|お申し?込み|申込)(が|を)?(完了|終了)(いたし|致)?(ました)?|ご入力(いただき)?(誠に)?ありがとう|受付番号|お問い?合わ?せ番号|送信(に|が)成功|thanks for (contacting|your (message|inquiry|submission))|お問い?合わ?せ(の)?完了)/i;
 // 完了ページのURL。「customer-success」「representative」（sent）「presentation」（sent）のように、単語の一部に当たって
 // 確認ボタンを押しただけで送信済みにしていたので、他の語に埋もれにくい語（thanks 等）以外は区切り文字（/ _ - .）で囲まれたときだけ採用する
 const SUCCESS_URL_RE = /(thanks|thank-?you|kanryo|kanryou|touroku_kanryo|(^|[/_.-])(complete|completed|done|sent|success|finish|finished)([/_.-]|$))/i;
@@ -1161,7 +1279,7 @@ const ERROR_RE = /((入力|記入|選択|指定|チェック)して(ください
 // サイトの側で受け付けを断られたときの文言。入力を直しても通らないので、入力エラーとは分けて扱う。
 //   ・Contact Form 7 の「メッセージの送信に失敗しました」（スパム判定・メールサーバーの不調）
 //   ・「スパム送信の可能性があります」、403 Forbidden、PHP の Fatal error、前の画面の内容が引き継がれない（Please fill out the form on the previous page）
-const REJECT_RE = /(メッセージの送信に失敗しました|送信に失敗しました|送信できませんでした|スパム(送信|メール|と判定|の可能性)|spam|403\s*Forbidden|Access\s*Denied|アクセスが拒否|不正な(アクセス|送信|リクエスト|操作)|Fatal error|Internal Server Error|Please fill out the form on the previous page|セッション(が|の)?(切れ|タイムアウト|有効期限|無効)|時間をおいて(から)?(再度|もう一度)|しばらく(たって|経って)から)/i;
+const REJECT_RE = /(メッセージの送信に失敗しました|送信に失敗しました|送信できませんでした|スパム(送信|メール|と判定|の可能性)|spam|403\s*Forbidden|Access\s*Denied|アクセスが拒否|不正な(アクセス|送信|リクエスト|操作)|Fatal error|Internal Server Error|Please fill out the form on the previous page|セッション(が|の)?(切れ|タイムアウト|有効期限|無効)|時間をおいて(から)?(再度|もう一度)|しばらく(たって|経って)から|404\s*Not\s*Found|405\s*Not\s*Allowed|Method\s*Not\s*Allowed|Service\s*Unavailable|ページが見つかりません)/i;
 /** 文字列の中に、ある言葉が何回出てくるか（送信の前後で増えたかを見るのに使う） */
 const countOf = (hay: string, needle: string) => (needle ? hay.split(needle).length - 1 : 0);
 
@@ -1169,15 +1287,49 @@ export type Outcome = { status: "sent" | "failed" | "unsure"; detail: string };
 
 /** 送信ボタン（「送信」「この内容で」等の名前の button / input）がまだ画面に見えているか。確認画面かどうかの手がかり */
 async function submitButtonRemains(target: Page | Frame): Promise<boolean> {
-  return target.evaluate(([submitSrc, backSrc, notSrc]) => {
+  return timed(target.evaluate(([submitSrc, backSrc, notSrc]) => {
     const submitRe = new RegExp(submitSrc, "i"), backRe = new RegExp(backSrc, "i"), notRe = new RegExp(notSrc, "i");
-    return Array.from(document.querySelectorAll("button, input[type=submit], input[type=image], input[type=button]")).some((el) => {
+    // 確認画面の送信が <a href="#" onclick> や <div role="button"> のサイトもある。実URLで別ページへ移るリンク（ナビの「お申し込み」等）は数えない
+    return Array.from(document.querySelectorAll("button, input[type=submit], input[type=image], input[type=button], a, [role=button]")).some((el) => {
       const r = el.getBoundingClientRect();
       if (r.width === 0 || r.height === 0) return false;
       const t = ((el as HTMLElement).innerText || (el as HTMLInputElement).value || el.getAttribute("alt") || "").trim();
+      if (el.tagName === "A") {
+        const href = (el.getAttribute("href") || "").trim();
+        if ((href && href.charAt(0) !== "#" && !/^javascript:/i.test(href) && !el.getAttribute("onclick") && !el.getAttribute("role")) || t.length > 20) return false;
+      }
       return !!t && submitRe.test(t) && !backRe.test(t) && !notRe.test(t);
     });
-  }, [SUBMIT_RE.source, BACK_RE.source, NOT_SUBMIT_RE.source] as [string, string, string]).catch(() => false);
+  }, [SUBMIT_RE.source, BACK_RE.source, NOT_SUBMIT_RE.source] as [string, string, string]), 5000, "送信ボタンの確認")
+    .catch((e) => /^timeout:/.test(String((e as Error)?.message))); // 固まって調べられないときは「残っている」側に倒す（送信済みと読まない）
+}
+
+// 完了文言の打ち消し（「まだ送信は完了していません」「送信完了前に」「未完了」）。確認画面の注意書きを完了と読んでいた
+const NEG_AFTER_RE = /^(して(い|おり)ません|されて(い|おり)ません|する前|前に|では(ありません|ない))/;
+const NEG_BEFORE_RE = /(まだ|未)$/;
+/** 完了文言を集める（打ち消されているものは除く） */
+function successHits(...srcs: string[]): Set<string> {
+  const hits = new Set<string>();
+  const re = new RegExp(SUCCESS_RE.source, "gi");
+  for (const src of srcs) for (const m of src.matchAll(re)) {
+    const at = m.index ?? 0;
+    const after = src.slice(at + m[0].length, at + m[0].length + 12).replace(/\s+/g, "");
+    const before = src.slice(Math.max(0, at - 4), at).replace(/\s+/g, "");
+    if (NEG_AFTER_RE.test(after) || NEG_BEFORE_RE.test(before)) continue;
+    hits.add(m[0].replace(/\s+/g, ""));
+  }
+  return hits;
+}
+/** 送信ボタンを押した直後にサイトが出したポップアップ（alert）が、完了の知らせか。
+ *  画面が変わらない Ajax 送信で、完了が alert('送信しました') だけのサイトがある（その後 form.reset() で欄が空になり、入力エラーと読み違えて送り直していた） */
+export function dialogSaysSent(msg: string): boolean {
+  if (!msg || /よろしい(です|でしょう)か|\?|？/.test(msg) || ERROR_RE.test(msg) || REJECT_RE.test(msg)) return false;
+  return [...successHits(msg.replace(/\s+/g, ""), msg)].some((h) => !WEAK_SUCCESS_RE.test(h));
+}
+/** 確認画面の文言のうち、送信前より増えたものがあるか。最初の1件だけを見ると、入力画面のステップ表示「入力内容の確認」に当たって見落としていた */
+function confirmPageFresh(compact: string, beforeCompact: string): boolean {
+  for (const m of compact.matchAll(new RegExp(CONFIRM_PAGE_RE.source, "g"))) if (countOf(compact, m[0]) > countOf(beforeCompact, m[0])) return true;
+  return false;
 }
 
 /** フレームの中でスクリプトを実行する。一定時間で返らなければ undefined。
@@ -1212,23 +1364,24 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
   // 本体＋埋め込みフレームの文章をまとめて見る（完了文言が iframe の中に出ることがある）
   const text = await pageText(page);
   const compact = text.replace(/\s+/g, "");
-  const url = page.url();
+  // iframe の埋め込みフォームは、フォームのある枠の URL を見る（完了ページへ移るのは枠の中だけのことがある）
+  const url = where !== page && !(where as Frame).isDetached() ? (where as Frame).url() : page.url();
   const beforeCompact = beforeText.replace(/\s+/g, "");
   // 送信前より増えた完了文言だけを見る。以前は「送信前のページに完了っぽい文言が1つでもあれば、完了ページの文言も一切見ない」としていて、
   // 入力ページに「送信後、確認メールをお送りします」があると完了ページを見落とし、完了ページの「届かない場合は再度ご入力ください」を
   // 入力エラーと読んで戻って送り直していた（二重送信）
-  const successRe = new RegExp(SUCCESS_RE.source, "gi");
-  const hits = new Set<string>();
-  for (const src of [compact, text.replace(/\s+/g, " ")]) for (const m of src.matchAll(successRe)) hits.add(m[0].replace(/\s+/g, ""));
+  const hits = successHits(compact, text.replace(/\s+/g, " "));
   const freshHits = [...hits].filter((h) => !beforeCompact || countOf(compact, h) > countOf(beforeCompact, h));
+  // 確認画面らしさ: 送信前に無かった確認画面の文言（どれか1つでも増えていれば）
+  const confirmFresh = confirmPageFresh(compact, beforeCompact);
   if (freshHits.length) {
-    // 確認画面らしさ: 送信前に無かった確認画面の文言、または送信ボタンが残っている
-    const confirmFresh = (() => { const m = CONFIRM_PAGE_RE.exec(compact); return !!m && countOf(compact, m[0]) > countOf(beforeCompact, m[0]); })();
     const strong = freshHits.filter((h) => !WEAK_SUCCESS_RE.test(h));
     // 強い文言（「送信が完了しました」等）でも、確認画面の文言と送信ボタンが両方あるなら「送信完了後に…」の予告文
-    // 弱い文言（「確認メールをお送りします」等）は、確認画面の文言か送信ボタンのどちらかがあれば採用しない
+    // 弱い文言（「確認メールをお送りします」等）は、確認画面の文言か送信ボタンのどちらかがあれば採用しない。
+    // 確認ボタンを押したあと（afterSubmit=false）は、強い文言でも両方とも無いときだけ採用する
+    // （確認画面の「以下の内容でお問い合わせを受け付けます」を完了と読んで、送信を押さずに送信済みにしていた）
     const btnLeft = await submitButtonRemains(where);
-    if (strong.length && !(confirmFresh && btnLeft)) return { status: "sent", detail: "完了文言を検知" };
+    if (strong.length && !(confirmFresh && btnLeft) && (afterSubmit || (!confirmFresh && !btnLeft))) return { status: "sent", detail: "完了文言を検知" };
     if (!strong.length && !confirmFresh && !btnLeft) return { status: "sent", detail: "完了文言を検知" };
   }
   // 完了URL: 送信前のURLがすでに当てはまる（/customer-success/contact/ 等）なら使わない。パスが変わったときだけ採用する
@@ -1249,7 +1402,7 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
   //   ・エラー用のマークアップ（error/invalid クラス、role=alert、aria-invalid、wpcf7 のタグ）
   //   ・または赤系の文字色で表示されている短いテキスト
   // に限定し、さらに「入力してください」等のバリデーション文言に一致するものだけを採用する。
-  const visibleErrors: string[] = await where.evaluate((rxSrc) => {
+  const visibleErrors: string[] = await timed(where.evaluate((rxSrc) => {
     const rx = new RegExp(rxSrc, "i");
     const seen = new Set<string>();
     const out: string[] = [];
@@ -1273,7 +1426,7 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
       seen.add(t); out.push(t);
     }
     return out.slice(0, 6);
-  }, ERROR_RE.source).catch(() => [] as string[]);
+  }, ERROR_RE.source), 5000, "エラー表示の確認").catch(() => [] as string[]);
   // 送信前から出ていた文言（フォームの注意書き）は除く
   const freshErrors = visibleErrors.filter(isFresh);
   if (freshErrors.length) {
@@ -1297,7 +1450,7 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
   // それ以外で数えられない（ページが移り続けている等）ときは「入力欄が無い＝送信済み」とはみなさず、呼び出し側に例外を返す
   const fieldsNow = (await collectFields(where).catch((e) => { if (where !== page && (where as Frame).isDetached()) return [] as FieldInfo[]; throw e; })).length;
   // 入力欄が無くなっても、確認画面（「下記の内容で送信します」等）なら送信済みではない。呼び出し側でもう一度送信ボタンを押す
-  if (afterSubmit && hadFieldsBefore > 0 && fieldsNow === 0 && CONFIRM_PAGE_RE.test(compact) && !CONFIRM_PAGE_RE.test(beforeCompact)) {
+  if (afterSubmit && hadFieldsBefore > 0 && fieldsNow === 0 && confirmFresh) {
     return { status: "unsure", detail: "確認画面で止まっている" };
   }
   if (afterSubmit && hadFieldsBefore > 0 && fieldsNow === 0) return { status: "sent", detail: "フォームが消えた（完了文言なし・要確認）" };

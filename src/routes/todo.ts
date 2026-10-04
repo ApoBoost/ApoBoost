@@ -96,7 +96,7 @@ for (const [route, action] of [["dismiss", "dismiss"], ["undismiss", "undismiss"
     const j = ownedJob(req, id);
     if (!j) return notFound(req, res);
     const done = applyTodoAction(req, action, [id]);
-    redirectWith(res, todoBack(req, `/jobs/${id}`), done ? `${j.company_name} を${TODO_ACTION_LABEL[action]}` : `${j.company_name} にはメールアドレスがありません`);
+    redirectWith(res, todoBack(req, `/jobs/${id}`), done ? `${j.company_name} を${TODO_ACTION_LABEL[action]}` : action === "to_email" && !j.email ? `${j.company_name} にはメールアドレスがありません` : `${j.company_name} はいま送信中か、すでに送信済みのため、操作しませんでした`);
   });
 }
 }

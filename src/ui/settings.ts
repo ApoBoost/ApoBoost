@@ -10,20 +10,26 @@ export function suppressionsView(
   optouts: { email: string; reason: string; created_at: string }[] = [],
   imported?: { added: number; already: number; noKey: number; noKeyNames: string[] },
   sync?: { url: string; lastAt?: string; lastResult?: string } | null,
-  extra?: { industries: string; replyRules: { id: number; phrase: string; outcome: string; source: string }[]; share?: { sentPullUrl: string; pushUrl: string; member: string; lastPull: string; lastResult: string; sharedCount: number; configured: boolean; script: string } }
+  extra?: { industries: string; replyRules: { id: number; phrase: string; outcome: string; source: string }[]; share?: { sentPullUrl: string; pushUrl: string; member: string; lastPull: string; lastResult: string; sharedCount: number; configured: boolean; script: string }; isAdmin?: boolean }
 ) {
-  return `<h1>除外リスト</h1>
-<div class="card"><h2 style="margin-top:0">送りたくない業種・キーワード</h2>
+  // 全員に効く設定（キーワード・覚えた言い回し・チーム共有）は管理者だけが変えられる。
+  // 以前は一般ユーザーにも入力欄が出ていて、保存を押すと「管理者だけ」と戻されていた。一般ユーザーには中身だけを見せる
+  const admin = extra?.isAdmin !== false;
+  const byAdmin = `<p class="muted small" style="margin:6px 0 0">${IC_WARN} 全員に効く設定のため、管理者が設定します。変えたいときは管理者に依頼してください。</p>`;
+  const words = String(extra?.industries ?? "").split(/\n/).map((w) => w.trim()).filter(Boolean);
+  const industriesBlock = `<div class="card"><h2 style="margin-top:0">送りたくない業種・キーワード</h2>
 <p class="muted small" style="margin:0 0 8px">ここに書いた言葉が<b>会社名・業界・小業界</b>に含まれる会社には送りません（取り込みのときと、送信の直前に確認します）。1行に1つ、または読点区切り。例: 病院／クリニック／法律事務所／税理士／宗教／学校法人</p>
-<form method="post" action="/suppressions/industries" data-busy>
+${admin ? `<form method="post" action="/suppressions/industries" data-busy>
 <textarea name="industries" style="min-height:90px" placeholder="病院&#10;クリニック&#10;法律事務所">${esc(extra?.industries ?? "")}</textarea>
-<p><button class="btn sub">保存する</button> <span class="muted small">官公庁・自治体・学校のドメイン（.go.jp / .lg.jp / .ac.jp / .ed.jp）は、設定に関係なく最初から除外しています。</span></p></form></div>
-${extra?.replyRules?.length ? `<div class="card"><h2 style="margin-top:0">返信の自動判定が覚えた言い回し（${extra.replyRules.length}件）</h2>
-<p class="muted small" style="margin:0 0 8px">自動判定を手で直したとき、その返信の言い回しを覚えています。次から同じ言い回しのメールは、直した側に振り分けます。おかしなものは削除してください。</p>
-<table><tr><th>言い回し</th><th style="width:110px">振り分け</th><th style="width:160px">覚えた相手</th><th style="width:70px"></th></tr>
-${extra.replyRules.map((r) => `<tr><td>${esc(r.phrase)}</td><td>${esc(OUTCOME_LABEL[r.outcome] ?? r.outcome)}</td><td class="small muted">${esc(r.source)}</td><td><form method="post" action="/reply-rules/${r.id}/delete" class="inline"><button class="btn sub small">削除</button></form></td></tr>`).join("")}
-</table></div>` : ""}
-${(() => {
+<p><button class="btn sub">保存する</button> <span class="muted small">官公庁・自治体・学校のドメイン（.go.jp / .lg.jp / .ac.jp / .ed.jp）は、設定に関係なく最初から除外しています。</span></p></form>`
+    : `<p style="margin:0">${words.length ? words.map((w) => `<span class="tag">${esc(w)}</span>`).join(" ") : '<span class="muted">設定されていません</span>'}</p>
+<p class="muted small" style="margin:6px 0 0">官公庁・自治体・学校のドメイン（.go.jp / .lg.jp / .ac.jp / .ed.jp）は、設定に関係なく最初から除外しています。</p>${byAdmin}`}</div>`;
+  const rulesBlock = extra?.replyRules?.length ? `<div class="card"><h2 style="margin-top:0">返信の自動判定が覚えた言い回し（${n(extra.replyRules.length)}件）</h2>
+<p class="muted small" style="margin:0 0 8px">自動判定を手で直したとき、その返信の言い回しを覚えています。次から同じ言い回しのメールは、直した側に振り分けます。${admin ? "おかしなものは削除してください。" : ""}</p>
+<table><tr><th>言い回し</th><th style="width:110px">振り分け</th><th style="width:160px">覚えた相手</th>${admin ? '<th style="width:70px"></th>' : ""}</tr>
+${extra.replyRules.map((r) => `<tr><td>${esc(r.phrase)}</td><td>${esc(OUTCOME_LABEL[r.outcome] ?? r.outcome)}</td><td class="small muted">${esc(r.source)}</td>${admin ? `<td><form method="post" action="/reply-rules/${r.id}/delete" class="inline"><button class="btn sub small">削除</button></form></td>` : ""}</tr>`).join("")}
+</table>${admin ? "" : byAdmin}</div>` : "";
+  const syncBlock = (() => {
     // チームで別々のPCに入れている場合、断りの会社を1つのスプレッドシートで共有して、各自が自動で取り込めるようにする
     const last = sync?.lastAt ? new Date(sync.lastAt).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
     return `<div class="card" style="background:var(--honey-50)"><h2 style="margin-top:0">共有の除外リスト（チームで同じNGリストを使う）</h2>
@@ -33,8 +39,9 @@ ${(() => {
 <button class="btn sub small">保存</button></form>
 ${sync ? `<form method="post" action="/suppressions/sync-now" style="margin-top:8px" data-busy><button class="btn sub small" data-busytext="取り込み中…">今すぐ取り込む</button> <span class="muted small">${last ? `最終取り込み: ${esc(last)}` : "まだ取り込んでいません"}${sync.lastResult ? ` ／ ${esc(sync.lastResult)}` : ""}</span></form>
 <p class="muted small" style="margin:6px 0 0">解除するには、URLを空にして「保存」を押してください。</p>` : ""}</div>`;
-  })()}
-${extra?.share ? `<div class="card" style="background:var(--honey-50)"><h2 style="margin-top:0">チームで共有する（送信済み・除外の双方向）</h2>
+  })();
+  const sh = extra?.share;
+  const shareBlock = !sh ? "" : admin ? `<div class="card" style="background:var(--honey-50)"><h2 style="margin-top:0">チームで共有する（送信済み・除外の双方向）</h2>
 <p class="muted small" style="margin:0 0 10px">
   <b>送信済みの共有</b>（#78）: 誰かが送った会社には、ほかのメンバーは送らなくなります（取り込み時と送信直前に確認）。<br>
   <b>除外の書き戻し</b>（#79）: 自分が追加した断り先を、共有シートへ自動で書き出します。<br>
@@ -42,16 +49,16 @@ ${extra?.share ? `<div class="card" style="background:var(--honey-50)"><h2 style
 </p>
 <form method="post" action="/share/settings">
 <label>① 共有シートの「送信済み」を読むURL（スプレッドシートの共有URL）</label>
-<input type="url" name="sent_pull_url" value="${esc(extra.share.sentPullUrl)}" placeholder="https://docs.google.com/spreadsheets/d/…">
+<input type="url" name="sent_pull_url" value="${esc(sh.sentPullUrl)}" placeholder="https://docs.google.com/spreadsheets/d/…">
 <label>② 書き込み用のURL（Apps Script のウェブアプリURL）</label>
-<input type="url" name="push_url" value="${esc(extra.share.pushUrl)}" placeholder="https://script.google.com/macros/s/…/exec">
+<input type="url" name="push_url" value="${esc(sh.pushUrl)}" placeholder="https://script.google.com/macros/s/…/exec">
 <label>③ あなたの名前（誰が送ったか分かるように）</label>
-<input type="text" name="member" value="${esc(extra.share.member)}" placeholder="例: 田中" style="max-width:260px">
+<input type="text" name="member" value="${esc(sh.member)}" placeholder="例: 田中" style="max-width:260px">
 <p style="margin-top:10px"><button class="btn sub">保存する</button>
-${extra.share.configured ? `</form><form method="post" action="/share/sync-now" class="inline" data-busy><button class="btn sub" data-busytext="同期中…">今すぐ同期する</button></form>` : "</form>"}
+${sh.configured ? `</form><form method="post" action="/share/sync-now" class="inline" data-busy><button class="btn sub" data-busytext="同期中…">今すぐ同期する</button></form>` : "</form>"}
 </p>
-${extra.share.lastResult ? `<p class="muted small">最終同期: ${esc(extra.share.lastPull)} ／ ${esc(extra.share.lastResult)}</p>` : ""}
-${extra.share.sharedCount ? `<p class="small">共有リストに入っている「送信済みの会社」: <b>${extra.share.sharedCount}社</b></p>` : ""}
+${sh.lastResult ? `<p class="muted small">最終同期: ${esc(sh.lastPull)} ／ ${esc(sh.lastResult)}</p>` : ""}
+${sh.sharedCount ? `<p class="small">共有リストに入っている「送信済みの会社」: <b>${n(sh.sharedCount)}社</b></p>` : ""}
 <details style="margin-top:10px"><summary style="cursor:pointer;font-weight:700">書き込み用URLの作り方（Apps Script のコード）</summary>
 <ol class="small" style="line-height:1.9">
 <li>共有に使うスプレッドシートを開き、「拡張機能 → Apps Script」を選ぶ</li>
@@ -59,8 +66,12 @@ ${extra.share.sharedCount ? `<p class="small">共有リストに入っている�
 <li>右上の「デプロイ → 新しいデプロイ → 種類: ウェブアプリ」を選び、<b>アクセスできるユーザー: 全員</b> にしてデプロイ</li>
 <li>表示された <code>https://script.google.com/macros/s/…/exec</code> を、上の②に貼る（チーム全員が同じURLを使います）</li>
 </ol>
-<textarea readonly style="min-height:220px;font-family:monospace;font-size:11px">${esc(extra.share.script)}</textarea>
-</details></div>` : ""}
+<textarea readonly style="min-height:220px;font-family:monospace;font-size:11px">${esc(sh.script)}</textarea>
+</details></div>`
+    : `<div class="card"><h2 style="margin-top:0">チームで共有する（送信済み・除外の双方向）</h2>
+<p class="small" style="margin:0">${sh.configured ? `共有しています${sh.member ? `（このPCの名前: ${esc(sh.member)}）` : ""}。誰かが送った会社には、ほかのメンバーは送りません。${sh.sharedCount ? `共有リストの送信済みの会社: <b>${n(sh.sharedCount)}社</b>` : ""}` : '<span class="muted">共有していません</span>'}</p>
+${sh.lastResult ? `<p class="muted small" style="margin:4px 0 0">最終同期: ${esc(sh.lastPull)} ／ ${esc(sh.lastResult)}</p>` : ""}${byAdmin}</div>`;
+  return `<h1>除外リスト</h1>
 <p class="muted">ここに登録した会社には、全キャンペーンで送りません。営業お断りを検知した先は自動で追加されます。返信で「今後不要」と言われた先も必ず追加してください。</p>
 ${imported ? `<div class="flash">CSVを取り込みました: 追加 ${imported.added}件 / 登録済み ${imported.already}件${imported.noKey ? ` / 登録できず ${imported.noKey}件（ドメインもメールも無いため）: ${esc(imported.noKeyNames.join("、"))}` : ""}</div>` : ""}
 <div class="card"><h2 style="margin-top:0">1件ずつ追加</h2>
@@ -81,9 +92,15 @@ ${imported ? `<div class="flash">CSVを取り込みました: 追加 ${imported.
 <p class="muted small">除外リストはPCごとに独立しています。別のメンバーと共有したいときは、下のボタンでCSVに書き出し、相手はこの「CSVでまとめて追加」から取り込めます（列はそのまま合います）。</p>
 ${rows.length ? '<a class="btn sub" href="/suppressions/export.csv">除外リストをCSVで書き出す</a>' : ""}</div>
 
+<h2>登録済みの除外（${n(rows.length)}件）</h2>
 <table><tr><th>会社名</th><th>ドメイン</th><th>メール</th><th>電話</th><th>理由</th><th>登録</th><th></th></tr>${rows.length ? rows.map((r) => `<tr><td>${esc(r.company_name || "―")}</td><td>${esc(r.domain ?? "―")}</td><td class="small">${esc(r.email ?? "―")}</td><td class="small">${esc(r.tel || "―")}</td><td class="small">${esc(r.reason)}</td><td class="small">${esc(jst(r.created_at))}</td><td><form method="post" action="/suppressions/${r.id}/delete" class="inline"><button class="btn sub small">削除</button></form></td></tr>`).join("") : `<tr><td colspan="7" class="muted">まだ登録がありません。</td></tr>`}</table>
 <h2>メール配信停止（アドレス単位）</h2><p class="muted">上の欄にメールアドレスを入れて追加すると、そのアドレス宛てのメールを停止します。返信で「配信停止」と言われた相手は必ず入れてください。</p>
-<table><tr><th>メール</th><th>理由</th><th>登録</th></tr>${optouts.map((r) => `<tr><td>${esc(r.email)}</td><td>${esc(r.reason)}</td><td class="small">${esc(jst(r.created_at))}</td></tr>`).join("")}</table>`;
+<table><tr><th>メール</th><th>理由</th><th>登録</th></tr>${optouts.map((r) => `<tr><td>${esc(r.email)}</td><td>${esc(r.reason)}</td><td class="small">${esc(jst(r.created_at))}</td></tr>`).join("")}</table>
+<h2 style="margin-top:28px">除外の設定</h2>
+${industriesBlock}
+${rulesBlock}
+${syncBlock}
+${shareBlock}`;
 }
 
 /** AIのAPIキーの説明（APIキーとは・料金の目安・取得の手順・注意）。

@@ -210,7 +210,8 @@ try {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fo-smoke-first-"));
   const port = PORT + 1000;
   const base = `http://127.0.0.1:${port}`;
-  const env: NodeJS.ProcessEnv = { ...process.env, PORT: String(port), CLEAN_PORT: "0", GAME: "0", DATA_DIR: dir, FO_OPEN: "0", SUPPORT_URL: "" };
+  // APOBOOST_NO_AUTOSTART: 初回設定の「自動で立ち上げる」で、このPCの本物の自動起動（launchd・スタートアップ）に登録しないように
+  const env: NodeJS.ProcessEnv = { ...process.env, PORT: String(port), CLEAN_PORT: "0", GAME: "0", DATA_DIR: dir, FO_OPEN: "0", SUPPORT_URL: "", APOBOOST_NO_AUTOSTART: "1" };
   delete env.ADMIN_USER; delete env.ADMIN_PASSWORD; // 渡すと従来どおり自動で作ってしまうため
   const c = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { env, stdio: ["ignore", "pipe", "pipe"] });
   let log = "";
@@ -229,15 +230,33 @@ try {
     const page = await (await fetch(`${base}/welcome`)).text();
     if (!page.includes("管理者のログインIDとパスワードを決めて") || !page.includes('name="password2"')) ng("初回設定の画面が出ていません");
     if (!log.includes("管理者のログインIDとパスワードを決めて")) ng("ターミナルに初回設定の案内が出ていません");
+    if ((process.platform === "darwin" || process.platform === "win32") && !/name="autostart" value="1" checked/.test(page)) ng("初回設定に「パソコンの起動時に自動で立ち上げる」（既定でオン）が出ていません");
+    // 動いているのが ApoBoost か・終了待ちか（ログイン不要。初回設定の前でも /welcome に転送されない）
+    const hz = await fetch(`${base}/healthz`, { redirect: "manual" });
+    const hzBody = hz.status === 200 ? await hz.json().catch(() => null) as { app?: string; stopping?: boolean } | null : null;
+    if (hzBody?.app !== "apoboost" || hzBody.stopping !== false) ng(`/healthz が想定どおりに答えません（HTTP ${hz.status} ${JSON.stringify(hzBody)}）`);
+    // 転送役（リバースプロキシ・トンネル）を通った要求は、接続元が 127.0.0.1 でもこのPCからとみなさない
+    for (const h of ["x-forwarded-for", "forwarded", "via"]) {
+      const viaProxy = await fetch(`${base}/welcome`, { redirect: "manual", headers: { [h]: "203.0.113.5" } });
+      if (viaProxy.status !== 403) ng(`転送役の見出し（${h}）付きなのに、初回設定の画面が開けます（HTTP ${viaProxy.status}）`);
+    }
     // 別のサイトから送り込まれた送信では作らない
     const evil = await form("/welcome", "username=evil&password=evil-pass-123&password2=evil-pass-123", { origin: "http://evil.example.test" });
     if (evil.status !== 403) ng(`別サイトからの初回設定が通っています（HTTP ${evil.status}）`);
     const mismatch = await form("/welcome", "username=owner&password=owner-pass-123&password2=other-pass-123", { origin: base });
     if (mismatch.status !== 400 || !(await mismatch.text()).includes("一致しません")) ng("確認用パスワードが違うのに通っています");
-    const ok = await form("/welcome", "username=Owner&password=owner-pass-123&password2=owner-pass-123", { origin: base });
+    // 自動起動にチェックを入れて送っても、テストの起動（APOBOOST_NO_AUTOSTART=1）では登録せず、初回設定は成功する
+    const ok = await form("/welcome", "username=Owner&password=owner-pass-123&password2=owner-pass-123&autostart=1&autostart_shown=1", { origin: base });
     const ck = (ok.headers.get("set-cookie") ?? "").split(";")[0];
     if (ok.status !== 302 || !ck) ng(`初回設定で管理者を作れません（HTTP ${ok.status}）`);
     else {
+      if (ok.headers.get("location") !== "/setup") ng(`初回設定のあと「はじめの設定」に進みません（→ ${ok.headers.get("location")}）`);
+      const setup = await (await fetch(`${base}/setup`, { headers: { cookie: ck } })).text();
+      if (!setup.includes("APOBOOST_NO_AUTOSTART")) ng("テストの起動なのに、自動起動を登録しなかった理由がお知らせに出ていません（登録してしまった恐れ）");
+      if (!setup.includes("フォームだけで使う（飛ばす）")) ng("はじめの設定に「フォームだけで使う（飛ばす）」が出ていません");
+      const skip = await form("/setup/skip-email", "skip=1", { cookie: ck });
+      const skipped = await (await fetch(`${base}/setup`, { headers: { cookie: ck } })).text();
+      if (skip.status !== 302 || !skipped.includes("飛ばすのをやめる")) ng("「フォームだけで使う（飛ばす）」を押しても、メールの手順が済みになりません");
       const top = await fetch(`${base}/`, { headers: { cookie: ck }, redirect: "manual" });
       if (top.status !== 200 || !(await top.text()).includes("ホーム")) ng(`初回設定のあと、ログインした状態でホームが開きません（HTTP ${top.status}）`);
       const again = await fetch(`${base}/welcome`, { redirect: "manual" });

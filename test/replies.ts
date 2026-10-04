@@ -259,3 +259,55 @@ console.log("replies: ALL OK");
   assert.equal(isOurBounce(OTHER, bounce), true, "振り分けでも、実際に送ったアカウントの戻りメールと分かる");
   console.log("switched sender: ALL OK");
 }
+
+// ---- メール2周目: 返信の突き合わせ・フリーメールの断り・中断メールの確認の期限・起動時の片付け ----
+// 受信箱（IMAP）にはつながない。確認の対象になる行は、パスワードの無い送信者のものだけにする（ログインを試さない）
+{
+  // 飾り付き（mailto:）のまま保存された古い行にも、返信を突き合わせる
+  const jLegacy = job(camp, "旧版株式会社", "mailto:Legacy@Reply.example", "reply.example>");
+  assert.equal(applyIncomingMail(MAILBOX, mail("legacy@reply.example", "Re: ご提案", "日程を調整させてください")), jLegacy, "飾り付きの古い行にも返信を突き合わせる");
+
+  // フリーメールの会社の断り: そのアドレスだけ止め、gmail.com 全体は除外リストに入れない
+  const jFree = job(camp, "個人商店", "shop.owner@gmail.com", "gmail.com");
+  assert.equal(applyIncomingMail(MAILBOX, mail("shop.owner@gmail.com", "Re: ご提案", "今後のご連絡は不要です。")), jFree);
+  assert.equal(get(jFree).outcome, "declined");
+  assert.ok(!db.prepare("SELECT 1 FROM form_suppressions WHERE domain='gmail.com'").get(), "フリーメールのドメインは除外リストに入れない");
+  assert.ok(db.prepare("SELECT 1 FROM email_optouts WHERE email='shop.owner@gmail.com'").get(), "そのアドレスは配信停止に入る");
+  console.log("normalize/free mail: ALL OK");
+}
+{
+  const { verifyInterruptedEmails, recoverStuckSending, autoRequeueAllowed, UNVERIFIED_TEXT, CUT_PREFIX, INTERRUPTED_PREFIX } = await import("../src/replies.js");
+  const now = Date.parse("2026-10-05T12:00:00Z");
+  assert.equal(autoRequeueAllowed(new Date(now - 3 * 3600_000), now), true, "送り始めて3時間なら、未送信と分かれば待機に戻す");
+  assert.equal(autoRequeueAllowed(new Date(now - 30 * 3600_000), now), false, "30時間たっていたら自動では送らない");
+
+  const noPass = db.prepare(`INSERT INTO sender_profiles(label,company,person,email,smtp_user,smtp_pass) VALUES(?,?,?,?,?,'')`)
+    .run("パスワード無し", "株式会社サンプル商事", "田中", "nopass@sender.example", "nopass@sender.example").lastInsertRowid as number;
+  const campNP = db.prepare(`INSERT INTO form_campaigns(name,sender_id,mode,subject_text,template_text) VALUES(?,?,?,?,?)`).run("確認の期限", noPass, "template", "件名", "本文").lastInsertRowid as number;
+  const cut = (name: string, ago: string) => db.prepare(`INSERT INTO form_jobs(campaign_id,company_name,email,domain,channel,status,result_text,updated_at) VALUES(?,?,?,?,'email','failed',?,datetime('now',?))`)
+    .run(campNP, name, `info@${name}.example`, `${name}.example`, `${CUT_PREFIX}（送信済みか不明・要確認）: テスト`, ago).lastInsertRowid as number;
+  const old = cut("old-cut", "-4 days");
+  const fresh = cut("fresh-cut", "-1 days");
+  const r = await verifyInterruptedEmails();
+  const text = (id: number) => (db.prepare("SELECT result_text FROM form_jobs WHERE id=?").get(id) as { result_text: string }).result_text;
+  assert.equal(text(old), UNVERIFIED_TEXT, "3日より前の中断は「確認できませんでした」にして確認をやめる");
+  assert.ok(text(fresh).startsWith(CUT_PREFIX), "3日以内の中断は確認を続ける");
+  assert.equal(r.unknown, 1, "確認の対象は3日以内の1件だけ");
+  await verifyInterruptedEmails();
+  assert.equal(text(old), UNVERIFIED_TEXT, "書き替えは1回だけ（2回目は対象にならない）");
+
+  // 起動時の片付け: SMTP を始めていない（sent_by_sender が無い）メールは確認なしで待機に戻す
+  const stuck = (name: string, channel: string, sentBy: number | null) => db.prepare(`INSERT INTO form_jobs(campaign_id,company_name,email,domain,channel,status,sent_by_sender) VALUES(?,?,?,?,?,'sending',?)`)
+    .run(campNP, name, `info@${name}.example`, `${name}.example`, channel, sentBy).lastInsertRowid as number;
+  const notStarted = stuck("not-started", "email", null);
+  const started = stuck("started", "email", noPass);
+  const form = stuck("form-stuck", "form", null);
+  const res = recoverStuckSending();
+  const st = (id: number) => db.prepare("SELECT status, result_text FROM form_jobs WHERE id=?").get(id) as { status: string; result_text: string };
+  assert.equal(st(notStarted).status, "queued", "送り始める前に止まったメールは待機に戻す");
+  assert.equal(st(started).status, "failed", "送り始めたメールは要確認");
+  assert.ok(st(started).result_text.startsWith(INTERRUPTED_PREFIX), "送信済みフォルダの確認に回す");
+  assert.equal(st(form).status, "failed", "フォームは従来どおり要確認");
+  assert.deepEqual(res, { requeued: 1, failed: 2 });
+  console.log("interrupted expiry: ALL OK");
+}

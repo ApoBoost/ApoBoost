@@ -22,14 +22,14 @@ import { licenseStatus, setLicenseKey, licenseEnforced } from "../license.js";
 import { syncShare, shareConfigured, APPS_SCRIPT, KEY as SHARE_KEY } from "../share.js";
 import { canSendNow, drainForShutdown, clearStaleRuns, runCampaign, requestStop, isRunning, isScanning, scanCampaign, processJob, inSendWindow, sentToday, sentTodayBySender, warmupLimit, effectiveEmailLimit, nextWindowText } from "../worker.js";
 import { launchBrowser, openAndFill } from "../engine.js";
-import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmails, learnFromCorrection, loadReplyRules, clearReplyRulesCache } from "../replies.js";
+import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmails, recoverStuckSending, learnFromCorrection, loadReplyRules, clearReplyRulesCache } from "../replies.js";
 import { notify, notifyEnabled } from "../notify.js";
 import { pollSupportReplies } from "../support.js";
 import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel } from "../update.js";
 import { errorPage } from "../ui/layout.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
-import { app, db, refreshUpdateFlag, syncAllSuppressions, autoUpdateIfEnabled, dailySummaryIfDue, onReplyErr, onShareErr, onSuppErr } from "./context.js";
+import { app, db, appState, refreshUpdateFlag, syncAllSuppressions, autoUpdateIfEnabled, dailySummaryIfDue, onReplyErr, onShareErr, onSuppErr } from "./context.js";
 
 /** タイマーと終了時の処理を仕掛ける。起動時に1回だけ、待ち受け（listen）に成功してから呼ぶ。
  *  下の「送信中→失敗」の後始末は、ApoBoost がこのPCで自分しか動いていない前提の処理なので、
@@ -39,14 +39,12 @@ export function startBackground(): void {
 // 送信の途中でアプリが止まると、そのまま「送信中」で永久に残り、再送信の対象にもならなかった。
 // 送ったか送っていないか分からないため、いったん「失敗（要確認）」にする（そのまま送り直すと二重送信になり得る）。
 // メールは続けて送信済みフォルダを裏で確認し、送れていれば「送信済み」、送れていなければ「待機」に自動で戻す。
-// updated_at は送信を始めた時刻のまま残す（送信済みフォルダの照合に使う）
+// updated_at は送信を始めた時刻のまま残す（送信済みフォルダの照合に使う）。
+// メールで、送信用アカウントに送り始めた印（sent_by_sender）が無い会社は、まだ送っていないので確認なしで待機に戻す（replies.ts）
 {
-  const stuck = db.prepare(`UPDATE form_jobs SET status='failed',
-    result_text=CASE WHEN channel='email'
-      THEN '送信中にアプリが止まったため中断（送信済みか不明・要確認）: 送信済みフォルダを自動で確認します。確認できない場合は、送信用メールの「送信済み」フォルダに届いているか見て、無ければ再送信してください'
-      ELSE '送信中にアプリが止まったため中断（送信済みか不明・要確認）: 相手先から受付メールが届いていないか確認し、無ければ再送信してください' END
-    WHERE status='sending'`).run().changes;
-  if (stuck) console.log(`[apoboost] 送信中のまま止まっていた ${stuck}件を「失敗（要確認）」にしました`);
+  const stuck = recoverStuckSending();
+  if (stuck.requeued) console.log(`[apoboost] 送信の前に止まっていたメール ${stuck.requeued}件を待機に戻しました（まだ送っていません）`);
+  if (stuck.failed) console.log(`[apoboost] 送信中のまま止まっていた ${stuck.failed}件を「失敗（要確認）」にしました`);
   setTimeout(() => {
     verifyInterruptedEmails()
       .then((r) => { if (r.sent || r.requeued) console.log(`[apoboost] 中断したメールを送信済みフォルダで確認: 送信済み ${r.sent}件 / 未送信→待機に戻した ${r.requeued}件`); })
@@ -64,6 +62,9 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     if (stopping && Date.now() - stopping > 2000) process.exit(130);
     if (stopping) return;
     stopping = Date.now();
+    // 終わるのを待っているあいだに起動し直された場合に、新しい方が「すでに起動しています」で閉じてしまわず、
+    // こちらが終わるのを待ってから起動できるよう、/healthz で「終了待ち」と答える（server.ts）
+    appState.stopping = true;
     console.log("\n[apoboost] 送信中の会社があれば終わるまで待ってから終了します（すぐ止めるにはもう一度 Ctrl+C）");
     drainForShutdown().finally(() => { releaseAwakeAll(); process.exit(0); });
   });

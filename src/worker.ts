@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import { S, setting } from "./settings.js";
 import type { Browser } from "playwright";
-import { getDb, getSetting, setSetting, allowsEmailFallback, findGroupDuplicate, FREE_MAIL_DOMAINS, type Campaign, type Job, type SenderProfile, type JobStatus } from "./db.js";
+import { getDb, getSetting, setSetting, allowsEmailFallback, findGroupDuplicate, FREE_MAIL_DOMAINS, domainOf, isExcludedDomain, type Campaign, type Job, type SenderProfile, type JobStatus, SENT_TODAY_SQL } from "./db.js";
 import { launchBrowser, submitToCompany, fetchSiteText, scanCompany } from "./engine.js";
 import { notify } from "./notify.js";
 import { keepAwake } from "./awake.js";
@@ -14,7 +14,7 @@ import { matchExcludedKeyword } from "./csv.js";
 import { sharedSentBy } from "./share.js";
 import { cappedDailyLimit } from "./license.js";
 import { hasEntity, extractLegalName, findLegalNameFromSite } from "./company.js";
-import { buildEmailBody, isOptedOut, sendEmail, senderEmailOk, explainSmtpError, emailPause, setEmailPause, classifySmtpError } from "./email.js";
+import { buildEmailBody, isOptedOut, sendEmail, senderEmailOk, explainSmtpError, emailPause, setEmailPause, classifySmtpError, maybeAccountSide, normalizeEmail, emailDomain, domainSuppressed } from "./email.js";
 import { verifyInterruptedEmails, CUT_PREFIX } from "./replies.js";
 
 // 実行中のキャンペーン。lastActive は「最後に動いた時刻」で、固まったまま残った実行を見つけるために使う
@@ -75,15 +75,22 @@ export function inSendWindow(c: Campaign): boolean {
 // 「今日送った」の数え方。送信済み（status='sent'）だけを数えると、戻りメールで「失敗」に書き換わった分
 // （replies.ts の applyBounce。sent_at は残る）が今日の数から消え、上限を超えて送ってしまっていた。
 // 実際に相手のサーバーへ送り出した数が上限の対象なので、今日の送信時刻（sent_at）が付いた行を状態に関係なく数える
-const SENT_TODAY_SQL = "sent_at IS NOT NULL AND substr(datetime(sent_at,'+9 hours'),1,10)=?";
 
-/** 送信用アカウント（送信者）ごとの、今日のメール送信数。アカウントを切り替えて送るときの上限管理に使う */
+// 送信アカウントを選んでから送り終わるまでの会社（job id → 送信者・キャンペーン）。今日の数に先に入れて枠を取っておく。
+// 以前は送り終わってから数えていたため、並列の2本や画面の「再試行」が同時に「あと1通」を見て、上限を超えて送っていた。
+// アプリは1つのプロセスで動くので、メモリに持てば足りる（DBに書くと、送信を始めたかどうかの目印 sent_by_sender と混ざる）
+const reserved = new Map<number, { senderId: number; campaignId: number }>();
+
+/** 送信用アカウント（送信者）ごとの、今日のメール送信数。アカウントを切り替えて送るときの上限管理に使う。
+ *  いま送っている途中の会社（枠を取ったもの）も数える */
 export function sentTodayBySender(senderId: number): number {
   const d = nowJst().toISOString().slice(0, 10);
   const r = getDb()
     .prepare(`SELECT COUNT(*) n FROM form_jobs WHERE is_test=0 AND channel='email' AND sent_by_sender=? AND ${SENT_TODAY_SQL}`)
     .get(senderId, d) as { n: number };
-  return r.n;
+  let inFlightN = 0;
+  for (const v of reserved.values()) if (v.senderId === senderId) inFlightN++;
+  return r.n + inFlightN;
 }
 
 /** ウォームアップ（#18）。新しい送信用アカウントでいきなり大量に送るとGmailに止められるため、
@@ -177,7 +184,9 @@ export function sentToday(campaignId: number, channel?: "form" | "email"): numbe
   const r = getDb()
     .prepare(`SELECT COUNT(*) n FROM form_jobs WHERE campaign_id=? AND is_test=0 AND ${SENT_TODAY_SQL}${channel ? " AND channel=?" : ""}`)
     .get(...(channel ? [campaignId, d, channel] : [campaignId, d])) as { n: number };
-  return r.n;
+  let inFlightN = 0;
+  if (channel !== "form") for (const v of reserved.values()) if (v.campaignId === campaignId) inFlightN++;
+  return r.n + inFlightN;
 }
 
 /** 待機のうち、いま送ってよいもの（宛先の一時エラーで「◯時まで待つ」にした会社を除く） */
@@ -202,6 +211,66 @@ const TEMP_RETRY_MAX = 3; // 1回目＋送り直し2回まで
 const TEMP_RETRY_WAIT_MIN = [30, 120];
 export const isScanning = (campaignId: number) => running.has(-campaignId);
 
+// ---- 送信用アカウント側の制限の見分け ----
+// 接続先は自分の送信サーバーなので、RCPT/DATA の 4xx（421 以外の 451 4.7.500・452 4.5.3 等）や本文の段階の 5xx は、
+// 多くが送信用アカウント側の制限や文面の問題。1周目は1社ずつ「宛先の一時エラー」にしたため、アカウントが制限されると
+// 待機の全社が再送待ち → 約2.5時間で全社失敗、になっていた。別の宛先で3件続いたら、アカウントごと止めて待機に戻す
+const ACCOUNT_STREAK = 3;
+type Streak = { emails: string[]; jobs: number[] };
+const streakKey = (s: SenderProfile) => `email_streak:${(s.smtp_user || `sender-${s.id}`).trim().toLowerCase()}`;
+function loadStreak(s: SenderProfile): Streak {
+  try { const v = JSON.parse(getSetting(streakKey(s), "null")) as Streak | null; return v && Array.isArray(v.emails) && Array.isArray(v.jobs) ? v : { emails: [], jobs: [] }; } catch { return { emails: [], jobs: [] }; }
+}
+/** 送れたら数え直す（「続けて」起きたときだけアカウントのせいとみなす） */
+function resetStreak(s: SenderProfile) {
+  getDb().prepare("DELETE FROM settings WHERE key=?").run(streakKey(s));
+}
+/** アカウント側かもしれないエラーを1件数える。別の宛先で ACCOUNT_STREAK 件続いたら、その会社たち（job id）を返す */
+function bumpStreak(s: SenderProfile, email: string, jobId: number): number[] | null {
+  const st = loadStreak(s);
+  // 同じ宛先への送り直しで続いたのは、その宛先の都合かもしれないので数えない
+  if (!st.emails.includes(email)) { st.emails.push(email); st.jobs.push(jobId); }
+  if (st.emails.length >= ACCOUNT_STREAK) { resetStreak(s); return st.jobs; }
+  setSetting(streakKey(s), JSON.stringify(st));
+  return null;
+}
+/** アカウントごと止める時間（分）。30分止めても同じことが24時間以内にまた起きたら、3時間止める
+ *  （文面や添付が原因で断られている場合に、30分ごとに3通ずつ断られ続けて送信元の評価を下げないため） */
+function streakPauseMinutes(s: SenderProfile): number {
+  const key = `email_streak_pause:${(s.smtp_user || `sender-${s.id}`).trim().toLowerCase()}`;
+  const last = Number(getSetting(key, "0"));
+  setSetting(key, String(Date.now()));
+  return last && Date.now() - last < 24 * 3600_000 ? 180 : 30;
+}
+
+// メールの送信（SMTP）は、アプリ全体で同時に1通だけにする。キャンペーンを2つ動かしたときや、画面の「再試行」が
+// 送信と重なったときに、同じアカウントから同時に何通も出ると、Gmail 等に送りすぎと見なされやすい
+let mailChain: Promise<void> = Promise.resolve();
+async function oneMailAtATime<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = mailChain;
+  let release!: () => void;
+  mailChain = new Promise<void>((r) => { release = r; });
+  await prev;
+  try { return await fn(); } finally { release(); }
+}
+
+/** 画面から1社だけ送る（「再試行」「修正して再送信」）直前に呼ぶ。送信中でなければ「送信中」にして true。
+ *  送信中の会社にもう一度押した・二度押しした、のときは false（以前は無条件に送り始め、同じ相手に2通出ることがあった）。
+ *  直前の失敗は履歴（prev_status）に残し、宛先の一時エラーの回数は数え直す（人が送り直すと決めたため） */
+export function claimJobForManual(jobId: number): boolean {
+  const db = getDb();
+  const j = db.prepare("SELECT status, result_text, prev_status, prev_result FROM form_jobs WHERE id=?").get(jobId) as { status: string; result_text: string; prev_status: string; prev_result: string } | undefined;
+  // 送信済みも断る: 画面は「送信済みでない」ことを確かめてからブラウザを起動する（数秒かかる）ので、その間に自動の送信が
+  // 終わった会社に、もう一度送り始めてしまう（二重送信）のを、ここで止める
+  if (!j || j.status === "sending" || j.status === "sent") return false;
+  const failLike = ["failed", "skip_no_form", "skip_captcha"].includes(j.status);
+  // 「一時エラーで再送待ち（n/2回目…）」の文は、processJob が回数の読み取りに使う（temp_tries が無かった頃の行のため）。
+  // 人が送り直すと決めたので回数は数え直す（temp_tries=0）が、文が残ると前の回数が復活するので、文も差し替える
+  return db.prepare(`UPDATE form_jobs SET status='sending', prev_status=?, prev_result=?, temp_tries=0, retry_after=NULL,
+      result_text=CASE WHEN result_text LIKE '一時エラーで再送待ち（%' THEN '手動で送り直し中' ELSE result_text END, updated_at=datetime('now') WHERE id=? AND status=?`)
+    .run(failLike ? j.status : j.prev_status, failLike ? (j.result_text || "").split("\n")[0].slice(0, 80) : j.prev_result, jobId, j.status).changes > 0;
+}
+
 function loadCampaign(id: number): { campaign: Campaign; sender: SenderProfile } {
   const db = getDb();
   const campaign = db.prepare("SELECT * FROM form_campaigns WHERE id=?").get(id) as Campaign | undefined;
@@ -220,16 +289,65 @@ async function getSiteInfo(browser: Browser, job: Job, needed: boolean): Promise
   return info;
 }
 
+/** 同じアドレス（表記ゆれをそろえて比べる）に、days 日以内に送信済み、またはいま送信中の別の会社があれば、その説明。無ければ null。
+ *  以前は重複・再送禁止をドメインだけで見ていたため、サイトURLの違う会社に同じ共通アドレスが書かれていると2通届いていた。
+ *  古い行は飾り付き（mailto: 等）のまま入っていることがあるので、含むものを拾ってからそろえて比べる */
+export function sameAddressSent(email: string, excludeJobId: number, days: number): string | null {
+  const n = normalizeEmail(email);
+  if (!n) return null;
+  const rows = getDb().prepare(`SELECT j.email, j.status, c.name FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id
+    WHERE j.id<>? AND j.is_test=0 AND j.channel='email' AND instr(lower(j.email), ?) > 0
+      AND (j.status='sending' OR (? > 0 AND j.status='sent' AND j.sent_at > datetime('now', ?)))
+    ORDER BY j.status='sending' DESC LIMIT 50`).all(excludeJobId, n, days, `-${days} days`) as { email: string; status: string; name: string }[];
+  const hit = rows.find((r) => normalizeEmail(r.email) === n);
+  if (!hit) return null;
+  return hit.status === "sending" ? `同じアドレス（${n}）に、いま別の会社として送信中（「${hit.name}」）` : `${days}日以内に同じアドレス（${n}）へ送信済み（「${hit.name}」）`;
+}
+
 /** 1ジョブを処理して結果をDBに保存 */
 export async function processJob(browser: Browser, jobId: number, opts: { dryRun?: boolean } = {}): Promise<Job> {
+  try {
+    return await processJobInner(browser, jobId, opts);
+  } catch (e) {
+    // 途中の想定外のエラーで「送信中」のまま残すと、次の起動まで誰も触れなくなる（画面の再試行から呼んだ場合）。
+    // メールは送信の前後で必ず catch しているので、ここに来るのは送信より前の失敗
+    getDb().prepare("UPDATE form_jobs SET status='failed', result_text=?, updated_at=datetime('now') WHERE id=? AND status='sending'").run(`エラー: ${jpError(e, 150)}`, jobId);
+    throw e;
+  } finally {
+    reserved.delete(jobId); // 送り終わった（または送らなかった）ので、取っておいた枠を返す。送れた分は sent_at で数える
+  }
+}
+
+async function processJobInner(browser: Browser, jobId: number, opts: { dryRun?: boolean }): Promise<Job> {
   const db = getDb();
   const job = db.prepare("SELECT * FROM form_jobs WHERE id=?").get(jobId) as Job;
   const { campaign, sender: primarySender } = loadCampaign(job.campaign_id);
+  // 宛先アドレスの表記ゆれ（mailto:・<>・全角・末尾の記号）をそろえる。配信停止・除外・再送禁止の照合と、
+  // 返信・戻りメールの突き合わせが同じ形で引けるよう、そろえた形で保存し直す。
+  // サイトURLが無い会社はドメインもメールから作っていたので（「a.jp>」のようになっていた）、合わせて直す
+  if (job.email) {
+    const ne = normalizeEmail(job.email);
+    if (ne && ne !== job.email) {
+      const dom = domainOf(job.form_url) || domainOf(job.site_url) ? job.domain : ne.split("@")[1];
+      db.prepare("UPDATE form_jobs SET email=?, domain=? WHERE id=?").run(ne, dom, jobId);
+      job.email = ne;
+      job.domain = dom;
+    }
+  }
   // メールは、使えるアカウント（上限に達していない・停止中でない）を選ぶ（#24）。
   // 文面の署名・住所も、実際に送るアカウントのものを使う（法律上の表示を送信元と一致させるため）
   const picked = job.channel === "email" && !job.is_test ? pickEmailSender(campaign, primarySender) : null;
+  // 選んだ時点で今日の数に入れておく（この後の文面作りなどで待つ間に、別の送信が同じ枠を使わないように）
+  if (picked && !opts.dryRun) reserved.set(jobId, { senderId: picked.sender.id, campaignId: campaign.id });
   const sender = picked?.sender ?? primarySender;
   if (picked && picked.sender.id !== primarySender.id) logInfo("worker", `送信アカウントを切り替え: ${primarySender.label} → ${picked.sender.label}`, job.company_name);
+  // 使えるアカウントが無い（どれも今日の上限）のに、本来の送信者で送ってしまっていた（画面の「再試行」「修正して再送信」から
+  // 呼んだとき。キャンペーンの実行はその前に止まるが、画面からの経路には守りが無かった）。一時停止中なら下の確認で待機に戻る
+  if (job.channel === "email" && !job.is_test && !opts.dryRun && !picked && !emailPause(primarySender)) {
+    db.prepare("UPDATE form_jobs SET status='queued', result_text=?, retry_after=NULL, updated_at=datetime('now') WHERE id=?")
+      .run("今日のメール上限に達しているため待機に戻しました（明日の送信時間帯に自動で続きます）", jobId);
+    return db.prepare("SELECT * FROM form_jobs WHERE id=?").get(jobId) as Job;
+  }
   // 社名に法人格（株式会社など）が無ければ、会社のホームページの表記から正式名称を補う（AI不要・0円）。
   // 事前チェックはフォームの会社だけが対象なので、メール送信の会社はここで補う（以前は補われていなかった）。
   // まずキャッシュ済みのHP本文、無ければブラウザを使わずにHPの文字だけを読む。URLが無ければメールのドメイン（フリーメールは除く）
@@ -264,8 +382,17 @@ export async function processJob(browser: Browser, jobId: number, opts: { dryRun
     return db.prepare("SELECT * FROM form_jobs WHERE id=?").get(jobId) as Job;
   };
 
-  // 除外リスト（送信直前にも確認）
-  if (!job.is_test && db.prepare("SELECT 1 FROM form_suppressions WHERE domain=?").get(job.domain)) return finish("skip_suppressed", "除外リストに登録済み");
+  // 除外リスト（送信直前にも確認）。メールは、送り先アドレスのドメインも見る（サイトURLの会社と別のドメインのことがある）
+  const mailDomain = job.channel === "email" ? emailDomain(job.email) : "";
+  if (!job.is_test && (domainSuppressed(job.domain) || (mailDomain && mailDomain !== job.domain && domainSuppressed(mailDomain)))) return finish("skip_suppressed", "除外リストに登録済み");
+  // 官公庁・学校等は取り込みで外しているが、以前の取り込みでドメインが「go.jp>」のように崩れて素通りした行があるため、送信直前にも見る
+  if (!job.is_test && job.channel === "email" && (isExcludedDomain(job.domain) || (mailDomain && isExcludedDomain(mailDomain)))) return finish("skip_suppressed", "官公庁・学校等のドメインは既定で除外");
+  // 同じアドレスに、再送禁止の期間内に送っている／いま別の送信で送っている（グループ会社の共通 info@ を複数社に書いた表、
+  // 同じアドレスの重複行など）。取り込みで外しきれなかった分の保険で、送る直前にも確かめる
+  if (!job.is_test && job.channel === "email" && job.email) {
+    const dup = sameAddressSent(job.email, job.id, campaign.resend_days);
+    if (dup) return finish("skip_duplicate", dup);
+  }
   // チームの誰かがすでに送っている会社には送らない（#78）
   if (!job.is_test && job.domain) {
     const by = sharedSentBy(job.domain);
@@ -300,7 +427,7 @@ export async function processJob(browser: Browser, jobId: number, opts: { dryRun
     if (ai?.kind === "config") {
       // 直すまで何度やっても失敗するので、キャンペーンを一時停止して知らせる（設定を直して「開始」で続きから）
       requestStop(campaign.id);
-      db.prepare("UPDATE form_campaigns SET status='paused' WHERE id=?").run(campaign.id);
+      db.prepare("UPDATE form_campaigns SET status='paused', pause_reason=? WHERE id=?").run(`AIで文面を作れないため: ${jpError(why, 120)}`, campaign.id);
       notify("AIで文面を作れないため送信を止めました", `「${campaign.name}」: ${jpError(why, 120)}。設定画面でAIのAPIキー・残高・モデルを確認してから、もう一度「開始」してください`, `aicfg:${campaign.id}`);
       logError("worker", `AIの設定の問題で一時停止: ${jpError(why)}`, job.company_name);
       return finish("queued", `AIで文面を作れないため待機に戻しました（キャンペーンを一時停止）: ${jpError(why, 120)}`);
@@ -322,18 +449,20 @@ export async function processJob(browser: Browser, jobId: number, opts: { dryRun
     // 差し込み名の書き間違い（{{企業}} など）は文面の側の問題で、どの会社でも同じく止まる。
     // 1社ずつ失敗にすると待機中の全社が失敗に変わってしまうので、この会社は待機に戻し、キャンペーンを止めて知らせる
     // （以前の版は空欄のまま送っていたので、アップデート直後にこれで一斉に失敗にしないためでもある）
-    if (!job.is_test && errs.some((e) => /差し込みが置き換わっていません/.test(e.text))) {
+    if (!job.is_test && errs.some((e) => /差し込みが置き換わっていません|【ここに/.test(e.text))) {
       requestStop(campaign.id);
-      db.prepare("UPDATE form_campaigns SET status='paused' WHERE id=?").run(campaign.id);
-      notify("文面の差し込みに間違いがあるため送信を止めました", `「${campaign.name}」: ${why.slice(0, 120)}。キャンペーンの文面で {{…}} の名前を直してから、もう一度「開始」してください`, `tplvar:${campaign.id}`);
-      logError("worker", `文面の差し込みの間違いで一時停止: ${why.slice(0, 200)}`, job.company_name);
-      return finish("queued", `文面の差し込みに間違いがあるため待機に戻しました（キャンペーンを一時停止）: ${why.slice(0, 160)}`);
+      db.prepare("UPDATE form_campaigns SET status='paused', pause_reason=? WHERE id=?").run(`文面に直す所があるため: ${why.slice(0, 160)}`, campaign.id);
+      notify("文面に直す所があるため送信を止めました", `「${campaign.name}」: ${why.slice(0, 120)}。キャンペーンの文面（【ここに…】や {{…}} の名前）を直してから、もう一度「開始」してください`, `tplvar:${campaign.id}`);
+      logError("worker", `文面の間違いで一時停止: ${why.slice(0, 200)}`, job.company_name);
+      return finish("queued", `文面に直す所があるため待機に戻しました（キャンペーンを一時停止）: ${why.slice(0, 160)}`);
     }
     return finish("failed", `文面エラー: ${why}`, { message_used: message });
   }
 
   if (job.channel === "email") {
     if (!job.email) return finish("failed", "メールアドレスが無い", { message_used: message });
+    // 上でそろえられなかった＝アドレスとして読めない。nodemailer に渡すと、思わぬ宛先に直して送ることがあるので送らない
+    if (!normalizeEmail(job.email)) return finish("failed", `メールアドレスの形が正しくない（${job.email.slice(0, 80)}）。会社の画面の「修正して再送信」で直してください`, { message_used: message });
     if (isOptedOut(job.email)) return finish("skip_optout", "配信停止済みのアドレス", { message_used: message });
     const paused = emailPause(sender);
     if (paused) return finish("queued", `メール送信を一時停止中のため待機に戻しました: ${paused.reason}`, { message_used: message });
@@ -345,17 +474,21 @@ export async function processJob(browser: Browser, jobId: number, opts: { dryRun
       return finish("queued", `メール送信を一時停止しました: ${chk.reason ?? "差出人メールが使えません"}`, { message_used: message });
     }
     if (opts.dryRun) return finish("queued", "テスト（メールは送っていない）", { message_used: message });
-    // どのアカウントで送るかと、送り始めた時刻を「送る前に」書いておく。
-    // 送信中にアプリが止まった・通信が切れたとき、どのアカウントの送信済みフォルダを見て確かめるかに使う
-    // （以前は送れた後に書いていたため、途中で止まると本来の送信者の送信済みフォルダを見て「未送信」と判断し、二重送信になり得た）
-    db.prepare("UPDATE form_jobs SET sent_by_sender=?, updated_at=datetime('now') WHERE id=?").run(sender.id, jobId);
     try {
       const body = buildEmailBody(message, sender, job.email);
       // 資料ファイルがあればメールに添付する（フォームは添付できないので本文リンクで対応済み）
       const attachments = campaign.attach_path && fs.existsSync(campaign.attach_path)
         ? [{ path: campaign.attach_path, filename: campaign.attach_name || "資料.pdf" }]
         : undefined;
-      await sendEmail(sender, { from: chk.from, to: job.email, subject, ...body, attachments });
+      await oneMailAtATime(async () => {
+        // どのアカウントで送るかと、送り始めた時刻を「送る前に」書いておく。
+        // 送信中にアプリが止まった・通信が切れたとき、どのアカウントの送信済みフォルダを見て確かめるかに使う
+        // （以前は送れた後に書いていたため、途中で止まると本来の送信者の送信済みフォルダを見て「未送信」と判断し、二重送信になり得た）。
+        // 順番待ちの後に書くのは、待っている間に止まった会社を「送ったかもしれない」と扱わないため（起動時に確認なしで待機に戻せる）
+        db.prepare("UPDATE form_jobs SET sent_by_sender=?, updated_at=datetime('now') WHERE id=?").run(sender.id, jobId);
+        await sendEmail(sender, { from: chk.from, to: job.email, subject, ...body, attachments });
+      });
+      resetStreak(sender);
       return finish("sent", `メール送信（${job.email}${sender.id !== primarySender.id ? `／送信アカウント: ${sender.label}` : ""}）`, { message_used: message });
     } catch (e) {
       const why = explainSmtpError(e, sender);
@@ -377,9 +510,27 @@ export async function processJob(browser: Browser, jobId: number, opts: { dryRun
         notify("メール送信を一時停止しました", `${why}（${minutes >= 60 ? `${Math.round(minutes / 60)}時間` : `${minutes}分`}後に自動で再開。フォーム送信は続きます）`, `pause:${sender.id}`);
         return finish("queued", `メール送信を一時停止しました（${minutes >= 60 ? `${Math.round(minutes / 60)}時間` : `${minutes}分`}後に自動で再開）: ${why}`, { message_used: message });
       }
+      // 宛先を受け付けた後の 4xx・本文の段階の 5xx が、別の宛先で続いたら、送信用アカウント側の制限とみなして止める
+      const streak = maybeAccountSide(e) ? bumpStreak(sender, job.email, jobId) : null;
+      if (streak) {
+        const minutes = streakPauseMinutes(sender);
+        const reason = `別の宛先で${ACCOUNT_STREAK}件続けて受け付けられなかったため、送信用アカウント側の制限か文面・添付の問題とみなしました: ${why}`;
+        setEmailPause(sender, minutes, reason);
+        const span = minutes >= 60 ? `${Math.round(minutes / 60)}時間` : `${minutes}分`;
+        // 先の2件は宛先のせいではなかったので、数えた回数を戻して待機に戻す（本文の段階で断られて失敗にした分も、届いていないので戻す）
+        const back = db.prepare(`UPDATE form_jobs SET status='queued', retry_after=NULL, temp_tries=MAX(temp_tries-1, 0), result_text=?, updated_at=datetime('now')
+          WHERE id=? AND (status='queued' OR (status='failed' AND result_text LIKE 'メール送信エラー%'))`);
+        for (const id of streak) if (id !== jobId) back.run(`メール送信を一時停止したため待機に戻しました（${span}後に自動で再開）: ${reason}`, id);
+        notify("メール送信を一時停止しました", `${reason}（${span}後に自動で再開。フォーム送信は続きます）`, `pause:${sender.id}`);
+        logWarn("worker", `送信用アカウントの制限とみなして一時停止（${span}）: ${why}`, job.company_name);
+        return finish("queued", `メール送信を一時停止しました（${span}後に自動で再開）: ${reason}`, { message_used: message });
+      }
       if (kind.kind === "temporary") {
-        // 宛先側の一時的な拒否。回数を限って、時間を置いて送り直す（前回の結果文から何回目かを読む）
-        const tries = Number(/^一時エラーで再送待ち（(\d)\//.exec(job.result_text || "")?.[1] ?? 0) + 1;
+        // 宛先側の一時的な拒否。回数を限って、時間を置いて送り直す。
+        // 回数は列（temp_tries）に持つ。以前は結果の文から読んでいたため、間に「一時停止のため待機」が入ると 0 に戻っていた
+        const prevTries = Math.max(Number((job as Job & { temp_tries?: number }).temp_tries ?? 0), Number(/^一時エラーで再送待ち（(\d)\//.exec(job.result_text || "")?.[1] ?? 0));
+        const tries = prevTries + 1;
+        db.prepare("UPDATE form_jobs SET temp_tries=? WHERE id=?").run(tries, jobId);
         if (tries < TEMP_RETRY_MAX) {
           const wait = TEMP_RETRY_WAIT_MIN[tries - 1] ?? TEMP_RETRY_WAIT_MIN[TEMP_RETRY_WAIT_MIN.length - 1];
           const j = finish("queued", `一時エラーで再送待ち（${tries}/${TEMP_RETRY_MAX - 1}回目・${wait}分後）: ${why}`, { message_used: message });
@@ -436,7 +587,9 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
   // 続けて失敗しているときに気づけるようにする（設定ミス・サイト側の変化・ネットワーク断）
   let failStreak = 0;
   try {
-    const worker = async () => {
+    // メールは1本目（index 0）だけが送る。並列の2本が同じアカウントから同時に送ると、Gmail 等に送りすぎと見なされやすいため。
+    // フォームは従来どおり2本で回す
+    const worker = async (_: unknown, index: number) => {
       while (!state.stop) {
         state.lastActive = Date.now();
         const { campaign, sender } = loadCampaign(campaignId);
@@ -459,7 +612,8 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
         // 文面をAIで作るキャンペーンは、AIの一時停止中は止める（時間が来たら自動で再開される）
         const ap = campaign.mode === "ai" ? aiPause() : null;
         if (ap) { reason = `AIの一時停止中: ${ap.reason}`; return; }
-        const channels = [formOk && "form", emailOk && "email"].filter(Boolean) as string[];
+        const channels = [formOk && "form", emailOk && index === 0 && "email"].filter(Boolean) as string[];
+        if (!channels.length) return; // 2本目で、メールしか残っていない（メールは1本目が送る）
         const next = db.prepare(`SELECT id, channel FROM form_jobs WHERE campaign_id=? AND status='queued' AND is_test=0 AND ${READY_SQL} AND channel IN (${channels.map(() => "?").join(",")}) ORDER BY id LIMIT 1`).get(campaignId, ...channels) as { id: number; channel: string } | undefined;
         if (!next) { reason = "queue empty or 本日の上限"; return; }
         if (shuttingDown || state.stop) break;
@@ -496,14 +650,15 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
         }
         if (shuttingDown || state.stop) break;
         // フォーム送信の間隔は 3〜5秒に固定（以前は設定で 8〜15秒なども選べたが、選ぶ必要が無いので設定ごと無くした）。
-        // 環境変数で指定されていればそちらを優先（テスト用）
+        // 環境変数で指定されていればそちらを優先（テスト用）。
+        // メールは 8〜12秒あける（以前は 2〜5秒×並列2本で、1分に20通を超えることがあり、Gmail の「送りすぎ（421 4.7.0）」を招きやすかった）
         const [lo, hi] = process.env.FO_MIN_WAIT_MS ? [MIN_WAIT, MAX_WAIT] : [3000, 5000];
-        const wait = next.channel === "email" ? 2000 + Math.random() * 3000 : lo + Math.random() * (hi - lo);
+        const wait = next.channel === "email" ? (process.env.FO_MIN_WAIT_MS ? MIN_WAIT : 8000 + Math.random() * 4000) : lo + Math.random() * (hi - lo);
         await new Promise((r) => setTimeout(r, wait));
       }
       reason = "停止要求";
     };
-    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+    await Promise.all(Array.from({ length: Math.max(1, CONCURRENCY) }, worker));
   } finally {
     await browser.close().catch(() => {});
     releaseAwake();
@@ -546,7 +701,8 @@ export async function scanCampaign(campaignId: number): Promise<{ scanned: numbe
         nameNote = `／社名を補完: ${job.company_name} → ${r.legalName}`;
       }
       scanned++;
-      const email = job.email || r.emails[0] || "";
+      // サイトで見つけたアドレスも表記ゆれをそろえる（「info@a.jp」の後ろに句読点や全角が付いたまま入ると、配信停止の照合を外れる）
+      const email = normalizeEmail(job.email) || r.emails.map((x) => normalizeEmail(x)).find(Boolean) || job.email || "";
       let status: JobStatus = "queued";
       let note = "";
       let channel: "form" | "email" = "form";
@@ -555,7 +711,7 @@ export async function scanCampaign(campaignId: number): Promise<{ scanned: numbe
         db.prepare("INSERT OR IGNORE INTO form_suppressions(domain, reason) VALUES(?,?)").run(job.domain, "営業お断り文言を検知（事前チェック）");
       } else if (r.captcha) { status = "skip_captcha"; note = `CAPTCHAあり (${r.captcha})`; }
       else if (r.formUrl) note = `フォームあり${r.emails.length ? `・メール発見 ${r.emails[0]}` : ""}`;
-      else if (allowsEmailFallback(campaign.channel) && email && !isOptedOut(email)) { channel = "email"; note = `フォーム無し → メールに切替（${email}）`; }
+      else if (allowsEmailFallback(campaign.channel) && normalizeEmail(email) && !isOptedOut(email)) { channel = "email"; note = `フォーム無し → メールに切替（${email}）`; }
       else { status = "skip_no_form"; note = r.note || "フォームが見つからない"; }
       if (nameNote) note += nameNote;
       // 「送れそう度」を点数にして残す（#9）。送れる会社から先に回したいときの並び替えに使う

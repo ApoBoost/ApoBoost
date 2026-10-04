@@ -16,7 +16,7 @@ import { logError, logInfo, recentLogs, clearLogs, logCounts } from "../applog.j
 import { jpError } from "../jp.js";
 import { healthChecks, diagnosticsText } from "../health.js";
 import { createBackup, listBackups, requestRestore, autoBackupIfDue, backupLabel, BACKUP_DIR } from "../backup.js";
-import { autostartEnabled, autostartSupported, enableAutostart, disableAutostart, autostartPath } from "../autostart.js";
+import { autostartEnabled, autostartSupported, enableAutostart, disableAutostart, autostartPath, autostartBlockedReason, ROOT as APP_ROOT } from "../autostart.js";
 import { releaseAwakeAll, AWAKE_NOTE } from "../awake.js";
 import { licenseStatus, setLicenseKey, licenseEnforced } from "../license.js";
 import { syncShare, shareConfigured, APPS_SCRIPT, KEY as SHARE_KEY } from "../share.js";
@@ -34,6 +34,19 @@ import { app, db, redirectWith, takeFlash, me, appState, navUser, loginFails, LO
 /** 管理者がまだいないのに、このPC以外から開いたときの案内 */
 const FIRST_SETUP_ELSEWHERE = "まだ管理者が決まっていません。ApoBoost を起動したパソコンで http://localhost:" + (process.env.PORT ?? 3210) + " を開き、管理者のログインIDとパスワードを決めてください";
 
+/** 初回設定の「パソコンの起動時に自動で立ち上げる」の出し方。
+ *  Mac で「ダウンロード」「デスクトップ」「書類」の中に置いていると、裏で動く node がフォルダを読めず自動起動が動かないことがあるので、
+ *  そのときは一言添える（起動ファイルの案内と同じ内容） */
+function welcomeAutostart(checked = true): { supported: boolean; checked: boolean; placeNote?: string } {
+  const home = os.homedir();
+  const watched = process.platform === "darwin" && ["Downloads", "Desktop", "Documents"].some((d) => (APP_ROOT + path.sep).startsWith(path.join(home, d) + path.sep));
+  return {
+    supported: autostartSupported(),
+    checked,
+    placeNote: watched ? "※ いまの置き場所（ダウンロード・デスクトップ・書類の中）では、自動起動が動かないことがあります。フォルダごとホームの直下に移すのがおすすめです。" : undefined,
+  };
+}
+
 /** この画面の経路を登録する。server.ts から、ログイン確認などの共通処理のあとに呼ばれる */
 export function register(): void {
 // ---- ログイン画面 ----
@@ -48,7 +61,7 @@ app.get("/login", (req, res) => {
 app.get("/welcome", (req, res) => {
   if (!needsFirstSetup()) return res.redirect("/");
   if (!isLocalRequest(req)) return res.status(403).send(loginPage({ notice: FIRST_SETUP_ELSEWHERE }));
-  res.send(firstAdminPage({ username: defaultAdminUsername() }));
+  res.send(firstAdminPage({ username: defaultAdminUsername(), autostart: welcomeAutostart() }));
 });
 
 app.post("/welcome", (req, res) => {
@@ -60,15 +73,42 @@ app.post("/welcome", (req, res) => {
   if (origin && origin !== `${req.protocol}://${req.headers.host}`) return res.status(403).send(firstAdminPage({ error: "この画面は、ApoBoost の画面から開いて送ってください" }));
   const username = String(req.body.username ?? "").trim();
   const p1 = String(req.body.password ?? ""), p2 = String(req.body.password2 ?? "");
-  if (p1 !== p2) return res.status(400).send(firstAdminPage({ username, error: "パスワードが一致しません。もう一度入力してください" }));
+  // 入力のやり直しで画面を出し直すときは、自動起動のチェックも本人が選んだとおりに戻す
+  const wantAuto = req.body.autostart === "1";
+  const again = (error: string) => firstAdminPage({ username, error, autostart: welcomeAutostart(req.body.autostart_shown ? wantAuto : true) });
+  if (p1 !== p2) return res.status(400).send(again("パスワードが一致しません。もう一度入力してください"));
+  let u: ReturnType<typeof createFirstAdmin>;
   try {
-    const u = createFirstAdmin(username, p1);
-    logInfo("auth", `最初の管理者を作りました（ログインID: ${u.username}）`);
-    startSession(res, u.id);
-    redirectWith(res, "/", `管理者「${u.username}」でログインしました。下の「はじめの設定」から進めてください`);
+    u = createFirstAdmin(username, p1);
   } catch (e) {
-    res.status(400).send(firstAdminPage({ username, error: String((e as Error).message) }));
+    return res.status(400).send(again(String((e as Error).message)));
   }
+  logInfo("auth", `最初の管理者を作りました（ログインID: ${u.username}）`);
+  startSession(res, u.id);
+  // 自動起動は「おまけ」。失敗しても初回設定は成功させ、理由だけお知らせに出す。
+  // テストや開発の起動（別ポート・一時データ・APOBOOST_NO_AUTOSTART=1）では、このPCの本物の自動起動に登録しない（autostart.ts）
+  let autoNote = "";
+  if (wantAuto && autostartSupported()) {
+    const blocked = autostartBlockedReason();
+    if (blocked) autoNote = `（自動起動: ${blocked}）`;
+    else {
+      try {
+        const r = enableAutostart();
+        autoNote = r.ok ? "次にパソコンを起動したときから、ApoBoost は自動で立ち上がります。" : `自動起動は設定できませんでした（${r.message}）。「動作チェック」の画面からやり直せます。`;
+      } catch (e) {
+        autoNote = `自動起動は設定できませんでした（${String((e as Error).message ?? e).slice(0, 120)}）。「動作チェック」の画面からやり直せます。`;
+      }
+    }
+  }
+  // そのまま「はじめの設定」へ（ホームを経由させない。最初にやることが1つに決まっているため）
+  redirectWith(res, "/setup", `管理者「${u.username}」でログインしました。下の順に進めれば送信を始められます。${autoNote ? ` ${autoNote}` : ""}`);
+});
+
+// はじめの設定:「フォームだけで使う（メールの設定は飛ばす）」。フォームにだけ送る人は、送信用メールの手順が
+// 永久に「未完了」のまま残り、次の手順に進めないように見えていたため、済み扱いにできるようにする（取り消しもできる）
+app.post("/setup/skip-email", (req, res) => {
+  saveSettingValue(S.setupEmailSkipped, req.body.skip !== "0");
+  redirectWith(res, "/setup", req.body.skip !== "0" ? "メールの設定を飛ばしました。フォームだけで送ります（あとからメールも使えます）" : "メールの設定を、はじめの設定の手順に戻しました");
 });
 
 app.post("/login", (req, res) => {
@@ -91,7 +131,8 @@ app.post("/login", (req, res) => {
   }
   loginFails.delete(keyUser);
   startSession(res, u.id);
-  res.redirect(next.startsWith("/") ? next : "/");
+  // 「//よそのサイト」や「/\\…」は、ブラウザがよそのサイトへの移動として扱うので通さない
+  res.redirect(/^\/(?![\/\\])/.test(next) ? next : "/");
 });
 
 app.get("/logout", (req, res) => {

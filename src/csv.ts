@@ -3,6 +3,7 @@ import { S } from "./settings.js";
 // 企業DB（COMPANY_DB.md の列名）や任意のCSVを取り込む。列名の別名に対応。
 import { parse } from "csv-parse/sync";
 import { domainOf, getDb, getSetting, isExcludedDomain, channelMode, findGroupDuplicate } from "./db.js";
+import { normalizeEmail, isFreeMailDomain, domainSuppressed, optedOutSet } from "./email.js";
 
 export type CompanyRow = {
   company_name: string;
@@ -24,8 +25,9 @@ const ALIASES: Record<keyof CompanyRow, string[]> = {
     "フォームURL", "問い合わせフォームURL", "お問い合わせフォームURL", "問合せフォームURL", "お問合せフォームURL",
     "問い合わせURL", "お問い合わせURL", "問合せURL", "お問合せURL", "問い合わせページ", "お問い合わせページ", "コンタクトURL",
     "form_url", "contact_url", "inquiry_url", "form"],
-  site_url: ["企業URL", "URL", "ホームページ", "ホームページURL", "HP", "HP URL", "会社HP", "企業HP", "会社URL", "会社ホームページ", "企業ホームページ",
-    "公式サイト", "公式HP", "公式URL", "Webサイト", "ウェブサイト", "WebサイトURL", "ウェブサイトURL", "サイトURL", "web", "website", "site_url", "homepage", "url"],
+  // 素の「URL」は最後に見る。求人サイト・SNSなど別のURLの列にも付く名前なので、「HP」「ホームページ」などがあればそちらを使う
+  site_url: ["企業URL", "ホームページ", "ホームページURL", "HP", "HP URL", "会社HP", "企業HP", "会社URL", "会社ホームページ", "企業ホームページ",
+    "公式サイト", "公式HP", "公式URL", "Webサイト", "ウェブサイト", "WebサイトURL", "ウェブサイトURL", "サイトURL", "web", "website", "site_url", "homepage", "URL", "url"],
   email: ["メール", "メールアドレス", "Eメール", "Eメールアドレス", "代表メール", "代表メールアドレス", "会社メール", "会社メールアドレス",
     "問い合わせメール", "お問い合わせメール", "email", "mail", "e-mail", "email_address", "mail_address"],
   industry: ["大業界", "業界", "業種", "大業種", "業種分類", "industry"],
@@ -34,22 +36,38 @@ const ALIASES: Record<keyof CompanyRow, string[]> = {
   representative: ["代表者名", "代表者", "代表", "代表者氏名", "代表取締役", "representative"],
 };
 
-/** 見出しをそろえる: 全角→半角（NFKC）・小文字・括弧の中身（「メールアドレス（代表）」の（代表））・空白・記号を除く。
+/** 見出しをそろえる: 全角→半角（NFKC）・小文字・注記の括弧（「メールアドレス（代表）」の（代表）・「（必須）」など）・空白・記号を除く。
  *  「ホームページ URL」「HP_URL」「E-mail」「会社名※必須」なども同じ見出しとして読めるようにする */
 export function normHeader(h: string): string {
   return String(h ?? "")
     .normalize("NFKC")
     .toLowerCase()
-    // 括弧の中は外す。ただし読み仮名・英語表記の列（「会社名（カナ）」など）は別の列として残す
-    // （外すと「会社名」と同じ扱いになり、社名の代わりにフリガナを拾ってしまう）
-    .replace(/\(([^)]*)\)|\[([^\]]*)\]|【([^】]*)】|〔([^〕]*)〕|<([^>]*)>|〈([^〉]*)〉|《([^》]*)》/g, (_m, ...g: unknown[]) =>
-      READING_RE.test(g.slice(0, 7).filter((x) => typeof x === "string").join("")) ? "#kana" : "")
+    // 括弧の中は「注記」（必須・任意・代表・半角 など）のときだけ外す。
+    // 中身が別のもの（「URL（Indeed）」「メール（担当者個人）」）は外さずに残し、会社URL・会社メールとして拾わない
+    // （以前はどれも外していて、求人サイトのURLや個人のメールを会社のものとして取り込んでいた）。
+    // 読み仮名・英語表記の列（「会社名（カナ）」など）は印を付けて別の列にする（社名の代わりにフリガナを拾わないように）
+    .replace(/\(([^)]*)\)|\[([^\]]*)\]|【([^】]*)】|〔([^〕]*)〕|<([^>]*)>|〈([^〉]*)〉|《([^》]*)》/g, (_m, ...g: unknown[]) => {
+      const inner = g.slice(0, 7).filter((x) => typeof x === "string").join("");
+      return READING_RE.test(inner) ? "#kana" : isHeaderNote(inner) ? "" : `(${inner.replace(/\s/g, "")})`;
+    })
     .replace(/※.*$/, "")
     .replace(/[\s_\-‐―・:;：；.,、。\/／*＊]/g, "")
     .trim();
 }
 
-const READING_RE = /カナ|かな|フリガナ|ふりがな|ヨミ|よみ|読み|kana|yomi|英|ローマ字|roman/i;
+// 読み仮名・英語表記の列。「英」1字だと「企業名（英数字不可）」まで読み仮名扱いになり、社名の列が読めず0行になっていた
+const READING_RE = /カナ|かな|フリガナ|ふりがな|ヨミ|よみ|読み|kana|yomi|英語|英文|英名|英表記|英字表記|ローマ字|roman|english/i;
+
+// 見出しの括弧に書かれる「注記」の言葉（入力の決まり・どの窓口か）。これだけでできている括弧は外してよい
+const HEADER_NOTE_WORDS = /必須|任意|代表|半角|全角|英数字|英数|英字|数字|記号|ハイフン|不可|省略|空欄|入力|記入|あれば|なければ|あり|なし|有り|無し|不要|正式名称|正式|法人格|含む|自動|トップページ|トップ|top|公式|会社|企業|窓口|お?問い?合わ?せ用?|optional|required|以内|文字|まで|など|等|可|有|無|要|用/g;
+
+/** 括弧の中身が注記だけか（「必須」「半角英数字」「例: https://…」など） */
+function isHeaderNote(inner: string): boolean {
+  const t = inner.trim();
+  if (!t) return true;
+  if (/^(例|e\.?g\.?|ex[.:：\s]|※)/i.test(t)) return true; // 「例: 株式会社サンプル」のような書き方の例
+  return t.replace(HEADER_NOTE_WORDS, "").replace(/[\s\d、,，・\/／:：;；.\-_]+/g, "") === "";
+}
 
 /** 括弧などを外す前の見出し（NFKC・小文字・空白なし）。同じ見出しに読める列が複数あるとき、こちらが一致する列を優先する */
 const rawHeader = (h: string) => String(h ?? "").normalize("NFKC").toLowerCase().replace(/\s/g, "");
@@ -106,7 +124,8 @@ export function rowsToCompanies(rows: Record<string, string>[], headers?: string
       company_name: get(r, "company_name"),
       form_url: get(r, "form_url"),
       site_url: get(r, "site_url"),
-      email: get(r, "email").toLowerCase(),
+      // 「mailto:」「<>」「(代表)」「全角＠」「a@x.jp/b@x.jp」などの表記ゆれをそろえる。読めなければ元のまま残し、取り込みで理由を出す
+      email: normalizeEmail(get(r, "email")) || get(r, "email").toLowerCase(),
       industry: get(r, "industry"),
       sub_industry: get(r, "sub_industry"),
       prefecture: get(r, "prefecture"),
@@ -240,9 +259,17 @@ export function importRowsToCampaign(campaignId: number, rows: CompanyRow[], opt
   const insert = db.prepare(`
     INSERT INTO form_jobs(campaign_id, company_name, form_url, site_url, industry, sub_industry, prefecture, representative, domain, channel, email, status, result_text, import_id)
     VALUES(@campaign_id, @company_name, @form_url, @site_url, @industry, @sub_industry, @prefecture, @representative, @domain, @channel, @email, @status, @result_text, @import_id)`);
-  const isSuppressed = db.prepare("SELECT 1 FROM form_suppressions WHERE domain=?");
-  const isOptedOut = db.prepare("SELECT 1 FROM email_optouts WHERE email=?");
   const recentlySent = db.prepare("SELECT 1 FROM form_jobs WHERE sent_at > datetime('now', ?) AND domain=? AND status='sent' AND is_test=0");
+  // 配信停止と、再送禁止の期間内にメールを送ったアドレスは、取り込みの最初に1回だけ集めて、そろえた形で照らし合わせる
+  // （保存済みの行には飾り付きのまま入っているものがあるため。行ごとに引くと何千行で遅くなる）
+  const optouts = optedOutSet();
+  const sentAddrs = new Set<string>();
+  if (resendDays > 0) {
+    for (const x of db.prepare("SELECT email FROM form_jobs WHERE is_test=0 AND status='sent' AND channel='email' AND email<>'' AND sent_at > datetime('now', ?)").all(`-${resendDays} days`) as { email: string }[]) {
+      const n = normalizeEmail(x.email);
+      if (n) sentAddrs.add(n);
+    }
+  }
   const seen = new Set<string>();
 
   const tx = db.transaction(() => {
@@ -250,18 +277,32 @@ export function importRowsToCampaign(campaignId: number, rows: CompanyRow[], opt
       // URL欄の「なし」「-」「不明」などはURLとして扱わない（以前はフォームありと見なされ、メールがあっても送れなかった）
       const r = { ...r0, form_url: domainOf(r0.form_url) ? r0.form_url.trim() : "", site_url: domainOf(r0.site_url) ? r0.site_url.trim() : "" };
       const hasForm = Boolean(r.form_url || r.site_url);
-      const hasEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(r.email);
+      // メールは表記ゆれをそろえてから使う（以前は飾り付きのまま保存し、配信停止の照合やドメインの判定を外れていた）
+      const email = normalizeEmail(r.email);
+      const hasEmail = Boolean(email);
       let channel: "form" | "email" | null = null;
       if (mode === "form_only") channel = hasForm ? "form" : null;
       else if (mode === "email_only") channel = hasEmail ? "email" : null;
       else if (mode === "form_first") channel = hasForm ? "form" : hasEmail ? "email" : null;
       else if (mode === "email_first") channel = hasEmail ? "email" : hasForm ? "form" : null;
       const note = (reason: string) => { if (summary.excludedRows.length < 300) summary.excludedRows.push({ company: r.company_name, reason, where: r.form_url || r.site_url || r.email }); };
-      if (!channel) { summary.noUrl++; note("送信先（フォームURL・企業URL・メール）が無い"); continue; }
-      const domain = channel === "form" ? domainOf(r.form_url || r.site_url) : domainOf(r.site_url) || r.email.split("@")[1];
+      if (!channel) {
+        summary.noUrl++;
+        // メール欄に何か書いてあるのに読めなかったときは、そう伝える（以前は黙って「メール無し」になっていた）
+        note(r.email.trim() && !hasEmail ? `メールアドレスの形が読めない（${r.email.trim().slice(0, 60)}）` : "送信先（フォームURL・企業URL・メール）が無い");
+        continue;
+      }
+      const domain = channel === "form" ? domainOf(r.form_url || r.site_url) : domainOf(r.site_url) || email.split("@")[1];
       if (!domain) { summary.noUrl++; note("URL・メールからドメインを判別できない"); continue; }
-      if (seen.has(domain)) { summary.duplicated++; note("CSV内で重複（同じドメインが複数行）"); continue; }
-      seen.add(domain);
+      // 表の中の重複。会社のドメインが同じ行と、同じアドレスの行（サイトURLの違うグループ会社に共通の info@ が書かれている等）を外す。
+      // フリーメール（gmail.com 等）はドメインが同じでも別の会社なので、ドメインではなくアドレスで見る。
+      // アドレスで見るのはメールで送る行だけ（フォームで送る行は宛先がフォームなので、制作会社の共通アドレス等が重なっても別の会社）
+      const freeMail = isFreeMailDomain(domain);
+      const byAddr = channel === "email" && hasEmail;
+      const keys = [freeMail ? "" : `d:${domain}`, byAddr ? `e:${email}` : ""].filter(Boolean);
+      if (keys.some((k) => seen.has(k))) { summary.duplicated++; note(keys.some((k) => k.startsWith("e:") && seen.has(k)) ? "CSV内で重複（同じメールアドレスが複数行）" : "CSV内で重複（同じドメインが複数行）"); continue; }
+      if (!keys.length) { summary.noUrl++; note("URL・メールからドメインを判別できない"); continue; }
+      for (const k of keys) seen.add(k);
       let status = "queued";
       let reason = "";
       let groupHit: string | null = null;
@@ -269,13 +310,14 @@ export function importRowsToCampaign(campaignId: number, rows: CompanyRow[], opt
       const ngWord = matchExcludedKeyword(r);
       if (isExcludedDomain(domain)) { status = "skip_suppressed"; reason = "官公庁・学校等のドメインは既定で除外"; summary.excluded++; note(reason); }
       else if (ngWord) { status = "skip_suppressed"; reason = `除外キーワード「${ngWord}」に一致（設定で変更できます）`; summary.excluded++; note(reason); }
-      else if (isSuppressed.get(domain)) { status = "skip_suppressed"; reason = "除外リストに登録済み"; summary.suppressed++; note(reason); }
-      else if (hasEmail && isOptedOut.get(r.email)) { status = "skip_optout"; reason = "配信停止・除外済みのアドレス"; summary.suppressed++; note(reason); }
-      else if (resendDays > 0 && recentlySent.get(`-${resendDays} days`, domain)) { status = "skip_duplicate"; reason = `${resendDays}日以内に送信済み`; summary.duplicated++; note(reason); }
+      else if (domainSuppressed(domain)) { status = "skip_suppressed"; reason = "除外リストに登録済み"; summary.suppressed++; note(reason); }
+      else if (hasEmail && (optouts.has(email) || optouts.has(r.email.trim().toLowerCase()))) { status = "skip_optout"; reason = "配信停止・除外済みのアドレス"; summary.suppressed++; note(reason); }
+      // 再送禁止: 会社のドメインに送っていればその会社。フリーメールはドメインでは見ず（別の会社に送っただけかもしれない）、アドレスで見る
+      else if (resendDays > 0 && ((!freeMail && recentlySent.get(`-${resendDays} days`, domain)) || (byAddr && sentAddrs.has(email)))) { status = "skip_duplicate"; reason = `${resendDays}日以内に送信済み`; summary.duplicated++; note(reason); }
       // チームの誰かがすでに送っている会社は取り込まない（#78）
       else if ((sharedHit = sharedSent.get(domain) as { member: string } | undefined)) { status = "skip_duplicate"; reason = `チームの ${sharedHit.member || "他のメンバー"} が送信済み（共有リスト）`; summary.duplicated++; note(reason); }
       // 同じグループの別キャンペーンで待機中・送信中・送信済みなら登録しない（フォーム無し・失敗・CAPTCHAだった会社は、連絡できていないので対象にしてよい）
-      else if (campaign?.group_name && (groupHit = findGroupDuplicate(db, { groupName: campaign.group_name, campaignId, domain, email: hasEmail ? r.email : "", statuses: ["queued", "sending", "sent"] }))) {
+      else if (campaign?.group_name && (groupHit = findGroupDuplicate(db, { groupName: campaign.group_name, campaignId, domain, email, statuses: ["queued", "sending", "sent"] }))) {
         status = "skip_duplicate"; reason = `同じグループの「${groupHit}」に登録済み`; summary.duplicated++; note(reason);
       }
       else {
@@ -283,7 +325,7 @@ export function importRowsToCampaign(campaignId: number, rows: CompanyRow[], opt
         // 「株式会社」などの法人格が無い社名は警告用に控える（事前チェックでHPから自動補完される）
         if (!hasEntity(r.company_name) && summary.noEntity.length < 300) summary.noEntity.push(r.company_name);
       }
-      if (!opts.dryRun) insert.run({ ...r, campaign_id: campaignId, domain, channel, email: hasEmail ? r.email : "", status, result_text: reason, import_id: opts.importId ?? null });
+      if (!opts.dryRun) insert.run({ ...r, campaign_id: campaignId, domain, channel, email, status, result_text: reason, import_id: opts.importId ?? null });
     }
   });
   tx();
@@ -335,7 +377,8 @@ export function parseSuppressionText(text: string): SuppressionRow[] {
     rows = recs.map((r) => ({
       company_name: pick(r, SUPP_ALIASES.company_name),
       domain: domainOf(pick(r, SUPP_ALIASES.domain)),
-      email: pick(r, SUPP_ALIASES.email).toLowerCase(),
+      // 除外リストのメールも表記ゆれをそろえて登録する（送信側の照合と同じ形にするため）
+      email: normalizeEmail(pick(r, SUPP_ALIASES.email)) || pick(r, SUPP_ALIASES.email).toLowerCase(),
       tel: pick(r, SUPP_ALIASES.tel),
       reason: pick(r, SUPP_ALIASES.reason),
     }));
@@ -346,7 +389,7 @@ export function parseSuppressionText(text: string): SuppressionRow[] {
       for (const raw of cells) {
         const c = String(raw ?? "").trim();
         if (!c) continue;
-        if (!r.email && EMAIL_CELL.test(c)) r.email = c.toLowerCase();
+        if (!r.email && (EMAIL_CELL.test(c) || (c.includes("@") && normalizeEmail(c)))) r.email = normalizeEmail(c) || c.toLowerCase();
         else if (!r.domain && DOMAIN_CELL.test(c)) r.domain = domainOf(c);
         else if (!r.tel && TEL_CELL.test(c)) r.tel = c;
         else if (!r.company_name) r.company_name = c;
@@ -375,7 +418,9 @@ export function importSuppressions(rows: SuppressionRow[], ownerUserId: number |
 
   const tx = db.transaction(() => {
     for (const r of rows) {
-      const hasEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(r.email);
+      // 形として読めるアドレスだけを、そろえた形で配信停止に入れる
+      const email = normalizeEmail(r.email);
+      const hasEmail = Boolean(email);
       // ドメインもメールも無い行は、送信を止める手がかりが無いので登録できない
       if (!r.domain && !hasEmail) {
         s.noKey++;
@@ -384,11 +429,11 @@ export function importSuppressions(rows: SuppressionRow[], ownerUserId: number |
       }
       if (r.domain && exists.get(r.domain)) {
         s.already++;
-        if (hasEmail) optout.run(r.email, `${r.company_name}（除外リスト）`, ownerUserId);
+        if (hasEmail) optout.run(email, `${r.company_name}（除外リスト）`, ownerUserId);
         continue;
       }
-      insert.run(r.company_name, r.domain || null, hasEmail ? r.email : null, r.tel, r.reason || defaultReason, ownerUserId);
-      if (hasEmail) optout.run(r.email, `${r.company_name}（除外リスト）`, ownerUserId);
+      insert.run(r.company_name, r.domain || null, hasEmail ? email : null, r.tel, r.reason || defaultReason, ownerUserId);
+      if (hasEmail) optout.run(email, `${r.company_name}（除外リスト）`, ownerUserId);
       s.added++;
     }
   });

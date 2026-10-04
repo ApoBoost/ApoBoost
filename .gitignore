@@ -7,6 +7,9 @@ dist/
 license-keys/
 data-dev/
 
+# 起動ファイルがフォルダの中に自動で用意する Node.js（ApoBoost起動.command / .bat）。利用者のPCごとに落とすもので、配布物にもアップデートにも入れない
+runtime/
+
 # 手元だけに置くメモ（引き継ぎ・レビュー記録）
 *.local.md
 

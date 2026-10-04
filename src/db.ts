@@ -312,6 +312,11 @@ function migrate(db: Database.Database) {
   addCol("form_jobs", "appo_seen_at", "TEXT");                           // アポを「確認した」日時。空＝未確認（メニューの数字に数える）
   // メールの宛先側の一時エラー（4xx）で待機に戻したとき、この時刻（UTC）までは送り直さない。NULL＝すぐ送ってよい
   addCol("form_jobs", "retry_after", "TEXT");
+  // 宛先の一時エラー（4xx）で送り直した回数。以前は結果の文から数えていて、間に「一時停止のため待機」が入ると 0 に戻っていた
+  addCol("form_jobs", "temp_tries", "INTEGER NOT NULL DEFAULT 0");
+  // 自動で一時停止したときの理由（AIの設定の問題・差し込み名の間違いなど）。キャンペーン画面とホームに「なぜ止まったか」を出すため。
+  // 書くのは worker、消すのは「開始」「一時停止」の操作。空＝自動の一時停止ではない
+  addCol("form_campaigns", "pause_reason", "TEXT NOT NULL DEFAULT ''");
 
   // 質問箱から配布元（担当者）へ送った質問と、その返信。ticket は推測できない番号で、返信を読むための合い言葉になる
   db.exec(`CREATE TABLE IF NOT EXISTS support_tickets (
@@ -458,7 +463,17 @@ export type Campaign = {
   template_b: string;
   subject_b: string;
   subject_alts: string;
+  pause_reason?: string;  // 自動で一時停止したときの理由（AIの設定・差し込みの間違いなど）。空＝自動停止ではない
 };
+
+// 「今日送った」の数え方。上限の判定（worker.ts）と画面の「今日」で同じ条件を使う。
+// 状態（status='sent'）ではなく送信時刻で数える。戻りメールで「失敗」に書き換わった分（sent_at は残る）も、
+// 相手のサーバーへ送り出したことに変わりはなく、上限の対象だから。日付は東京時間で切る
+export const SENT_TODAY_SQL = "sent_at IS NOT NULL AND substr(datetime(sent_at,'+9 hours'),1,10)=?";
+/** 表に別名（j. など）を付けて使うときの SENT_TODAY_SQL */
+export const sentTodaySql = (alias = "") => SENT_TODAY_SQL.replace(/sent_at/g, `${alias}sent_at`);
+/** SENT_TODAY_SQL の ? に入れる「今日」（東京時間の YYYY-MM-DD） */
+export const todayJst = () => new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
 
 // フリーメールはドメインが同じでも別の会社。グループ内の重複判定ではドメインではなくメールアドレスで比べる
 export const FREE_MAIL_DOMAINS = new Set(["gmail.com", "googlemail.com", "yahoo.co.jp", "ymail.ne.jp", "yahoo.com", "outlook.jp", "outlook.com", "hotmail.com", "hotmail.co.jp", "live.jp", "live.com", "icloud.com", "me.com", "mac.com", "aol.com", "docomo.ne.jp", "ezweb.ne.jp", "au.com", "softbank.ne.jp", "i.softbank.jp", "nifty.com", "biglobe.ne.jp", "ocn.ne.jp", "so-net.ne.jp", "excite.co.jp", "goo.jp", "infoseek.jp"]);

@@ -12,7 +12,7 @@ process.env.FO_NO_NOTIFY = "1";
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "fo-todo-"));
 
 const { getDb } = await import("../src/db.js");
-const { launchBrowser, submitToCompany } = await import("../src/engine.js");
+const { launchBrowser, submitToCompany, scanCompany } = await import("../src/engine.js");
 
 const got: Record<string, Record<string, string>[]> = {};
 const hit = (k: string, b: Record<string, string>) => { (got[k] ??= []).push(b); };
@@ -171,6 +171,69 @@ const server = http.createServer(async (req, res) => {
   if (p === "/spin") return post ? (hit("spin", b), send(`<!doctype html><meta charset="utf-8"><script>location.replace("/spin/go?" + Date.now())</script>`)) : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>")}<button type="submit">送信する</button></form>`));
   if (p === "/spin/go") return send(`<!doctype html><meta charset="utf-8"><script>setTimeout(function(){ location.replace("/spin/go?" + Date.now()); }, 30)</script>`);
 
+  // ---- 2周目: Ajax のリセット・確認画面の誤判定・ボタンの選び違い・エラー応答 ----
+  // 22) 画面が変わらない Ajax 送信。全欄 required、完了は alert('送信しました') だけで、form.reset() で欄が空になる。
+  //     空になった必須欄を「入力エラー」と読んで、埋め直してもう一度送っていた（二重送信）
+  //     /ajaxb は完了文言が定型に無い「送信に成功しました」、/ajaxc は何も出さずリセットだけ
+  const ajaxForm = (k: string, after: string) => send(page("お問い合わせ", `<h1>お問い合わせ</h1><p id="msg"></p><form id="af"><table>
+<tr><th>お名前</th><td><input type="text" name="nm" required></td></tr>
+<tr><th>メールアドレス</th><td><input type="email" name="em" required></td></tr>
+<tr><th>電話番号</th><td><input type="tel" name="tel" required></td></tr>
+<tr><th>お問い合わせ内容</th><td><textarea name="msg" required></textarea></td></tr></table><button type="submit">送信する</button></form>
+<script>document.getElementById('af').addEventListener('submit',function(e){e.preventDefault();var f=this;fetch('/${k}/post',{method:'POST',body:new URLSearchParams(new FormData(f))}).then(function(){${after}f.reset();});});</script>`));
+  if (p === "/ajaxa") return ajaxForm("ajaxa", "alert('送信しました');");
+  if (p === "/ajaxb") return ajaxForm("ajaxb", "document.getElementById('msg').textContent='送信に成功しました';");
+  if (p === "/ajaxc") return ajaxForm("ajaxc", "");
+  for (const k of ["ajaxa", "ajaxb", "ajaxc"]) if (p === `/${k}/post` && post) { hit(k, b); res.writeHead(200, { "content-type": "text/plain" }); return res.end("ok"); }
+
+  // 23) 入力画面にステップ表示「入力 > 入力内容の確認 > 完了」。確認画面に「まだ送信は完了していません。以下の内容でお問い合わせを受け付けます」、
+  //     送信は <a href="#" onclick>。確認画面を「完了文言を検知」で送信済みにしていた
+  const steps = `<ol class="steps"><li>入力</li><li>入力内容の確認</li><li>完了</li></ol>`;
+  if (p === "/stepconf") {
+    if (!post) return send(page("お問い合わせ", `${steps}<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>")}<button type="submit">確認画面へ</button></form>`));
+    return send(page("確認", `${steps}<p>まだ送信は完了していません。以下の内容でお問い合わせを受け付けます。よろしければ「送信する」ボタンを押してください。</p><form method="post" action="/stepconf/send" name="f">${hidden(b)}</form><p><a href="javascript:history.back()">戻る</a> <a href="#" onclick="document.f.submit();return false;">送信する</a></p>`));
+  }
+  if (p === "/stepconf/send" && post) return done("stepconf");
+
+  // 24) 確認ポップアップが body 直下の position:fixed（class は overlay。modal/dialog/popup を含まない）で、中の「送信する」が <a href="#">。
+  //     body の class が header-fixed（ヘッダー判定が body に当たると、固定表示のポップアップを見つけられない）
+  if (p === "/ovl") {
+    // ポップアップの「送信する」を押したときだけ confirmed=1 が付く（後ろの「確認する」を押し直しても通らない）
+    if (post) return b.confirmed === "1" ? done("ovl") : (hit("ovl_ng", b), send(page("お問い合わせ", `<p class="error">確認画面から送信してください</p>`)));
+    return send(`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>お問い合わせ</title></head><body class="header-fixed"><header><a href="/">ダミー</a></header><h1>お問い合わせ</h1><form id="of" method="post"><input type="hidden" name="confirmed" id="cf" value="">${fields("<th>電話番号（必須）</th>")}<button type="button" id="open">確認する</button></form>
+<div class="overlay" id="ov" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000"><div style="background:#fff;margin:100px auto;width:400px;padding:20px"><p>以下の内容で送信してよろしいですか？</p><a href="#" id="cancel">キャンセル</a> <a href="#" id="go">送信する</a></div></div>
+<script>document.getElementById('open').onclick=function(){document.getElementById('ov').style.display='block';};document.getElementById('cancel').addEventListener('click',function(e){e.preventDefault();document.getElementById('ov').style.display='none';});document.getElementById('go').addEventListener('click',function(e){e.preventDefault();document.getElementById('cf').value='1';document.getElementById('of').submit();});</script></body></html>`);
+  }
+
+  // 25) body の class が header-fixed・textarea が2つ（お問い合わせ内容／備考）・フォームの中に <a href="/privacy">個人情報の取扱いを確認</a>・
+  //     送信ボタンを包む <div class="btn-wrap">（幅いっぱいで左寄せ。箱の真ん中を押してもボタンに当たらない）
+  if (p === "/privacy") { hit("privacy", b); return send(page("個人情報の取扱い", "<h1>個人情報の取扱い</h1><p>当社は個人情報を適切に管理します。</p>")); }
+  if (p === "/twota") {
+    if (post) return done("twota");
+    return send(`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>お問い合わせ</title></head><body class="header-fixed"><h1>お問い合わせ</h1><form method="post"><table>
+<tr><th>お名前</th><td><input type="text" name="nm"></td></tr>
+<tr><th>メールアドレス</th><td><input type="text" name="em"></td></tr>
+<tr><th>電話番号（必須）</th><td><input type="text" name="tel"></td></tr>
+<tr><th>お問い合わせ内容</th><td><textarea name="msg"></textarea></td></tr>
+<tr><th>備考</th><td><textarea name="note"></textarea></td></tr></table>
+<p><a href="/privacy">個人情報の取扱いを確認</a></p>
+<div class="btn-wrap" style="text-align:left"><button type="submit">送信する</button></div></form></body></html>`);
+  }
+
+  // 26) 送信先が 404 を返す（フォームの action が古いまま）。入力欄の無いページになるが、届いてはいない
+  if (p === "/nf") return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post" action="/nf/old-send.php">${fields("<th>電話番号（必須）</th>")}<button type="submit">送信する</button></form>`));
+  if (p === "/nf/old-send.php") { hit("nf", b); return send("<!doctype html><html><head><title>404 Not Found</title></head><body><h1>Not Found</h1><p>The requested URL was not found on this server.</p></body></html>", 404); }
+
+  //     /nf2 は送信自体は受け付けて（302）、移動先の完了ページだけが 404。届いている可能性があるので「送信後の判定不能」
+  if (p === "/nf2") return post ? (hit("nf2", b), res.writeHead(302, { location: "/nf2/thanks.html" }), res.end()) : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>")}<button type="submit">送信する</button></form>`));
+  if (p === "/nf2/thanks.html") return send("<!doctype html><title>404 Not Found</title><h1>Not Found</h1>", 404);
+
+  // 27) 送信ボタンを押すとページが固まる（無限ループ）。1社の見張り時間で切り上げ、押したあとなので「送信後の判定不能」にする
+  if (p === "/hang") return post ? (hit("hang", b), done("hang_done")) : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post" onsubmit="for(;;){}">${fields("<th>電話番号（必須）</th>")}<button type="submit">送信する</button></form>`));
+
+  // 28) Contact Form 7 のクイズ欄（ボット対策）。答えずに CAPTCHA と同じ扱いで飛ばす
+  if (p === "/quiz") return post ? done("quiz") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>")}<p><span class="wpcf7-form-control-wrap" data-name="quiz-1"><label><span class="wpcf7-quiz-label">1+1=?</span> <input type="text" name="quiz-1" size="10" class="wpcf7-form-control wpcf7-quiz"><input type="hidden" name="_wpcf7_quiz_answer_quiz-1" value="x"></label></span></p><button type="submit">送信する</button></form>`));
+
   if (p === "/search") { hit("search", Object.fromEntries(url.searchParams)); return send(page("検索", "<p>検索結果</p>")); }
   send("not found", 404);
 });
@@ -189,16 +252,25 @@ let n = 0;
 try {
   const cases: [string, string, string][] = [...["kome", "imgreq", "minyuryoku", "alert", "plainerr", "imgbtn", "alink", "cf7ng", "proto", "kana", "both"].map((k): [string, string, string] => [k, `/${k}`, ""]),
     ["staff", "/staff/entry", "/staff/"], ["onlyentry", "", "/only-entry/"],
-    ...["cta", "ifr", "ifrcap", "customer-success/contact", "weak", "sel", "telfmt", "spin"].map((k): [string, string, string] => [k.split("/")[0], `/${k}`, ""])];
+    ...["cta", "ifr", "ifrcap", "customer-success/contact", "weak", "sel", "telfmt", "spin"].map((k): [string, string, string] => [k.split("/")[0], `/${k}`, ""]),
+    ...["ajaxa", "ajaxb", "ajaxc", "stepconf", "ovl", "twota", "nf", "nf2", "hang", "quiz"].map((k): [string, string, string] => [k, `/${k}`, ""])];
   for (const [k, formPath, sitePath] of cases) {
     n++;
     if (only && !only.includes(k)) continue;
+    // 固まるページは1社の見張り時間を短くして確かめる（通常は4分）
+    if (k === "hang") process.env.FO_SUBMIT_LIMIT_MS = "40000"; else delete process.env.FO_SUBMIT_LIMIT_MS;
     // 会社ごとに別のホスト名にする（同じドメインへの連続送信の扱いに引っかからないように）
     const host = `http://t${n}.localhost:${port}`;
     const r = await submitToCompany(browser, { jobId: 9000 + n, formUrl: formPath ? host + formPath : "", siteUrl: sitePath ? host + sitePath : "", sender, subject: "ご案内", message: "はじめまして。サービスのご案内です。\nよろしくお願いいたします。" });
     out[k] = { status: r.status, detail: r.detail, log: r.log };
     console.log(`- ${k}: ${r.status} | ${r.detail.split("\n")[0]}`);
     if (process.env.FO_DEBUG) console.log(r.log.join("\n"));
+  }
+  // 事前チェック（scanCompany）でも、iframe の埋め込みフォームの中の CAPTCHA を見つける
+  if (!only || only.includes("scanifrcap")) {
+    const sr = await scanCompany(browser, { formUrl: `http://s1.localhost:${port}/ifrcap`, siteUrl: "" });
+    out.scanifrcap = { status: sr.captcha ? "captcha" : "none", detail: `${sr.captcha ?? ""} ${sr.note}`, log: [] };
+    console.log(`- scanifrcap: ${out.scanifrcap.status} | ${out.scanifrcap.detail}`);
   }
 } finally {
   await browser.close();
@@ -267,6 +339,40 @@ if (!only || only.includes("spin")) {
   const retryable = r.status === "failed" && !/送信後の判定不能/.test(text) && /(例外|timeout|Timeout|net::|ECONN|socket|接続)/.test(text);
   assert.ok(!retryable, `spin: 送信ボタンを押したあとの結果が自動の再試行に回る → ${r.detail}`);
 }
+
+// ---- 2周目 ----
+const has = (k: string) => !only || only.includes(k);
+// 押したあとの結果が自動の再試行に回らないこと（worker.ts の条件と同じ）
+const noRetry = (k: string) => { const r = out[k], text = [r.detail, ...r.log].join("\n"); assert.ok(!(r.status === "failed" && !/送信後の判定不能/.test(text) && /(例外|timeout|Timeout|net::|ECONN|socket|接続)/.test(text)), `${k}: 自動の再試行に回る → ${r.detail}`); };
+if (has("ajaxa")) { sentOnce("ajaxa", "完了の alert で送信済みにする（リセットされた空欄を入力エラーと読まない）"); }
+if (has("ajaxb")) { sentOnce("ajaxb", "「送信に成功しました」を完了文言として読む"); }
+if (has("ajaxc")) {
+  assert.equal(got.ajaxc?.length, 1, `ajaxc: 送信は1回だけ（${got.ajaxc?.length ?? 0}回）\n${out.ajaxc.log.join("\n")}`);
+  assert.equal(out.ajaxc.status, "failed"); assert.ok(out.ajaxc.detail.startsWith("送信後の判定不能"), `ajaxc: ${out.ajaxc.detail}`); noRetry("ajaxc");
+}
+if (has("stepconf")) sentOnce("stepconf", "確認画面の「まだ送信は完了していません」で送信済みにせず、リンクの送信を押す");
+if (has("ovl")) { sentOnce("ovl", "固定表示の重なりの中の <a href=\"#\">送信する</a> を押す"); assert.equal(got.ovl_ng, undefined, "ovl: ポップアップを通らない送信をしない"); }
+if (has("twota")) {
+  sentOnce("twota", "包む箱ではなくボタンを押す");
+  assert.equal(got.privacy, undefined, "twota: 個人情報のリンクを押さない");
+  assert.ok(got.twota[0].msg.includes("サービスのご案内"), "twota: 本文はお問い合わせ内容に入る");
+  assert.equal(got.twota[0].note, "", "twota: 備考は空のまま（営業文面を2回入れない）");
+}
+if (has("nf")) {
+  assert.notEqual(out.nf.status, "sent", `nf: 404 を送信済みにしない → ${out.nf.detail}`);
+  assert.ok(/HTTP 404/.test(out.nf.detail), `nf: ${out.nf.detail}`); noRetry("nf");
+  assert.equal(got.nf?.length, 1, `nf: 送信は1回だけ（${got.nf?.length ?? 0}回）`);
+}
+if (has("nf2")) {
+  assert.equal(out.nf2.status, "failed"); assert.ok(out.nf2.detail.startsWith("送信後の判定不能"), `nf2: ${out.nf2.detail}`); noRetry("nf2");
+  assert.equal(got.nf2?.length, 1, `nf2: 送信は1回だけ（${got.nf2?.length ?? 0}回）`);
+}
+if (has("hang")) {
+  assert.equal(out.hang.status, "failed"); assert.ok(out.hang.detail.startsWith("送信後の判定不能"), `hang: ${out.hang.detail}`); noRetry("hang");
+}
+
+if (has("quiz")) { assert.equal(out.quiz.status, "skip_captcha", `quiz: ${out.quiz.detail}`); assert.equal(got.quiz, undefined, "quiz: 送信しない"); }
+if (has("scanifrcap")) assert.equal(out.scanifrcap.status, "captcha", `scanifrcap: 事前チェックで iframe の中の reCAPTCHA を見つける → ${out.scanifrcap.detail}`);
 
 console.log("todo: ALL OK");
 process.exit(0);

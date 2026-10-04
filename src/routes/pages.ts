@@ -28,7 +28,41 @@ import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel
 import { errorPage } from "../ui/layout.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser, appointmentsView } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
-import { app, db, redirectWith, takeFlash, me, appState, gameOnFor, navUser, scope, setupState, lawKey } from "../app/context.js";
+import { app, db, redirectWith, takeFlash, me, appState, gameOnFor, navUser, scope, setupState, lawKey, ownedSender, ownedJob } from "../app/context.js";
+
+// だれのキャンペーンにも結び付かない、全員に出してよいお知らせ
+const GLOBAL_EVENT_TITLES = new Set(["新しい版に更新しました", "自動更新に失敗しました", "テスト通知", "AIが混み合っているため送信を少し止めました"]);
+
+/** このお知らせを、この人に出してよいか。
+ *  お知らせ（notify）は1つの箱に積まれていて、以前は開いている全員に同じ内容を返していたため、
+ *  一般ユーザーにも他の人のキャンペーン名・返信の来た会社名が出ていた。管理者には全部、一般ユーザーには自分のものだけ返す。
+ *  持ち主は key（「done:12」など。notify.ts が持たせていれば）で決め、無ければ本文の「キャンペーン名」・会社名から決める。
+ *  決められないものは出さない（他の人のものを見せるよりは、出さない方を選ぶ） */
+export function eventVisibleTo(req: express.Request, e: { title: string; body: string; key?: string }): boolean {
+  if (me(req).role === "admin") return true;
+  if (GLOBAL_EVENT_TITLES.has(e.title)) return true;
+  const sc = scope(req);
+  const cSc = sc.sql.replace("owner_user_id", "c.owner_user_id");
+  const ownsCampaign = (id: number) => Boolean(db.prepare(`SELECT 1 FROM form_campaigns WHERE id=? AND ${sc.sql}`).get(id, ...sc.args));
+  // 同じ名前が他の人にもあるときは、どちらのものか分からないので出さない
+  const onlyMine = (sqlMine: string, sqlAll: string, v: string) =>
+    Boolean(db.prepare(sqlMine).get(v, ...sc.args)) && !db.prepare(sqlAll).get(v, ...sc.args);
+  const key = String(e.key ?? "");
+  let m: RegExpMatchArray | null;
+  if ((m = key.match(/^(?:aicfg|tplvar|launch|limit|streak|done|scandone|scanerr|stale):(\d+)$/))) return ownsCampaign(Number(m[1]));
+  if ((m = key.match(/^(?:pause|senderng):(\d+)$/))) return Boolean(ownedSender(req, Number(m[1])));
+  if ((m = key.match(/^reply:(\d+):/))) return Boolean(ownedJob(req, Number(m[1])));
+  if (key) return false;
+  if ((m = e.body.match(/キャンペーン #(\d+)/))) return ownsCampaign(Number(m[1]));
+  const name = e.body.match(/「([^」]+)」/)?.[1];
+  if (name) return onlyMine(`SELECT 1 FROM form_campaigns WHERE name=? AND ${sc.sql} LIMIT 1`, `SELECT 1 FROM form_campaigns WHERE name=? AND (${sc.sql}) IS NOT 1 LIMIT 1`, name);
+  if (/返信が来ました$/.test(e.title)) {
+    const company = e.body.split(":")[0].trim();
+    return Boolean(company) && onlyMine(`SELECT 1 FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id WHERE j.company_name=? AND ${cSc} LIMIT 1`,
+      `SELECT 1 FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id WHERE j.company_name=? AND (${cSc}) IS NOT 1 LIMIT 1`, company);
+  }
+  return false;
+}
 
 /** この画面の経路を登録する。server.ts から、ログイン確認などの共通処理のあとに呼ばれる */
 export function register(): void {
@@ -49,7 +83,8 @@ app.get("/appointments", (req, res) => {
 // 開いているページが、新しいお知らせを取りに来る（数秒ごと）。通知はページ側が出す
 app.get("/events", (req, res) => {
   res.setHeader("cache-control", "no-store");
-  res.json(pollEvents(Number(req.query.since) || 0));
+  const r = pollEvents(Number(req.query.since) || 0);
+  res.json({ ...r, events: r.events.filter((e) => eventVisibleTo(req, e as typeof e & { key?: string })) });
 });
 
 app.get("/setup", (req, res) => {

@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { getDb, getSetting, setSetting as saveSetting, SCREENSHOT_DIR, MATERIAL_DIR, domainOf, jst, channelMode, STATUS_LABEL, OUTCOME_LABEL, type Campaign, type Job, type SenderProfile } from "../db.js";
+import { getDb, getSetting, setSetting as saveSetting, SCREENSHOT_DIR, MATERIAL_DIR, domainOf, jst, channelMode, STATUS_LABEL, OUTCOME_LABEL, sentTodaySql, type Campaign, type Job, type SenderProfile } from "../db.js";
 import { parseCompanyCsv, parseCompanyXlsx, importRowsToCampaign, parseSuppressionCsv, parseSuppressionText, importSuppressions, type ImportSummary, type CompanyRow } from "../csv.js";
 import { composeMessage, activeProvider, activeAiConfig, aiStatusLabel, testAiConnection, AI_MODELS, DEFAULT_TEMPLATE, loadNgWords, lintMessage, aiUsageThisMonth, aiMonthlyLimit } from "../message.js";
 import { optOut, testSmtp, explainSmtpError, checkSmtpPassword, emailPause, clearEmailPause, senderEmailOk, buildEmailBody } from "../email.js";
@@ -18,7 +18,7 @@ import { healthChecks, diagnosticsText } from "../health.js";
 import { createBackup, listBackups, requestRestore, autoBackupIfDue, backupLabel, BACKUP_DIR } from "../backup.js";
 import { autostartEnabled, autostartSupported, enableAutostart, disableAutostart, autostartPath } from "../autostart.js";
 import { releaseAwakeAll, AWAKE_NOTE } from "../awake.js";
-import { licenseStatus, setLicenseKey, licenseEnforced } from "../license.js";
+import { licenseStatus, setLicenseKey, licenseEnforced, cappedDailyLimit } from "../license.js";
 import { syncShare, shareConfigured, APPS_SCRIPT, KEY as SHARE_KEY } from "../share.js";
 import { drainForShutdown, clearStaleRuns, runCampaign, requestStop, isRunning, isScanning, scanCampaign, processJob, inSendWindow, sentToday, sentTodayBySender, warmupLimit, effectiveEmailLimit, nextWindowText } from "../worker.js";
 import { launchBrowser, openAndFill } from "../engine.js";
@@ -26,10 +26,39 @@ import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmai
 import { notify, notifyEnabled } from "../notify.js";
 import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel } from "../update.js";
 import { errorPage } from "../ui/layout.js";
-import { resultNote } from "../ui/parts.js";
+import { resultNote, templateProblems, normalizeTemplateBraces } from "../ui/parts.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
-import { app, upload, db, setFlash, safeAsync, needsBrowser, redirectWith, takeFlash, me, appState, navUser, scope, ownedCampaign, ownedSender, notFound, forbidden, groupCandidates, applyGroupMembers, groupNames, retryTargetJobs, campaignRows, extraSenderIds, saveMaterial, removeMaterialFileIfUnused, loadCampaignFull, lastImports, pendingImports, previews, fetchGoogleSheetCsv, ReactionRow, jobFilter, CAMPAIGN_EXPORT_COLS, importHistory, recentUndo, deleteJobsWhere, setupState, setupProgress, todoCounts, lawKey, TODO_ANY, todoActive, campaignNumbers, CAMPAIGN_NUM_DEFAULTS } from "../app/context.js";
+import { app, upload, db, setFlash, safeAsync, needsBrowser, redirectWith, takeFlash, me, appState, navUser, scope, ownedCampaign, ownedSender, notFound, forbidden, groupCandidates, applyGroupMembers, groupNames, retryTargetJobs, campaignRows, extraSenderIds, saveMaterial, removeMaterialFileIfUnused, loadCampaignFull, lastImports, pendingImports, previews, fetchGoogleSheetCsv, ReactionRow, jobFilter, CAMPAIGN_EXPORT_COLS, importHistory, recentUndo, deleteJobsWhere, setupState, setupProgress, todoCounts, lawKey, TODO_ANY, todoActive, campaignNumbers, CAMPAIGN_NUM_DEFAULTS, uploadSingle, campaignStall, AUTO_PAUSE_MARK } from "../app/context.js";
+
+const TEMPLATE_KEYS = ["subject_text", "template_text", "subject_b", "template_b", "subject_alts"] as const;
+
+/** 自動の一時停止で待機に戻した会社の結果の文（「…（キャンペーンを一時停止）: 理由」）を消す。
+ *  開始・一時停止のあとまで残ると、次に止めたときに古い理由を「自動で止まった理由」として出してしまうため */
+function clearAutoPauseMarks(campaignId: number) {
+  db.prepare("UPDATE form_jobs SET result_text='' WHERE campaign_id=? AND is_test=0 AND status='queued' AND result_text LIKE ?").run(campaignId, `%${AUTO_PAUSE_MARK}%`);
+}
+
+/** 保存する前に文面をそろえる（全角の ｛｛会社名｝｝ を半角の {{会社名}} に）。
+ *  全角のままだと差し込みにならず、波括弧ごと相手に送られていた。そろえたら true */
+function tidyTemplates(b: Record<string, unknown>): boolean {
+  let changed = false;
+  for (const k of TEMPLATE_KEYS) {
+    if (typeof b[k] !== "string") continue;
+    const v = normalizeTemplateBraces(b[k] as string);
+    if (v !== b[k]) { b[k] = v; changed = true; }
+  }
+  return changed;
+}
+
+/** 保存したときに出す、文面の注意（保存はできる。開始のときに同じ検査で止める） */
+function templateNote(b: Record<string, unknown>, fixed: boolean): string {
+  const probs = templateProblems({ ...b, ab_enabled: b.ab_enabled === "1" || b.ab_enabled === 1 ? 1 : 0 } as Parameters<typeof templateProblems>[0]);
+  return [
+    fixed ? "全角の ｛｛ ｝｝ を半角の {{ }} に直しました" : "",
+    probs.length ? `このままでは開始できません。文面を直してください: ${probs.slice(0, 3).join("／")}${probs.length > 3 ? `（ほか ${probs.length - 3}件）` : ""}` : "",
+  ].filter(Boolean).map((x) => `／${x}`).join("");
+}
 
 /** この画面の経路を登録する。server.ts から、ログイン確認などの共通処理のあとに呼ばれる */
 export function register(): void {
@@ -46,8 +75,9 @@ app.get("/", (req, res) => {
   const setup = setupProgress(setupState(req));
   const openCampaigns = rows.filter((r) => r.status === "running");
   const home = {
-    todayForm: num(`SELECT COUNT(*) n ${jobsWhere} AND j.status='sent' AND j.channel='form' AND date(j.sent_at,'+9 hours')=?`, today),
-    todayEmail: num(`SELECT COUNT(*) n ${jobsWhere} AND j.status='sent' AND j.channel='email' AND date(j.sent_at,'+9 hours')=?`, today),
+    // 「今日」は上限の判定（worker）と同じ数え方（送信時刻で数える。戻りメールで失敗に変わった分も含む）
+    todayForm: num(`SELECT COUNT(*) n ${jobsWhere} AND j.channel='form' AND ${sentTodaySql("j.")}`, today),
+    todayEmail: num(`SELECT COUNT(*) n ${jobsWhere} AND j.channel='email' AND ${sentTodaySql("j.")}`, today),
     monthForm: num(`SELECT COUNT(*) n ${jobsWhere} AND j.status='sent' AND j.channel='form' AND strftime('%Y-%m', j.sent_at,'+9 hours')=?`, month),
     monthEmail: num(`SELECT COUNT(*) n ${jobsWhere} AND j.status='sent' AND j.channel='email' AND strftime('%Y-%m', j.sent_at,'+9 hours')=?`, month),
     appointments: num(`SELECT COUNT(*) n ${jobsWhere} AND j.outcome='appointment'`),
@@ -63,7 +93,7 @@ app.get("/", (req, res) => {
     senders: senderRows.length,
     campaigns: rows.length,
     // 今日送れる上限（開始中のキャンペーンの合計）。進み具合のバーに使う（#108）
-    capForm: openCampaigns.filter((r) => r.send_only !== "email").reduce((a, r) => a + r.daily_limit, 0),
+    capForm: openCampaigns.filter((r) => r.send_only !== "email").reduce((a, r) => a + cappedDailyLimit(r.daily_limit).limit, 0),
     capEmail: openCampaigns.filter((r) => r.send_only !== "form" && channelMode(r.channel) !== "form_only").reduce((a, r) => a + effectiveEmailLimit(r, r.sender_id).limit, 0),
     nextStart: (openCampaigns[0] ?? rows[0]) ? nextWindowText(openCampaigns[0] ?? rows[0]) : "",
     setupDone: setup.done,
@@ -75,12 +105,13 @@ app.get("/", (req, res) => {
   // キャンペーンごとの進み具合と数字（ホームに1件ずつカードで出す）
   const per = new Map<number, Record<string, number>>();
   for (const r of db.prepare(`SELECT j.campaign_id id,
-      SUM(j.status='sent' AND j.channel='form' AND date(j.sent_at,'+9 hours')=@today) todayForm,
-      SUM(j.status='sent' AND j.channel='email' AND date(j.sent_at,'+9 hours')=@today) todayEmail,
+      SUM(j.channel='form' AND ${sentTodaySql("j.").replace("?", "@today")}) todayForm,
+      SUM(j.channel='email' AND ${sentTodaySql("j.").replace("?", "@today")}) todayEmail,
       SUM(j.status='sent' AND j.channel='form' AND strftime('%Y-%m', j.sent_at,'+9 hours')=@month) monthForm,
       SUM(j.status='sent' AND j.channel='email' AND strftime('%Y-%m', j.sent_at,'+9 hours')=@month) monthEmail,
       SUM(j.outcome='appointment') appointments, SUM(j.outcome='replied') replies, SUM(j.outcome='declined') declines,
       SUM(j.status='queued') queued,
+      SUM(j.status='queued' AND j.channel='form') queuedForm, SUM(j.status='queued' AND j.channel='email') queuedEmail,
       SUM(${TODO_ANY} AND ${todoActive()}) todo,
       SUM(j.status='skip_captcha' AND ${todoActive()}) todoCaptcha
     FROM form_jobs j WHERE j.is_test=0 GROUP BY j.campaign_id`).all({ today, month }) as (Record<string, number> & { id: number })[]) per.set(r.id, r);
@@ -91,15 +122,19 @@ app.get("/", (req, res) => {
     const usesForm = r.send_only !== "email" && channelMode(r.channel) !== "email_only";
     const sd = senderById.get(r.sender_id);
     const p = sd ? emailPause(sd) : null;
+    const stall = campaignStall(r);
     return {
       id: r.id, name: r.name, status: r.status, running: Boolean(r.is_running),
       todayForm: v.todayForm ?? 0, todayEmail: v.todayEmail ?? 0, monthForm: v.monthForm ?? 0, monthEmail: v.monthEmail ?? 0,
       appointments: v.appointments ?? 0, replies: v.replies ?? 0, declines: v.declines ?? 0,
       queued: v.queued ?? 0, todo: v.todo ?? 0, todoCaptcha: v.todoCaptcha ?? 0,
-      capForm: usesForm ? r.daily_limit : 0,
+      queuedForm: r.send_only === "email" ? 0 : v.queuedForm ?? 0, queuedEmail: r.send_only === "form" ? 0 : v.queuedEmail ?? 0,
+      capForm: usesForm ? cappedDailyLimit(r.daily_limit).limit : 0,
       capEmail: usesEmail ? effectiveEmailLimit(r, r.sender_id).limit : 0,
       windowOk: inSendWindow(r), nextStart: nextWindowText(r),
-      paused: usesEmail && p ? `${p.reason.slice(0, 70)}（${new Date(p.until).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}に再開）` : "",
+      // 進まない理由（キャンペーンの経路と同じ関数）。メールの一時停止もこちらで出す（追加の送信アカウントも含めて判断するため）
+      stall: stall ? { text: stall.text, blocking: stall.blocking, kind: stall.kind, href: stall.href ?? "", action: stall.action ?? "" } : null,
+      paused: usesEmail && p && stall?.kind !== "email" ? `${p.reason.slice(0, 70)}（${new Date(p.until).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}に再開）` : "",
     };
   });
   res.send(layout("ホーム", campaignListView(rows, aiStatusLabel(), senderRows.map((x) => ({ id: x.id, label: x.label, company: x.company, person: x.person })), home), takeFlash(req), navUser(req), appState.updateReady));
@@ -119,10 +154,11 @@ app.get("/campaigns/new", (req, res) => {
   res.send(layout("新規キャンペーン", campaignForm(senders, { template_text: DEFAULT_TEMPLATE }, activeProvider(), undefined, groupNames(req), groupCandidates(req)), takeFlash(req), navUser(req), appState.updateReady));
 });
 
-app.post("/campaigns", upload.single("material_file"), (req, res) => {
+app.post("/campaigns", uploadSingle("material_file", () => "/campaigns/new"), (req, res) => {
   const b = req.body;
   const channel = ["form_first", "email_first", "email_only", "form_only", "form", "email", "both"].includes(b.channel) ? b.channel : "form_first";
   if (!ownedSender(req, Number(b.sender_id))) return redirectWith(res, "/campaigns/new", "送信者を選び直してください");
+  const tplFixed = tidyTemplates(b);
   const materialUrl = String(b.material_url ?? "").trim();
   const nums = campaignNumbers(b, CAMPAIGN_NUM_DEFAULTS);
   const r = db.prepare(`INSERT INTO form_campaigns(owner_user_id, name, sender_id, mode, subject_text, template_text, ai_instruction, daily_limit, send_window_start, send_window_end, weekdays_only, channel, email_daily_limit, resend_days, ignore_refusal, material_url, group_name, material_url_in_email, email_warmup, email_sender_ids, ab_enabled, template_b, subject_b, subject_alts)
@@ -131,7 +167,7 @@ app.post("/campaigns", upload.single("material_file"), (req, res) => {
   // 資料ファイル（メール添付用）を保存する
   const warn = req.file ? saveMaterial(cid, req.file) : "";
   applyGroupMembers(req, cid, "", b);
-  redirectWith(res, `/campaigns/${cid}`, `キャンペーンを作成しました。CSVを取り込んでください。${warn ? `／${warn}` : ""}${nums.note ? `／${nums.note}` : ""}`);
+  redirectWith(res, `/campaigns/${cid}`, `キャンペーンを作成しました。CSVを取り込んでください。${warn ? `／${warn}` : ""}${nums.note ? `／${nums.note}` : ""}${templateNote(b, tplFixed)}`);
 });
 
 // ---- キャンペーン編集 ----
@@ -144,7 +180,7 @@ app.get("/campaigns/:id/edit", (req, res) => {
   res.send(layout(`編集 | ${c.name}`, campaignForm(senders, c, activeProvider(), id, groupNames(req), groupCandidates(req)), takeFlash(req), navUser(req), appState.updateReady));
 });
 
-app.post("/campaigns/:id/edit", upload.single("material_file"), (req, res) => {
+app.post("/campaigns/:id/edit", uploadSingle("material_file", (req) => `/campaigns/${Number(req.params.id)}/edit`), (req, res) => {
   const id = Number(req.params.id);
   const before = ownedCampaign(req, id);
   if (!before) return notFound(req, res);
@@ -152,6 +188,7 @@ app.post("/campaigns/:id/edit", upload.single("material_file"), (req, res) => {
   const b = req.body;
   const channel = ["form_first", "email_first", "email_only", "form_only", "form", "email", "both"].includes(b.channel) ? b.channel : "form_first";
   if (!ownedSender(req, Number(b.sender_id))) return redirectWith(res, `/campaigns/${id}/edit`, "送信者を選び直してください");
+  const tplFixed = tidyTemplates(b);
   const nums = campaignNumbers(b, before);
   db.prepare(`UPDATE form_campaigns SET name=?, sender_id=?, mode=?, subject_text=?, template_text=?, ai_instruction=?, daily_limit=?, send_window_start=?, send_window_end=?, weekdays_only=?, channel=?, email_daily_limit=?, resend_days=?, ignore_refusal=?, material_url=?, group_name=?, material_url_in_email=?, email_warmup=?, email_sender_ids=?, ab_enabled=?, template_b=?, subject_b=?, subject_alts=? WHERE id=?`)
     .run(b.name, Number(b.sender_id), b.mode, b.subject_text ?? "", b.template_text ?? "", b.ai_instruction ?? "", nums.daily_limit, nums.send_window_start, nums.send_window_end, Number(b.weekdays_only) ? 1 : 0, channel, nums.email_daily_limit, nums.resend_days, Number(b.ignore_refusal) ? 1 : 0, String(b.material_url ?? "").trim(), String(b.group_name ?? "").trim(), b.material_url_in_email === "1" ? 1 : 0, b.email_warmup === "1" ? 1 : 0, extraSenderIds(req, b), b.ab_enabled === "1" ? 1 : 0, String(b.template_b ?? ""), String(b.subject_b ?? ""), String(b.subject_alts ?? ""), id);
@@ -162,10 +199,10 @@ app.post("/campaigns/:id/edit", upload.single("material_file"), (req, res) => {
     db.prepare("UPDATE form_campaigns SET attach_path='', attach_name='' WHERE id=?").run(id);
     removeMaterialFileIfUnused(before.attach_path);
     applyGroupMembers(req, id, prevGroupName, b);
-    return redirectWith(res, `/campaigns/${id}/edit`, `添付ファイル「${before.attach_name}」を削除しました（メールは添付なしで送られます）${nums.note ? `／${nums.note}` : ""}`);
+    return redirectWith(res, `/campaigns/${id}/edit`, `添付ファイル「${before.attach_name}」を削除しました（メールは添付なしで送られます）${nums.note ? `／${nums.note}` : ""}${templateNote(b, tplFixed)}`);
   }
   applyGroupMembers(req, id, prevGroupName, b);
-  redirectWith(res, `/campaigns/${id}`, `キャンペーンを保存しました${attachWarn ? `／${attachWarn}` : ""}${nums.note ? `／${nums.note}` : ""}`);
+  redirectWith(res, `/campaigns/${id}`, `キャンペーンを保存しました${attachWarn ? `／${attachWarn}` : ""}${nums.note ? `／${nums.note}` : ""}${templateNote(b, tplFixed)}`);
 });
 
 app.get("/campaigns/:id", (req, res) => {
@@ -217,11 +254,14 @@ app.get("/campaigns/:id", (req, res) => {
   const retryTargets = retryTargetJobs(id);
   // 今日・今月の送信数（東京時間で数える）。キャンペーン画面でもすぐ分かるように
   const period = db.prepare(`SELECT
-      COALESCE(SUM(date(sent_at,'+9 hours')=date('now','+9 hours') AND channel='form'),0) todayForm,
-      COALESCE(SUM(date(sent_at,'+9 hours')=date('now','+9 hours') AND channel='email'),0) todayEmail,
       COALESCE(SUM(strftime('%Y-%m',sent_at,'+9 hours')=strftime('%Y-%m','now','+9 hours') AND channel='form'),0) monthForm,
       COALESCE(SUM(strftime('%Y-%m',sent_at,'+9 hours')=strftime('%Y-%m','now','+9 hours') AND channel='email'),0) monthEmail
     FROM form_jobs WHERE campaign_id=? AND is_test=0 AND status='sent' AND sent_at IS NOT NULL`).get(id) as { todayForm: number; todayEmail: number; monthForm: number; monthEmail: number };
+  // 「今日」は上限の判定と同じ数え方（worker の sentToday）。状態が「送信済み」の行だけ数えると、戻りメールで失敗に変わった分が
+  // 抜けて、画面の「今日」と上限の判定が食い違っていた
+  const sentTodayForm = sentToday(id, "form"), sentTodayEmail = sentToday(id, "email");
+  period.todayForm = sentTodayForm;
+  period.todayEmail = sentTodayEmail;
   // 事前チェックの対象外（メールで送る会社）の件数。事前チェック欄に「なぜ件数に入らないか」を出すため
   const emailQueued = (db.prepare("SELECT COUNT(*) n FROM form_jobs WHERE campaign_id=? AND is_test=0 AND status='queued' AND channel='email'").get(id) as { n: number }).n;
   // A/Bテストの結果（#64）
@@ -237,8 +277,12 @@ app.get("/campaigns/:id", (req, res) => {
   const queuedNow = counts.queued ?? 0;
   let eta = "";
   if (queuedNow > 0) {
-    const leftToday = Math.max(0, (c.daily_limit + c.email_daily_limit) - (sentToday(id, "form") + sentToday(id, "email")));
-    const doable = Math.min(queuedNow, leftToday);
+    // 今日あと何社送れるかは、チャネルごとに上限と比べてから足す（合計で比べると、フォームが上限でもメールの余りで「送れる」と出ていた）
+    const qBy = db.prepare("SELECT COALESCE(SUM(channel='form'),0) f, COALESCE(SUM(channel='email'),0) e FROM form_jobs WHERE campaign_id=? AND is_test=0 AND status='queued'").get(id) as { f: number; e: number };
+    const only = String(c.send_only ?? "");
+    const leftForm = only === "email" ? 0 : Math.max(0, cappedDailyLimit(c.daily_limit).limit - sentTodayForm);
+    const leftEmail = only === "form" || channelMode(c.channel) === "form_only" ? 0 : Math.max(0, effectiveEmailLimit(c, c.sender_id).limit - sentTodayEmail);
+    const doable = Math.min(queuedNow, Math.min(qBy.f, leftForm) + Math.min(qBy.e, leftEmail));
     const minutes = Math.round((doable * perJob) / 60);
     const end = new Date(Date.now() + minutes * 60_000 + 9 * 3600_000).toISOString();
     // 秒・分の生の数字は出さない（「1社あたり約15869秒」「約2116分」と出ていた）。
@@ -249,7 +293,7 @@ app.get("/campaigns/:id", (req, res) => {
       ? `今日の上限に達しています。残り ${queuedNow}社は、次の送信時間帯に続きます`
       : `残り ${queuedNow}社${reliable ? `。${span}で送り終わる見込みです（${end.slice(11, 16)}ごろ）` : ""}${doable < queuedNow ? `。きょう送れるのは ${doable}社で、残りの ${queuedNow - doable}社は翌営業日に続きます` : ""}`;
   }
-  res.send(layout(c.name, campaignView(c, jobs, counts, isRunning(id), aiStatusLabel(), { preview, windowOk: inSendWindow(c), sentToday: sentToday(id, "form"), emailSentToday: sentToday(id, "email"), scanning: isScanning(id), unscanned, scanned, statusFilter, qFilter, outcomeFilter, impFilter, sortKey, eta, ab, tab, page, pageSize, total: rowTotal, companyTotal, companyAll: (db.prepare("SELECT COUNT(DISTINCT COALESCE(NULLIF(domain,''), CAST(id AS TEXT))) n FROM form_jobs WHERE campaign_id=? AND is_test=0").get(id) as { n: number }).n, warmup: channelMode(c.channel) !== "form_only" ? { sent: sentTodayBySender(c.sender_id), ...effectiveEmailLimit(c, c.sender_id) } : null, undo: recentUndo(id, me(req).id), matched, attempts, companyCounts, outcomes, lastImport: consumedImport, retryTargets, emailQueued, period, emailPaused: emailPause(c.sender), imports: importHistory(id), reactions: db.prepare("SELECT id, company_name, domain, email, channel, outcome, outcome_note, updated_at FROM form_jobs WHERE campaign_id=? AND is_test=0 AND outcome<>'' ORDER BY updated_at DESC").all(id) as ReactionRow[], replyScan: { ...replyScanStatus(db.prepare("SELECT * FROM sender_profiles WHERE id=?").get(c.sender_id) as SenderProfile | undefined), checking: isCheckingReplies() } }), takeFlash(req), navUser(req), appState.updateReady));
+  res.send(layout(c.name, campaignView(c, jobs, counts, isRunning(id), aiStatusLabel(), { preview, windowOk: inSendWindow(c), sentToday: sentTodayForm, emailSentToday: sentTodayEmail, stall: campaignStall(c), templateProblems: templateProblems(c), scanning: isScanning(id), unscanned, scanned, statusFilter, qFilter, outcomeFilter, impFilter, sortKey, eta, ab, tab, page, pageSize, total: rowTotal, companyTotal, companyAll: (db.prepare("SELECT COUNT(DISTINCT COALESCE(NULLIF(domain,''), CAST(id AS TEXT))) n FROM form_jobs WHERE campaign_id=? AND is_test=0").get(id) as { n: number }).n, warmup: channelMode(c.channel) !== "form_only" ? { sent: sentTodayBySender(c.sender_id), ...effectiveEmailLimit(c, c.sender_id) } : null, undo: recentUndo(id, me(req).id), matched, attempts, companyCounts, outcomes, lastImport: consumedImport, retryTargets, emailQueued, period, emailPaused: emailPause(c.sender), imports: importHistory(id), reactions: db.prepare("SELECT id, company_name, domain, email, channel, outcome, outcome_note, updated_at FROM form_jobs WHERE campaign_id=? AND is_test=0 AND outcome<>'' ORDER BY updated_at DESC").all(id) as ReactionRow[], replyScan: { ...replyScanStatus(db.prepare("SELECT * FROM sender_profiles WHERE id=?").get(c.sender_id) as SenderProfile | undefined), checking: isCheckingReplies() } }), takeFlash(req), navUser(req), appState.updateReady));
 });
 
 // 実行中の画面が2.5秒ごとに見る進捗API。バーの更新と「終わったら自動でページ更新」に使う
@@ -273,7 +317,7 @@ app.get("/campaigns/:id/test", (req, res) => {
   res.send(layout(`テスト送信 | ${c.name}`, testView(c, tests), takeFlash(req), navUser(req), appState.updateReady));
 });
 
-app.post("/campaigns/:id/import", upload.single("csv"), safeAsync(async (req, res) => {
+app.post("/campaigns/:id/import", uploadSingle("csv", (req) => `/campaigns/${Number(req.params.id)}`), safeAsync(async (req, res) => {
   const id = Number(req.params.id);
   if (!ownedCampaign(req, id)) return forbidden(req, res);
   const pasted = String(req.body.pasted ?? "").trim();
@@ -308,7 +352,7 @@ app.post("/campaigns/:id/import-confirm", (req, res) => {
   const id = Number(req.params.id);
   if (!ownedCampaign(req, id)) return forbidden(req, res);
   const pending = pendingImports.get(id);
-  if (!pending) return redirectWith(res, `/campaigns/${id}`, "プレビューの有効期限が切れました。もう一度取り込んでください");
+  if (!pending) return redirectWith(res, `/campaigns/${id}`, "取り込みの確認中に内容が消えました（アプリが再起動したためです）。お手数ですが、もう一度取り込んでください");
   const importId = db.prepare("INSERT INTO form_imports(campaign_id, src_label, rows_count) VALUES(?,?,?)").run(id, pending.srcLabel, pending.rows.length).lastInsertRowid as number;
   const s = importRowsToCampaign(id, pending.rows, { importId });
   pendingImports.delete(id);
@@ -385,10 +429,21 @@ app.post("/campaigns/:id/start", safeAsync(async (req, res) => {
   if (isRunning(id)) return redirectWith(res, `/campaigns/${id}`, "すでに実行中です");
   const only = ["email", "form"].includes(String(req.body.only)) ? String(req.body.only) : "";
 
+  // 文面に【ここに…】や差し込み名の間違いが残っていたら開始しない。
+  // 以前はそのまま走り出し、送る直前の文面チェックで待機中の全社が1社ずつ「失敗」になっていた（初期値の件名「【ここに件名】のご案内」のままでも同じ）
+  const probs = templateProblems(camp);
+  if (probs.length) {
+    logInfo("start", `文面の未記入・差し込みの間違いのため開始しませんでした（${probs.length}件）`);
+    return redirectWith(res, `/campaigns/${id}`, `文面に直すところがあるため開始していません: ${probs.slice(0, 3).join("／")}${probs.length > 3 ? `（ほか ${probs.length - 3}件）` : ""}。画面上の「文面を直す」から直してください`);
+  }
+
   // 開始前に、送信用メールの設定を1回だけ確かめる。
   // 以前は設定不備のまま走り出し、メールの会社を次々と失敗にしていた（実例: 「2段階認証が必要」で180件が失敗）。
-  // フォームだけ送る場合は確認しない（メールを使わないので）
-  const willSendEmail = only !== "form" && channelMode(camp.channel) !== "form_only";
+  // フォームだけ送る場合と、いまメールで送る会社が1社も無い場合は確かめない（フォームだけで使う人が、メールの設定が無いために開始できなかった）。
+  // 送る途中でフォーム無し→メールに切り替わった会社は、送信側（worker）で設定を確かめ、足りなければメールだけ一時停止して知らせ、
+  // 会社は待機のまま残す（失敗にはしない）ので、ここで止めなくても安全側のまま
+  const emailQueuedNow = (db.prepare("SELECT COUNT(*) n FROM form_jobs WHERE campaign_id=? AND is_test=0 AND status='queued' AND channel='email'").get(id) as { n: number }).n;
+  const willSendEmail = only !== "form" && channelMode(camp.channel) !== "form_only" && emailQueuedNow > 0;
   // 営業メールの表示義務の確認を、最初の1回だけ見てもらう（#85）
   if (willSendEmail && !getSetting(lawKey(me(req).id), "")) {
     setFlash(req, "/law", "営業メールを送る前に、法律で必要な表示（名称・住所・配信停止の連絡先）をご確認ください。確認は最初の1回だけです");
@@ -416,7 +471,8 @@ app.post("/campaigns/:id/start", safeAsync(async (req, res) => {
       return redirectWith(res, `/campaigns/${id}`, `メールを送れない状態のため開始していません: ${why}${hint ? `／${hint}` : ""}（フォームだけ送るなら「対象: フォームの会社だけ」で開始できます）`);
     }
   }
-  db.prepare("UPDATE form_campaigns SET status='running', send_only=? WHERE id=?").run(only, id);
+  db.prepare("UPDATE form_campaigns SET status='running', send_only=?, pause_reason='' WHERE id=?").run(only, id);
+  clearAutoPauseMarks(id);
   const ignoreWindow = req.body.ignore_window === "1";
   runCampaign(id, { ignoreWindow }).then((r) => console.log(`[campaign ${id}] ${r.processed}件処理 (${r.reason})`)).catch((e) => { console.error(e); logError("worker", `送信を開始できませんでした: ${jpError(e)}`); });
   const onlyLabel = only === "email" ? "メールの会社だけ" : only === "form" ? "フォームの会社だけ" : "すべて";
@@ -478,7 +534,9 @@ app.post("/campaigns/:id/pause", (req, res) => {
   const id = Number(req.params.id);
   if (!ownedCampaign(req, id)) return forbidden(req, res);
   requestStop(id);
-  db.prepare("UPDATE form_campaigns SET status='paused' WHERE id=?").run(id);
+  // 手で止めたときは、前の自動停止の理由は出さない（「自動で一時停止しました」と食い違うため）
+  db.prepare("UPDATE form_campaigns SET status='paused', pause_reason='' WHERE id=?").run(id);
+  clearAutoPauseMarks(id);
   redirectWith(res, `/campaigns/${id}`, "一時停止を要求しました（処理中の1件が終わってから止まります）");
 });
 
@@ -556,7 +614,7 @@ app.post("/campaigns/:id/requeue-failed", (req, res) => {
   const targets = retryTargetJobs(id);
   if (!targets.length) return redirectWith(res, `/campaigns/${id}`, "再送信の対象がありません");
   const ph = targets.map(() => "?").join(",");
-  const r = db.prepare(`UPDATE form_jobs SET status='queued', result_text='', updated_at=datetime('now') WHERE id IN (${ph})`).run(...targets.map((t) => t.id));
+  const r = db.prepare(`UPDATE form_jobs SET status='queued', result_text='', retry_after=NULL, temp_tries=0, updated_at=datetime('now') WHERE id IN (${ph}) AND status NOT IN ('sending','sent')`).run(...targets.map((t) => t.id));
   redirectWith(res, `/campaigns/${id}`, `失敗していた ${r.changes} 社を待機中に戻しました。「開始」で再送信できます`);
 });
 
@@ -571,15 +629,17 @@ app.get("/campaigns/:id/export.json", (req, res) => {
   res.send(JSON.stringify(out, null, 2));
 });
 
-app.post("/campaigns/import", upload.single("file"), (req, res) => {
+app.post("/campaigns/import", uploadSingle("file", () => "/campaigns"), (req, res) => {
   try {
     const raw = req.file ? req.file.buffer.toString("utf8") : String(req.body.pasted ?? "");
-    if (!raw.trim()) return redirectWith(res, "/", "キャンペーンのファイル（.json）を選ぶか、中身を貼り付けてください");
+    if (!raw.trim()) return redirectWith(res, "/campaigns", "キャンペーンのファイル（.json）を選ぶか、中身を貼り付けてください");
     const data = JSON.parse(raw) as { app?: string; type?: string; campaign?: Record<string, unknown> };
     const c = data.campaign;
-    if (data.app !== "apoboost" || data.type !== "campaign" || !c) return redirectWith(res, "/", "ApoBoostのキャンペーン設定ファイルではありません");
+    if (data.app !== "apoboost" || data.type !== "campaign" || !c) return redirectWith(res, "/campaigns", "ApoBoostのキャンペーン設定ファイルではありません");
     const senderId = Number(req.body.sender_id);
-    if (!ownedSender(req, senderId)) return redirectWith(res, "/", "送信者を選んでください（読み込んだ設定は、自分の送信者に結び付けます）");
+    if (!ownedSender(req, senderId)) return redirectWith(res, "/campaigns", "送信者を選んでください（読み込んだ設定は、自分の送信者に結び付けます）");
+    // 文面は画面での保存と同じく、全角の ｛｛ ｝｝ を半角にそろえる
+    const tplFixed = tidyTemplates(c);
     const str = (k: string, fb = "") => String(c[k] ?? fb);
     // 画面での作成・編集と同じ読み方（範囲・開始＜終了）にそろえる
     const nums = campaignNumbers(c, CAMPAIGN_NUM_DEFAULTS);
@@ -590,9 +650,9 @@ app.post("/campaigns/import", upload.single("file"), (req, res) => {
       .run(me(req).id, str("name", "読み込んだキャンペーン"), senderId, mode, str("subject_text"), str("template_text"), str("ai_instruction"),
         nums.daily_limit, nums.send_window_start, nums.send_window_end, Number(c.weekdays_only) ? 1 : 0, channel,
         nums.email_daily_limit, nums.resend_days, Number(c.ignore_refusal) ? 1 : 0, str("material_url"), str("group_name"), Number(c.material_url_in_email) ? 1 : 0);
-    redirectWith(res, `/campaigns/${r.lastInsertRowid}`, "キャンペーンの設定を読み込みました。会社リストを取り込んで開始してください");
+    redirectWith(res, `/campaigns/${r.lastInsertRowid}`, `キャンペーンの設定を読み込みました。会社リストを取り込んで開始してください${templateNote({ ...c, ab_enabled: 0 }, tplFixed)}`);
   } catch (e) {
-    redirectWith(res, "/", `読み込みエラー: ${e instanceof SyntaxError ? "ファイルの中身が壊れているか、キャンペーンの設定ファイル（.json）ではありません" : jpError(e, 120)}`);
+    redirectWith(res, "/campaigns", `読み込みエラー: ${e instanceof SyntaxError ? "ファイルの中身が壊れているか、キャンペーンの設定ファイル（.json）ではありません" : jpError(e, 120)}`);
   }
 });
 

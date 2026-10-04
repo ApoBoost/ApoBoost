@@ -5,6 +5,7 @@ import { TEMPLATE_LIBRARY } from "../templates.js";
 import { esc, layout, n, type NavUser, IC_CHECK } from "./layout.js";
 import { post } from "./parts.js";
 import { AI_KEY_HELP } from "./settings.js";
+import { S, settingOn } from "../settings.js";
 
 /** ミニゲーム「アポスロット」＝ ネオアイムジャグラーEX 準拠のリール制御シミュレータ。
  *  利用者提供の筐体イラストを土台に、リール・停止ボタン・レバー・表示・GOGOランプを座標で重ねる
@@ -187,7 +188,11 @@ export type SetupState = {
 export function setupView(st: SetupState): string {
   const step = (n: number, done: boolean, title: string, body: string) => `<div class="card" style="${done ? "opacity:.75" : "border-color:var(--honey);border-width:2px"}">
   <h2 style="margin-top:0">${done ? IC_CHECK : `${n}.`} ${esc(title)}</h2>${body}</div>`;
-  const next = !st.senderOk ? 1 : !st.smtpOk ? 2 : !st.lawOk ? 3 : !st.campaignOk ? 4 : !st.listCount ? 5 : 6;
+  // フォームにだけ送る人は、送信用メールの手順を「飛ばす」で済み扱いにできる（飛ばさないと、ここが永久に未完了のまま残る）
+  const emailSkipped = !st.smtpOk && settingOn(S.setupEmailSkipped);
+  const mailDone = st.smtpOk || emailSkipped;
+  const skipForm = (skip: boolean, label: string) => `<form method="post" action="/setup/skip-email" style="display:inline"><input type="hidden" name="skip" value="${skip ? "1" : "0"}"><button class="btn sub">${label}</button></form>`;
+  const next = !st.senderOk ? 1 : !mailDone ? 2 : !st.lawOk ? 3 : !st.campaignOk ? 4 : !st.listCount ? 5 : 6;
   return `<h1>はじめの設定</h1>
 <div class="card" style="background:var(--honey-50)">
   <p>この6つを上から順に済ませれば、送信を始められます。<b>いまは ${next} 番</b>です。途中でやめても、ここに戻れば続きから進められます。</p>
@@ -197,10 +202,12 @@ ${step(1, st.senderOk, "送信者を登録する（会社名・担当者・住�
   <p class="muted">相手に表示される差出人です。住所が無いとメールは送れません。</p>
   ${st.senderOk ? `<p>登録済み: <b>${esc(st.senderLabel)}</b>${st.addressOk ? "" : ` <span style="color:var(--ng)">住所が未登録です</span>`}</p>` : ""}
   <a class="btn ${st.senderOk ? "sub" : ""}" href="/senders">${st.senderOk ? "送信者を見る・直す" : "送信者を登録する"}</a>`)}
-${step(2, st.smtpOk, "送信用メールを設定する（Gmailのアプリパスワード）", `
+${step(2, mailDone, "送信用メールを設定する（Gmailのアプリパスワード）", `
   <p class="muted">Googleアカウント → セキュリティ → 2段階認証プロセス → アプリパスワード で16文字のパスワードを作り、送信者の画面に貼り付けてください。フォームだけ送る場合は飛ばせます。</p>
   ${st.smtpOk ? `<p>設定済み${st.smtpTested ? "（接続テストに成功しています）" : ""}</p>` : ""}
-  <a class="btn ${st.smtpOk ? "sub" : ""}" href="/senders">${st.smtpOk ? "設定を見る" : "メールを設定する"}</a>`)}
+  ${emailSkipped ? `<p>飛ばしました（フォームだけで送ります）。メールでも送りたくなったら、送信者の画面で設定してください。</p>` : ""}
+  <a class="btn ${mailDone ? "sub" : ""}" href="/senders">${st.smtpOk ? "設定を見る" : "メールを設定する"}</a>
+  ${st.smtpOk ? "" : emailSkipped ? skipForm(false, "飛ばすのをやめる") : skipForm(true, "フォームだけで使う（飛ばす）")}`)}
 ${step(3, st.lawOk, "営業メールの決まりを確認する", `
   <p class="muted">名称・住所・配信停止の連絡先の表示が法律で必要です。ApoBoostが自動で入れますが、1回だけ内容をご確認ください。</p>
   <a class="btn ${st.lawOk ? "sub" : ""}" href="/law">${st.lawOk ? "もう一度見る" : "確認する"}</a>`)}
@@ -212,6 +219,10 @@ ${step(5, st.listCount > 0, "会社リストを取り込む", `
   ${st.listCount ? `<p>取り込み済み: <b>${st.listCount}社</b></p>` : ""}
   <a class="btn ${st.listCount ? "sub" : ""}" href="${st.campaignId ? `/campaigns/${st.campaignId}` : "/campaigns/new"}">リストを取り込む</a>
   <a class="btn sub" href="/template.csv">見本のCSV</a>`)}
+${st.campaignOk && !st.sentCount ? `<div class="card" style="background:var(--honey-50)">
+  <h2 style="margin-top:0">送る前に：自分あてに1通テスト送信する（おすすめ）</h2>
+  <p class="muted">自社の問い合わせフォームのURL（フォームで送る場合）か、自分のメールアドレス（メールで送る場合）に1通だけ送って、相手にどう届くかを確かめます。本送信の件数・履歴には入りません。実在の他社には送らないでください。</p>
+  <a class="btn sub" href="/campaigns/${st.campaignId}/test">テスト送信の画面を開く</a></div>` : ""}
 ${step(6, st.sentCount > 0, "事前チェックして、送信を始める", `
   <p class="muted">事前チェックでフォームの有無・営業お断り・画像認証を先に判定します（任意）。そのあと「開始」で送信が始まります。</p>
   ${st.sentCount ? `<p>送信済み: <b>${st.sentCount}件</b>。おつかれさまでした。あとは<a href="/todo">要対応</a>と<a href="/stats">送信数</a>を見ていけば大丈夫です。</p>` : ""}
@@ -237,7 +248,7 @@ ${item(false, "送り先の会社リスト", "企業名と企業URLの2列があ
 <div class="card"><h2 style="margin-top:0">設定の手順（6ステップ）</h2>
 <ul style="padding:0;margin:0">
 ${item(st.senderOk && st.addressOk, "1. 送信者を登録する", "会社名・担当者・住所・電話。設定 → 送信者")}
-${item(st.smtpOk, "2. 送信用メールを設定する", "アプリパスワードを貼り付けて保存すると、接続テストが自動で走ります")}
+${item(st.smtpOk || settingOn(S.setupEmailSkipped), "2. 送信用メールを設定する", st.smtpOk || !settingOn(S.setupEmailSkipped) ? "アプリパスワードを貼り付けて保存すると、接続テストが自動で走ります" : "フォームだけで使うため飛ばしました")}
 ${item(st.lawOk, "3. 営業メールの決まりを確認する", "名称・住所・配信停止の連絡先の表示（自動で入ります）")}
 ${item(st.campaignOk, "4. キャンペーンを作る", "文面はひな形から選んで【 】の中を書き換えます")}
 ${item(st.listCount > 0, "5. 会社リストを取り込む", "CSV / Excel / スプレッドシート")}

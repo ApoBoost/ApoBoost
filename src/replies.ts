@@ -5,7 +5,7 @@
 import { ImapFlow } from "imapflow";
 import type { Readable } from "node:stream";
 import { getDb, getSetting, setSetting, FREE_MAIL_DOMAINS, jst, type SenderProfile } from "./db.js";
-import { optOut, emailPause, normalizeAppPassword, STOP_BY_MAIL_LEAD } from "./email.js";
+import { optOut, emailPause, normalizeAppPassword, STOP_BY_MAIL_LEAD, normalizeEmail, isFreeMailDomain, isGoogleSmtp, dbWithNormEmail, JOB_EMAIL_MATCH_SQL } from "./email.js";
 import { notify } from "./notify.js";
 import { S, settingOn } from "./settings.js";
 
@@ -170,8 +170,9 @@ export function applyIncomingMail(mailbox: string, m: IncomingMail): number | nu
 
 /** この受信箱から送った会社のうち、届いたメールの差出人に当たる会社を探す（直近90日）。見つからなければ undefined */
 export function findSentJob(mailbox: string, m: IncomingMail): SentJob | undefined {
-  const db = getDb();
-  const from = m.from.trim().toLowerCase();
+  // 宛先が飾り付き（mailto: や <> 付き）のまま保存された古い行も、そろえて比べる（JOB_EMAIL_MATCH_SQL）
+  const db = dbWithNormEmail();
+  const from = normalizeEmail(m.from) || m.from.trim().toLowerCase();
   const fromDomain = from.split("@")[1] ?? "";
   if (!fromDomain || from === mailbox.toLowerCase()) return undefined;
   const unsubscribe = /^\s*配信停止/.test(m.subject);
@@ -181,7 +182,7 @@ export function findSentJob(mailbox: string, m: IncomingMail): SentJob | undefin
     FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=${SENT_BY}
     WHERE j.is_test=0 AND j.status='sent' AND j.sent_at IS NOT NULL AND j.sent_at <= ? AND j.sent_at >= datetime(?, '-90 days')
       AND lower(s.smtp_user)=?`;
-  let job = db.prepare(`${base} AND lower(j.email)=? ORDER BY j.sent_at DESC LIMIT 1`).get(at, at, mailbox.toLowerCase(), from) as SentJob | undefined;
+  let job = db.prepare(`${base} AND ${JOB_EMAIL_MATCH_SQL} ORDER BY j.sent_at DESC LIMIT 1`).get(at, at, mailbox.toLowerCase(), from, from, from) as SentJob | undefined;
   // アドレスが違っても、同じ会社のドメイン（サブドメイン含む）からの返信なら同じ会社とみなす。フリーメールは別人の可能性があるので除く
   if (!job && !FREE_MAIL_DOMAINS.has(fromDomain)) {
     const parts = fromDomain.split(".");
@@ -191,8 +192,9 @@ export function findSentJob(mailbox: string, m: IncomingMail): SentJob | undefin
   }
   // 「メール配信停止」リンクから作られたメールは、本文に送信先アドレスが入っている（転送先や個人アドレスから送られても特定できる）
   if (!job && unsubscribe) {
-    const target = m.text.match(/対象アドレス[:：]\s*([^\s<>]+@[^\s<>]+)/)?.[1]?.toLowerCase();
-    if (target) job = db.prepare(`${base} AND lower(j.email)=? ORDER BY j.sent_at DESC LIMIT 1`).get(at, at, mailbox.toLowerCase(), target) as SentJob | undefined;
+    const t0 = m.text.match(/対象アドレス[:：]\s*([^\s<>]+@[^\s<>]+)/)?.[1] ?? "";
+    const target = normalizeEmail(t0) || t0.toLowerCase();
+    if (target) job = db.prepare(`${base} AND ${JOB_EMAIL_MATCH_SQL} ORDER BY j.sent_at DESC LIMIT 1`).get(at, at, mailbox.toLowerCase(), target, target, target) as SentJob | undefined;
   }
   return job;
 }
@@ -216,8 +218,10 @@ function recordReply(mailbox: string, m: IncomingMail, job: SentJob, unsubscribe
     notify(v.outcome === "appointment" ? "アポの返信が来ました" : "返信が来ました", `${job.company_name}: ${v.excerpt.slice(0, 60)}`, `reply:${job.id}:${v.outcome}`);
   }
   if (v.outcome === "declined") {
-    // 手で「断り」を押したときと同じく、今後この会社には送らない（誤判定でも送らない側に倒す）
-    if (job.domain) db.prepare("INSERT OR IGNORE INTO form_suppressions(domain, reason) VALUES(?,?)").run(job.domain, `断り・返信から自動判定（${job.company_name}）`);
+    // 手で「断り」を押したときと同じく、今後この会社には送らない（誤判定でも送らない側に倒す）。
+    // ただしフリーメール（gmail.com 等）のドメインは会社ではないので入れない。入れると以後すべての Gmail の会社が除外になっていた。
+    // その場合も、下の配信停止でこのアドレスには二度と送らない
+    if (job.domain && !isFreeMailDomain(job.domain)) db.prepare("INSERT OR IGNORE INTO form_suppressions(domain, reason) VALUES(?,?)").run(job.domain, `断り・返信から自動判定（${job.company_name}）`);
     if (job.email) optOut(job.email, `断り・返信から自動判定（${job.company_name}）`, job.owner_user_id ?? undefined);
   }
   return job.id;
@@ -445,9 +449,9 @@ export function isOurBounce(mailbox: string, m: IncomingMail): boolean {
   if (!addrs) return false;
   if (APP_SENT_RE.test(m.text)) return true;
   if (!addrs.length) return false;
-  const db = getDb();
+  const db = dbWithNormEmail();
   return addrs.some((addr) => !!db.prepare(`SELECT 1 FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=${SENT_BY}
-    WHERE j.is_test=0 AND j.channel='email' AND lower(j.email)=? AND lower(s.smtp_user)=? LIMIT 1`).get(addr, mailbox.toLowerCase()));
+    WHERE j.is_test=0 AND j.channel='email' AND ${JOB_EMAIL_MATCH_SQL} AND lower(s.smtp_user)=? LIMIT 1`).get(addr, addr, addr, mailbox.toLowerCase()));
 }
 
 /** このアプリから送ったメールの「配信が遅れています」通知か（失敗ではないので記録はしないが、受信箱からは外す） */
@@ -458,12 +462,12 @@ export function isOurDelayNotice(m: IncomingMail): boolean {
 export function applyBounce(mailbox: string, m: IncomingMail): number | null {
   const addrs = bounceAddrs(mailbox, m);
   if (!addrs) return null;
-  const db = getDb();
+  const db = dbWithNormEmail();
   const at = m.date.toISOString().replace("T", " ").slice(0, 19);
   for (const addr of addrs) {
     const job = db.prepare(`SELECT j.id, j.company_name, j.result_text FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=${SENT_BY}
-      WHERE j.is_test=0 AND j.channel='email' AND j.status='sent' AND lower(j.email)=? AND lower(s.smtp_user)=? AND j.sent_at <= datetime(?, '+10 minutes') AND j.sent_at >= datetime(?, '-30 days')
-      ORDER BY j.sent_at DESC LIMIT 1`).get(addr, mailbox.toLowerCase(), at, at) as { id: number; company_name: string; result_text: string } | undefined;
+      WHERE j.is_test=0 AND j.channel='email' AND j.status='sent' AND ${JOB_EMAIL_MATCH_SQL} AND lower(s.smtp_user)=? AND j.sent_at <= datetime(?, '+10 minutes') AND j.sent_at >= datetime(?, '-30 days')
+      ORDER BY j.sent_at DESC LIMIT 1`).get(addr, addr, addr, mailbox.toLowerCase(), at, at) as { id: number; company_name: string; result_text: string } | undefined;
     if (!job) continue;
     const kind = bounceKind(m.text + " " + m.subject);
     const reasonLine = (m.text.match(/(\b[45]\d\d[ -][245]\.\d{1,3}\.\d{1,3}[^\n]{0,120}|アドレス不明[^\n]{0,80}|メールサイズ[^\n]{0,80}|DNS Error[^\n]{0,80})/i)?.[0] ?? "").trim();
@@ -735,6 +739,34 @@ export function decideInterrupted(sentDates: Date[], claimAt: Date, keepsSentCop
 
 type InterruptedRow = { id: number; email: string; updated_at: string; sender_id: number };
 
+// 確認の期限。以前は期限が無く、Gmail 以外（控えが残らないことがあり「不明」のまま）は15分ごとの IMAP ログインが永久に続き、
+// Gmail は何日前の行でも「控えが無い＝未送信」で待機に戻して、忘れた頃に送っていた
+const VERIFY_DAYS = 3;          // これより古い行は確かめない（「確認できませんでした」にして外す）
+const AUTO_REQUEUE_HOURS = 24;  // 「未送信」と分かっても、自動で待機に戻すのは送り始めてからこの時間以内だけ
+export const UNVERIFIED_TEXT = "送信済みか確認できませんでした（送信済みか不明・手動で確認）: 送信の途中で止まったメールです。送信用メールの「送信済み」フォルダに届いているか見て、無ければ再送信してください";
+export const NOT_SENT_MANUAL_TEXT = "未送信と確認（送信済みフォルダに控えが無い）。送り始めてから時間がたっているため自動では送りません。再送信ボタンで送れます";
+
+/** 「未送信」と分かったときに、自動で待機に戻してよいか（送り始めてから24時間以内だけ） */
+export function autoRequeueAllowed(claimAt: Date, now = Date.now()): boolean {
+  return now - claimAt.getTime() <= AUTO_REQUEUE_HOURS * 3600_000;
+}
+
+/** 起動時: 前回アプリが止まったときに「送信中」のまま残った会社を片付ける。
+ *  メールで送信を始めた印（sent_by_sender）が無い会社は、SMTP にまだつないでいない＝送っていないので、確認なしで待機に戻す。
+ *  それ以外は送ったか分からないので「失敗（要確認）」にし、メールは送信済みフォルダで確かめる（verifyInterruptedEmails）。
+ *  updated_at は送信を始めた時刻のまま残す（送信済みフォルダの照合に使う）。戻り値は [待機に戻した数, 要確認にした数] */
+export function recoverStuckSending(): { requeued: number; failed: number } {
+  const db = getDb();
+  const requeued = db.prepare(`UPDATE form_jobs SET status='queued', result_text='送信の前にアプリが止まったため待機に戻しました（メールはまだ送っていません）', retry_after=NULL
+    WHERE status='sending' AND channel='email' AND sent_by_sender IS NULL`).run().changes;
+  const failed = db.prepare(`UPDATE form_jobs SET status='failed',
+    result_text=CASE WHEN channel='email'
+      THEN '${INTERRUPTED_PREFIX}（送信済みか不明・要確認）: 送信済みフォルダを自動で確認します。確認できない場合は、送信用メールの「送信済み」フォルダに届いているか見て、無ければ再送信してください'
+      ELSE '${INTERRUPTED_PREFIX}（送信済みか不明・要確認）: 相手先から受付メールが届いていないか確認し、無ければ再送信してください' END
+    WHERE status='sending'`).run().changes;
+  return { requeued, failed };
+}
+
 let verifying = false;
 
 /** 送信中に止まった／送信の最後で通信が切れたメールを、実際に送ったアカウントの送信済みフォルダで確認して、
@@ -748,9 +780,13 @@ export async function verifyInterruptedEmails(): Promise<{ sent: number; requeue
 
 async function verifyInterruptedInner(out: { sent: number; requeued: number; unknown: number }): Promise<{ sent: number; requeued: number; unknown: number }> {
   const db = getDb();
+  // 期限を過ぎたものは1回だけ「確認できませんでした（手動で確認）」に替えて、以後の確認の対象から外す（文の頭が変わるので2回目は当たらない）
+  db.prepare(`UPDATE form_jobs SET result_text=? WHERE status='failed' AND channel='email' AND (result_text LIKE ? OR result_text LIKE ?)
+    AND updated_at < datetime('now', ?)`).run(UNVERIFIED_TEXT, `${INTERRUPTED_PREFIX}%`, `${CUT_PREFIX}%`, `-${VERIFY_DAYS} days`);
   // 照合するのは「実際に送ったアカウント」。送る直前に sent_by_sender を書いているので、切り替え先で送った分も正しい送信済みフォルダを見る
   const rows = db.prepare(`SELECT j.id, j.email, j.updated_at, ${SENT_BY} sender_id FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id
-    WHERE j.status='failed' AND j.channel='email' AND j.email<>'' AND (j.result_text LIKE ? OR j.result_text LIKE ?)`).all(`${INTERRUPTED_PREFIX}%`, `${CUT_PREFIX}%`) as InterruptedRow[];
+    WHERE j.status='failed' AND j.channel='email' AND j.email<>'' AND (j.result_text LIKE ? OR j.result_text LIKE ?)
+      AND j.updated_at >= datetime('now', ?)`).all(`${INTERRUPTED_PREFIX}%`, `${CUT_PREFIX}%`, `-${VERIFY_DAYS} days`) as InterruptedRow[];
   if (!rows.length) return out;
   const bySender = new Map<number, InterruptedRow[]>();
   for (const r of rows) bySender.set(r.sender_id, [...(bySender.get(r.sender_id) ?? []), r]);
@@ -760,7 +796,8 @@ async function verifyInterruptedInner(out: { sent: number; requeued: number; unk
     // ログインを拒否されて止めているアカウントには、確認のためでもログインしない（何度も試すと解除が遅れる）
     const paused = emailPause(s);
     if (paused && /ログイン|拒否|パスワード|2段階|一時停止され|認証/.test(paused.reason)) { out.unknown += jobs.length; continue; }
-    const keepsSentCopy = /gmail|google/i.test(s.smtp_host || "smtp.gmail.com");
+    // 送信済みフォルダに必ず控えが残るのは Google（Gmail・Workspace）。ホスト名の判定は email.ts と同じものを使う
+    const keepsSentCopy = isGoogleSmtp(s);
     const client = new ImapFlow({ host: imapHostFor(s), port: 993, secure: true, auth: { user: s.smtp_user.trim(), pass: normalizeAppPassword(s.smtp_pass) }, logger: false, socketTimeout: 60_000, ...(s.tls_insecure ? { tls: { rejectUnauthorized: false } } : {}) });
     client.on("error", () => { /* 下の catch で拾う */ });
     try {
@@ -771,7 +808,7 @@ async function verifyInterruptedInner(out: { sent: number; requeued: number; unk
       try {
         for (const j of jobs) {
           const claimAt = new Date(j.updated_at.replace(" ", "T") + "Z");
-          const uids = (await client.search({ to: j.email, since: new Date(claimAt.getTime() - 86400_000) }, { uid: true })) || [];
+          const uids = (await client.search({ to: normalizeEmail(j.email) || j.email, since: new Date(claimAt.getTime() - 86400_000) }, { uid: true })) || [];
           const dates: Date[] = [];
           for (const uid of uids) {
             const m = await client.fetchOne(String(uid), { uid: true, internalDate: true }, { uid: true });
@@ -782,11 +819,15 @@ async function verifyInterruptedInner(out: { sent: number; requeued: number; unk
             db.prepare("UPDATE form_jobs SET status='sent', sent_at=?, result_text=?, updated_at=datetime('now') WHERE id=? AND status='failed'")
               .run(d.at.toISOString().replace("T", " ").slice(0, 19), `メール送信（${j.email}）※送信の途中で止まったが、送信済みフォルダで送信を確認`, j.id);
             out.sent++;
-          } else if (d.verdict === "not_sent") {
+          } else if (d.verdict === "not_sent" && autoRequeueAllowed(claimAt)) {
             // 送れていなかったので待機に戻す（実行中のキャンペーンなら続きで自動送信される）
             db.prepare("UPDATE form_jobs SET status='queued', result_text=?, updated_at=datetime('now') WHERE id=? AND status='failed'")
               .run("再送信待ち: 送信の途中で止まったが、送信済みフォルダに無く未送信と確認", j.id);
             out.requeued++;
+          } else if (d.verdict === "not_sent") {
+            // 送り始めてから時間がたっている。忘れた頃に届くと相手を驚かせるので、自動では送らず、人に任せる（確認の対象からも外れる）
+            db.prepare("UPDATE form_jobs SET result_text=? WHERE id=? AND status='failed'").run(NOT_SENT_MANUAL_TEXT, j.id);
+            out.unknown++;
           } else out.unknown++;
         }
       } finally {

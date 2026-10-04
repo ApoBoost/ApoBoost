@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { getDb, getSetting, setSetting as saveSetting, SCREENSHOT_DIR, MATERIAL_DIR, domainOf, jst, channelMode, STATUS_LABEL, OUTCOME_LABEL, type Campaign, type Job, type SenderProfile } from "../db.js";
 import { parseCompanyCsv, parseCompanyXlsx, importRowsToCampaign, parseSuppressionCsv, parseSuppressionText, importSuppressions, type ImportSummary, type CompanyRow } from "../csv.js";
 import { composeMessage, activeProvider, activeAiConfig, aiStatusLabel, testAiConnection, AI_MODELS, DEFAULT_TEMPLATE, loadNgWords, lintMessage, aiUsageThisMonth, aiMonthlyLimit } from "../message.js";
-import { optOut, testSmtp, explainSmtpError, checkSmtpPassword, emailPause, clearEmailPause, senderEmailOk, buildEmailBody } from "../email.js";
+import { optOut, normalizeEmail, testSmtp, explainSmtpError, checkSmtpPassword, emailPause, clearEmailPause, senderEmailOk, buildEmailBody } from "../email.js";
 import { logError, logInfo, recentLogs, clearLogs, logCounts } from "../applog.js";
 import { jpError } from "../jp.js";
 import { healthChecks, diagnosticsText } from "../health.js";
@@ -20,7 +20,7 @@ import { autostartEnabled, autostartSupported, enableAutostart, disableAutostart
 import { releaseAwakeAll, AWAKE_NOTE } from "../awake.js";
 import { licenseStatus, setLicenseKey, licenseEnforced } from "../license.js";
 import { syncShare, shareConfigured, APPS_SCRIPT, KEY as SHARE_KEY } from "../share.js";
-import { drainForShutdown, clearStaleRuns, runCampaign, requestStop, isRunning, isScanning, scanCampaign, processJob, inSendWindow, sentToday, sentTodayBySender, warmupLimit, effectiveEmailLimit, nextWindowText } from "../worker.js";
+import { drainForShutdown, clearStaleRuns, runCampaign, requestStop, isRunning, isScanning, scanCampaign, processJob, claimJobForManual, inSendWindow, sentToday, sentTodayBySender, warmupLimit, effectiveEmailLimit, nextWindowText } from "../worker.js";
 import { launchBrowser, openAndFill } from "../engine.js";
 import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmails, learnFromCorrection, loadReplyRules, clearReplyRulesCache } from "../replies.js";
 import { notify, notifyEnabled } from "../notify.js";
@@ -137,10 +137,17 @@ app.post("/jobs/:id/fix", safeAsync(async (req, res) => {
   const id = Number(req.params.id);
   const j = ownedJob(req, id);
   if (!j) return notFound(req, res);
+  // 送信済みの会社に、もう一度送らない（二重送信）。以前は送信済みの詳細画面にも「再試行」が出ていて、押すと同じ会社にもう一度送っていた
+  if (j.status === "sent") return redirectWith(res, `/jobs/${id}`, "この会社にはすでに送信済みです（もう一度は送りません）");
   const formUrl = String(req.body.form_url ?? "").trim();
   const siteUrl = String(req.body.site_url ?? "").trim();
   const company = String(req.body.company_name ?? "").trim() || j.company_name;
-  const email = String(req.body.email ?? "").trim().toLowerCase();
+  // 宛先アドレスは表記ゆれ（mailto:・<>・全角・末尾の記号）をそろえる。読めないものは保存も送信もしない
+  const emailRaw = String(req.body.email ?? "").trim();
+  const email = emailRaw ? normalizeEmail(emailRaw) : "";
+  if (emailRaw && !email) return redirectWith(res, `/jobs/${id}#fix`, `メールアドレスの形が正しくありません（${emailRaw.slice(0, 60)}）。例: info@example.co.jp`);
+  // いま送信中の会社の宛先を書き換えたり、もう一度送り始めたりしない（二重送信）
+  if (j.status === "sending") return redirectWith(res, `/jobs/${id}`, "この会社はいま送信中です。終わってから結果を確認してください");
   // 「メールで送信」ボタンなら、フォームURLが入っていてもメールに切り替える
   const via = String(req.body.via ?? "");
   if (via === "email" && !email) return redirectWith(res, `/jobs/${id}#fix`, "メールアドレスを入れてから「メールで送信」を押してください");
@@ -154,6 +161,8 @@ app.post("/jobs/:id/fix", safeAsync(async (req, res) => {
   let browser: Awaited<ReturnType<typeof launchBrowser>> | null = null;
   try {
     if (needsBrowser(channel, j.campaign_id)) browser = await launchBrowser();
+    // 送り始める前に「送信中」にする。二度押し・送信中の会社への再送で2通出ないよう、送信中ならやめる
+    if (!claimJobForManual(id)) return redirectWith(res, `/jobs/${id}`, "この会社はいま送信中か、すでに送信済みです。結果を確認してください");
     const r = await processJob(browser as never, id);
     redirectWith(res, `/jobs/${id}`, `${channel === "email" ? "メールで送信した結果" : "修正して再送信した結果"}: ${resultNote(r)}`);
   } catch (e) {
@@ -168,6 +177,10 @@ app.post("/jobs/:id/answer", safeAsync(async (req, res) => {
   const id = Number(req.params.id);
   const j = ownedJob(req, id);
   if (!j) return notFound(req, res);
+  // 送信済みの会社に、もう一度送らない（二重送信）。以前は送信済みの詳細画面にも「再試行」が出ていて、押すと同じ会社にもう一度送っていた
+  if (j.status === "sent") return redirectWith(res, `/jobs/${id}`, "この会社にはすでに送信済みです（もう一度は送りません）");
+  // 送信中の会社に、回答を書き込んだり、もう一度送り始めたりしない（二重送信。fix / retry と同じ守り）
+  if (j.status === "sending") return redirectWith(res, `/jobs/${id}`, "この会社はいま送信中です。終わってから結果を確認してください");
   const answers: { label: string; answer: string }[] = [];
   for (let i = 0; i < 30; i++) {
     const label = String(req.body[`q_label_${i}`] ?? "").trim();
@@ -181,6 +194,8 @@ app.post("/jobs/:id/answer", safeAsync(async (req, res) => {
   let browser: Awaited<ReturnType<typeof launchBrowser>> | null = null;
   try {
     browser = await launchBrowser();
+    // 送り始める前に「送信中」にする（ブラウザを起動するあいだに自動の送信が始まった・終わった会社に、重ねて送らない）
+    if (!claimJobForManual(id)) return redirectWith(res, `/jobs/${id}`, "この会社はいま送信中か、すでに送信済みです。結果を確認してください");
     const r = await processJob(browser, id);
     redirectWith(res, `/jobs/${id}`, `回答を反映して再送信した結果: ${resultNote(r)}`);
   } catch (e) {
@@ -215,10 +230,14 @@ app.post("/jobs/:id/retry", safeAsync(async (req, res) => {
   const id = Number(req.params.id);
   const job = ownedJob(req, id);
   if (!job) return forbidden(req, res);
+  // 送信済みの会社に、もう一度送らない（二重送信）。以前は送信済みの詳細画面にも「再試行」が出ていて、押すと同じ会社にもう一度送っていた
+  if (job.status === "sent") return redirectWith(res, `/jobs/${id}`, "この会社にはすでに送信済みです（もう一度は送りません）");
   // メールの会社は（AIでHPを読む場合を除き）ブラウザを使わない。起動の失敗も画面に出せるよう try の中で起動する
   let browser: Awaited<ReturnType<typeof launchBrowser>> | null = null;
   try {
     if (needsBrowser(job.channel, job.campaign_id)) browser = await launchBrowser();
+    // 送り始める前に「送信中」にする。二度押し・送信中の会社への再送で2通出ないよう、送信中ならやめる
+    if (!claimJobForManual(id)) return redirectWith(res, `/jobs/${id}`, "この会社はいま送信中か、すでに送信済みです。結果を確認してください");
     const j = await processJob(browser as never, id);
     redirectWith(res, `/jobs/${id}`, `再試行の結果: ${resultNote(j)}`);
   } catch (e) {
@@ -233,7 +252,10 @@ app.post("/jobs/:id/requeue", (req, res) => {
   const id = Number(req.params.id);
   const j = ownedJob(req, id);
   if (!j) return notFound(req, res);
-  db.prepare("UPDATE form_jobs SET status='queued', result_text='待機に戻しました（手動）', updated_at=datetime('now') WHERE id=?").run(id);
+  // 送信中の会社を待機に戻すと、送り終わる前にもう一度送り始めて2通出ることがあるので、送信中は戻さない。
+  // 宛先の一時エラーの待ち時間と回数は、人が戻すと決めたので数え直す
+  const back = db.prepare("UPDATE form_jobs SET status='queued', result_text='待機に戻しました（手動）', retry_after=NULL, temp_tries=0, updated_at=datetime('now') WHERE id=? AND status NOT IN ('sending','sent')").run(id).changes;
+  if (!back) return redirectWith(res, todoBack(req, `/jobs/${id}`), `${j.company_name} はいま送信中か、すでに送信済みのため、待機に戻しませんでした`);
   db.prepare("UPDATE form_jobs SET dismissed_at=NULL WHERE id=?").run(id);
   redirectWith(res, todoBack(req, `/jobs/${id}`), `${j.company_name} を待機中に戻しました（キャンペーンを開始すると送信します）`);
 });

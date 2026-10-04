@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { getDb, getSetting, setSetting as saveSetting, SCREENSHOT_DIR, MATERIAL_DIR, domainOf, jst, channelMode, STATUS_LABEL, OUTCOME_LABEL, type Campaign, type Job, type SenderProfile } from "../db.js";
+import { getDb, getSetting, setSetting as saveSetting, SCREENSHOT_DIR, MATERIAL_DIR, domainOf, jst, channelMode, STATUS_LABEL, OUTCOME_LABEL, sentTodaySql, todayJst, type Campaign, type Job, type SenderProfile } from "../db.js";
 import { parseCompanyCsv, parseCompanyXlsx, importRowsToCampaign, parseSuppressionCsv, parseSuppressionText, importSuppressions, type ImportSummary, type CompanyRow } from "../csv.js";
 import { composeMessage, activeProvider, activeAiConfig, aiStatusLabel, testAiConnection, AI_MODELS, DEFAULT_TEMPLATE, loadNgWords, lintMessage, aiUsageThisMonth, aiMonthlyLimit } from "../message.js";
 import { optOut, testSmtp, explainSmtpError, checkSmtpPassword, emailPause, clearEmailPause, senderEmailOk, buildEmailBody } from "../email.js";
@@ -19,14 +19,14 @@ import { healthChecks, diagnosticsText } from "../health.js";
 import { createBackup, listBackups, requestRestore, autoBackupIfDue, backupLabel, BACKUP_DIR } from "../backup.js";
 import { autostartEnabled, autostartSupported, enableAutostart, disableAutostart, autostartPath } from "../autostart.js";
 import { releaseAwakeAll, AWAKE_NOTE } from "../awake.js";
-import { licenseStatus, setLicenseKey, licenseEnforced } from "../license.js";
+import { licenseStatus, setLicenseKey, licenseEnforced, cappedDailyLimit } from "../license.js";
 import { syncShare, shareConfigured, APPS_SCRIPT, KEY as SHARE_KEY } from "../share.js";
-import { drainForShutdown, clearStaleRuns, runCampaign, requestStop, isRunning, isScanning, scanCampaign, processJob, inSendWindow, sentToday, sentTodayBySender, warmupLimit, effectiveEmailLimit, nextWindowText } from "../worker.js";
+import { drainForShutdown, clearStaleRuns, runCampaign, requestStop, isRunning, isScanning, scanCampaign, processJob, inSendWindow, sentToday, sentTodayBySender, warmupLimit, effectiveEmailLimit, nextWindowText, aiPause, emailSenderIds, pickEmailSender } from "../worker.js";
 import { launchBrowser, openAndFill } from "../engine.js";
 import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmails, learnFromCorrection, loadReplyRules, clearReplyRulesCache } from "../replies.js";
 import { notify, notifyEnabled } from "../notify.js";
 import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel } from "../update.js";
-import { errorPage } from "../ui/layout.js";
+import { errorPage, n as fmtN } from "../ui/layout.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
 
@@ -36,7 +36,24 @@ export const app = express();
 // このファイルは src/app/ にあるので、2つ上がアプリのフォルダ
 export const ASSETS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "assets");
 
-export const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+// fieldSize は貼り付け欄（文字）の上限。multer（busboy）の既定は1MBで、4,000社ほどのリストを貼ると超えて
+// 理由の分からない500ページになっていた。ファイルと同じくらいまで受け付ける
+export const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024, fieldSize: 20 * 1024 * 1024 } });
+
+/** upload.single を包み、大きすぎる貼り付け・ファイルなどの読み取りの失敗を、元の画面に戻して日本語で知らせる。
+ *  そのままだと共通のエラーページ（server.ts）に落ち、何が悪かったのか分からなかった */
+export function uploadSingle(field: string, back: (req: express.Request) => string): express.RequestHandler {
+  const mw = upload.single(field);
+  return (req, res, next) => mw(req, res, (err?: unknown) => {
+    if (!err) return next();
+    const code = (err as { code?: string }).code ?? "";
+    const msg = code === "LIMIT_FIELD_VALUE" ? "貼り付けが大きすぎます（20MBまで）。ファイルで取り込むか、何回かに分けて貼り付けてください"
+      : code === "LIMIT_FILE_SIZE" ? "ファイルが大きすぎます（50MBまで）。ファイルを分けてから取り込んでください"
+      : `送った内容を読み取れませんでした。もう一度お試しください（${jpError(err, 80)}）`;
+    logError("page", `${req.method} ${req.path}: 送信内容の読み取りに失敗（${code || jpError(err, 120)}）`);
+    redirectWith(res, back(req), msg);
+  });
+}
 
 export const db = getDb();
 
@@ -152,7 +169,8 @@ export function me(req: express.Request) {
   return u;
 }
 
-export const appState = { updateReady: false };
+// stopping: 終了の合図を受けて、送信中の会社が終わるのを待っているあいだ true（/healthz で返す。server.ts の二重起動の判定に使う）
+export const appState = { updateReady: false, stopping: false };
 
 export function refreshUpdateFlag() {
   checkUpdate().then((st) => { appState.updateReady = st.available; }).catch(() => {});
@@ -289,6 +307,85 @@ export function retryTargetJobs(campaignId: number): { id: number; company_name:
                   ORDER BY x.updated_at DESC, x.id DESC LIMIT 1)
       AND j.status IN ('failed','skip_no_form')
     ORDER BY j.company_name`).all(campaignId) as { id: number; company_name: string; status: string; result_text: string }[];
+}
+
+// ---- 「開始したのに進まない／勝手に止まった」理由（#2周目-5）----
+// 以前はどの理由でも「時間待ち」としか出ず、自動の一時停止の理由は、待機に戻した1社の結果欄と通知にしか無かった
+
+/** 進まない理由。blocking=false は「片方だけ止まっていて、もう片方は送っている」もの */
+export type CampaignStall = { kind: "auto" | "email" | "ai" | "retry" | "limit" | "window"; text: string; blocking: boolean; href?: string; action?: string };
+
+/** 日時（ミリ秒、または DB の世界標準時の文字列）を「10/5 14:30」の形にする（今日なら時刻だけ） */
+function whenJst(t: number | string | null | undefined): string {
+  const ms = typeof t === "number" ? t : Date.parse(String(t ?? "").replace(" ", "T") + "Z");
+  if (!Number.isFinite(ms)) return "";
+  const d = new Date(ms + 9 * 3600_000);
+  const hm = `${d.getUTCHours()}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+  return d.toISOString().slice(0, 10) === todayJst() ? hm : `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${hm}`;
+}
+
+/** 自動で一時停止した理由（空＝自動の一時停止ではない）。
+ *  pause_reason は worker が書く。まだ書かない版でも分かるよう、待機に戻した会社の結果の文（「…（キャンペーンを一時停止）: 理由」）からも拾う。
+ *  「開始」「一時停止」を押すと両方とも消す（routes/campaigns.ts）ので、古い理由が残って出続けることはない */
+export function autoPauseReason(c: Pick<Campaign, "id" | "status"> & { pause_reason?: string | null }): string {
+  if (c.status !== "paused") return "";
+  if (String(c.pause_reason ?? "").trim()) return String(c.pause_reason).trim();
+  const r = db.prepare(`SELECT result_text FROM form_jobs WHERE campaign_id=? AND is_test=0 AND status='queued' AND result_text LIKE ? ORDER BY updated_at DESC LIMIT 1`)
+    .get(c.id, `%${AUTO_PAUSE_MARK}%`) as { result_text: string } | undefined;
+  return r ? r.result_text.split("\n")[0].replace(`待機に戻しました${AUTO_PAUSE_MARK}`, "自動で一時停止しました").slice(0, 200) : "";
+}
+/** worker が自動の一時停止のとき結果の文に入れる印 */
+export const AUTO_PAUSE_MARK = "（キャンペーンを一時停止）";
+
+/** いま送りが進まない理由を1つ決める。優先順: 自動の一時停止 → メールの一時停止 → AIの一時停止 → 再送待ち → 上限 → 時間帯の外。
+ *  理由が無い（送っている・送る会社が無い・準備中や手動の一時停止）ときは null */
+export function campaignStall(c: Campaign): CampaignStall | null {
+  const auto = autoPauseReason(c);
+  if (auto) {
+    // AIの設定の問題か（文頭で見る。文面の間違いの説明に「{{AI冒頭}}」のように AI の文字が入っていても、AIの設定へ案内しない）
+    const ai = /^AIで/.test(auto);
+    return { kind: "auto", blocking: true, text: `自動で一時停止しました。${auto.replace(/^自動で一時停止しました[:：]?\s*/, "")}`, href: ai ? "/settings#s-ai" : `/campaigns/${c.id}/edit`, action: ai ? "AIの設定を確認する" : "文面を直す" };
+  }
+  if (c.status !== "running") return null;
+  const only = String(c.send_only ?? "");
+  const READY = "(retry_after IS NULL OR retry_after <= datetime('now'))";
+  const q = db.prepare(`SELECT COALESCE(SUM(channel='form'),0) form, COALESCE(SUM(channel='email'),0) email,
+      COALESCE(SUM(channel='form' AND ${READY}),0) formReady, COALESCE(SUM(channel='email' AND ${READY}),0) emailReady,
+      MIN(CASE WHEN NOT ${READY} THEN retry_after END) nextRetry
+    FROM form_jobs WHERE campaign_id=? AND is_test=0 AND status='queued'`).get(c.id) as { form: number; email: number; formReady: number; emailReady: number; nextRetry: string | null };
+  const qForm = only === "email" ? 0 : q.form, qEmail = only === "form" ? 0 : q.email;
+  if (!qForm && !qEmail) return null;
+  const readyForm = only === "email" ? 0 : q.formReady, readyEmail = only === "form" ? 0 : q.emailReady;
+  // メール: 追加の送信アカウントも含め、使えるアカウントが全部止まっているときだけ（1つでも使えれば切り替えて送る）
+  if (qEmail > 0) {
+    const senders = emailSenderIds(c).map((id) => db.prepare("SELECT * FROM sender_profiles WHERE id=?").get(id) as SenderProfile | undefined).filter(Boolean) as SenderProfile[];
+    const pauses = senders.map((s) => emailPause(s)).filter(Boolean) as { until: number; reason: string }[];
+    if (senders.length && pauses.length === senders.length) {
+      const p = pauses.reduce((a, b) => (b.until < a.until ? b : a));
+      return { kind: "email", blocking: !readyForm, text: `メール送信を一時停止中です（${whenJst(p.until)}に自動で再開）: ${p.reason.slice(0, 80)}${readyForm ? "。フォームの会社は続けて送ります" : ""}`, href: `/campaigns/${c.id}?tab=send`, action: "詳しく見る" };
+    }
+  }
+  if (c.mode === "ai") {
+    const ap = aiPause();
+    if (ap) return { kind: "ai", blocking: true, text: `AIが混み合っているため、送信を少し止めています。${whenJst(ap.until)}に自動で再開します` };
+  }
+  if (!readyForm && !readyEmail) {
+    return { kind: "retry", blocking: true, text: `相手のメールサーバーの一時的なエラーで、${fmtN(qForm + qEmail)}社が再送待ちです（早いものは ${whenJst(q.nextRetry)}ごろに送り直します）` };
+  }
+  // 上限はチャネルごとに比べる（フォームとメールの合計で比べると、片方が残っていても「上限」と出ていた）
+  const formCap = cappedDailyLimit(c.daily_limit).limit;
+  const formFull = readyForm > 0 && sentToday(c.id, "form") >= formCap;
+  const primary = db.prepare("SELECT * FROM sender_profiles WHERE id=?").get(c.sender_id) as SenderProfile | undefined;
+  const emailFull = readyEmail > 0 && !pickEmailSender(c, primary);
+  if ((formFull || !readyForm) && (emailFull || !readyEmail)) {
+    return { kind: "limit", blocking: true, text: `今日の上限（${[readyForm ? `フォーム ${fmtN(formCap)}社` : "", readyEmail ? `メール ${fmtN(effectiveEmailLimit(c, c.sender_id).limit)}通` : ""].filter(Boolean).join("・")}）に達しました。残りは次の送信時間帯に続きます` };
+  }
+  if (!inSendWindow(c)) {
+    return { kind: "window", blocking: true, text: `いまは送信時間帯（${c.send_window_start}〜${c.send_window_end}時${c.weekdays_only ? "・平日" : ""}）の外です。${nextWindowText(c)}` };
+  }
+  if (formFull) return { kind: "limit", blocking: false, text: `フォームは今日の上限（${fmtN(formCap)}社）に達しました。フォームの残り ${fmtN(qForm)}社は次の送信時間帯に送ります（メールは続けて送ります）` };
+  if (emailFull) return { kind: "limit", blocking: false, text: `メールは今日の上限に達しました。メールの残り ${fmtN(qEmail)}社は次の送信時間帯に送ります（フォームは続けて送ります）` };
+  return null;
 }
 
 // ログインの失敗回数制限。同じWi-Fi等にいる人が、他のPCから開けるURLでパスワードを何度も試せないようにする。
@@ -561,6 +658,20 @@ export function validateSender(body: Record<string, unknown>): string | null {
   const tel = g("tel").normalize("NFKC").replace(/[\u2010-\u2015\u2212\u30fc\uff70\ufe63\uff0d]/g, "-").replace(/\s+/g, " ").trim();
   if ("tel" in body) body.tel = tel;
   if (tel && !/^\+?[0-9\-() ]+$/.test(tel)) return "電話番号は数字とハイフンで入力してください（例: 03-1234-5678）";
+  // メール送信の設定。全角で入れた・前後に空白が付いた・ポートに文字が入った、を保存の時点で止める
+  // （以前はそのまま保存され、送る段階で「ログインを拒否」「接続できない」と分かりにくい形で出ていた）
+  const addrRe = /^[a-z0-9!#$%&'*+=?^_`{|}~.-]+@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:[a-z]{2,}|xn--[a-z0-9-]+)$/i;
+  const smtpUser = g("smtp_user").normalize("NFKC").trim();
+  if ("smtp_user" in body) body.smtp_user = smtpUser;
+  if (smtpUser && /\s/.test(smtpUser)) return "送信用メールアドレスに空白が入っています（例: sales@example.co.jp）";
+  // プロバイダによってはユーザー名がアドレスの形でない（アカウントID）ので、@ を含むときだけアドレスとして確かめる
+  if (smtpUser.includes("@") && !addrRe.test(smtpUser)) return "送信用メールアドレスの形式が正しくありません（例: sales@example.co.jp）";
+  const fromEmail = g("from_email").normalize("NFKC").trim().toLowerCase();
+  if ("from_email" in body) body.from_email = fromEmail;
+  if (fromEmail && !addrRe.test(fromEmail)) return "差出人として表示するアドレスの形式が正しくありません（空にすると送信用メールアドレスで送ります）";
+  const port = g("smtp_port").normalize("NFKC").trim();
+  if ("smtp_port" in body) body.smtp_port = port;
+  if (port && !(/^\d{1,5}$/.test(port) && Number(port) >= 1 && Number(port) <= 65535)) return "ポートは数字で入力してください（ふつうは 465。プロバイダの案内が 587 ならそちら）";
   return null;
 }
 
@@ -635,7 +746,8 @@ export function setupState(req: express.Request): import("../views.js").SetupSta
 
 /** はじめの設定が何ステップ終わっているか（#137） */
 export function setupProgress(st: import("../views.js").SetupState): { done: number; total: number } {
-  const steps = [st.senderOk && st.addressOk, st.smtpOk, st.lawOk, st.campaignOk, st.listCount > 0, st.sentCount > 0];
+  // 「フォームだけで使う」を選んだ人は、送信用メールの手順を済みとして数える（選んでいないと、ホームの帯がずっと「2番」で止まる）
+  const steps = [st.senderOk && st.addressOk, st.smtpOk || settingOn(S.setupEmailSkipped), st.lawOk, st.campaignOk, st.listCount > 0, st.sentCount > 0];
   return { done: steps.filter(Boolean).length, total: steps.length };
 }
 
@@ -681,7 +793,9 @@ export function applyTodoAction(req: express.Request, action: string, ids: numbe
       const j = ownedJob(req, id);
       if (!j) continue;
       if (action === "requeue") {
-        db.prepare("UPDATE form_jobs SET status='queued', dismissed_at=NULL, result_text='もう一度送ります（要対応から）', updated_at=datetime('now') WHERE id=?").run(id); n2++;
+        // 送信中・送信済みの会社は戻さない（開いたままの古い画面から押されると、送信中の会社がもう一度送られ、2通出る）。
+        // 宛先の一時エラーの待ち時間と回数は、人が戻すと決めたので数え直す（/jobs/:id/requeue と同じ）
+        n2 += db.prepare("UPDATE form_jobs SET status='queued', dismissed_at=NULL, result_text='もう一度送ります（要対応から）', retry_after=NULL, temp_tries=0, updated_at=datetime('now') WHERE id=? AND status NOT IN ('sending','sent')").run(id).changes;
       } else if (action === "dismiss") {
         db.prepare("UPDATE form_jobs SET dismissed_at=datetime('now') WHERE id=?").run(id); n2++;
       } else if (action === "undismiss") {
@@ -690,7 +804,7 @@ export function applyTodoAction(req: express.Request, action: string, ids: numbe
         db.prepare("UPDATE form_jobs SET status='sent', dismissed_at=NULL, result_text='手動で送信済みにしました', sent_at=datetime('now'), updated_at=datetime('now') WHERE id=?").run(id); n2++;
       } else if (action === "to_email") {
         if (!j.email) continue;
-        db.prepare("UPDATE form_jobs SET channel='email', status='queued', dismissed_at=NULL, result_text=?, updated_at=datetime('now') WHERE id=?").run(`メールで送ります（${j.email}）`, id); n2++;
+        n2 += db.prepare("UPDATE form_jobs SET channel='email', status='queued', dismissed_at=NULL, result_text=?, retry_after=NULL, temp_tries=0, updated_at=datetime('now') WHERE id=? AND status NOT IN ('sending','sent')").run(`メールで送ります（${j.email}）`, id).changes;
       } else if (action === "suppress") {
         if (j.domain) db.prepare("INSERT OR IGNORE INTO form_suppressions(company_name, domain, reason, owner_user_id) VALUES(?,?,?,?)").run(j.company_name, j.domain, "要対応の画面から除外", uid);
         if (j.email) optOut(j.email, `除外（${j.company_name}）`, uid);
@@ -750,8 +864,9 @@ export function dailySummaryIfDue() {
   const end = (db.prepare("SELECT MAX(send_window_end) e FROM form_campaigns WHERE status IN ('running','paused','done')").get() as { e: number | null }).e ?? 18;
   if (nowJ.getUTCHours() < end) return;
   const one = (sql: string) => (db.prepare(sql).get(today) as { n: number }).n;
-  const form = one("SELECT COUNT(*) n FROM form_jobs WHERE is_test=0 AND status='sent' AND channel='form' AND date(sent_at,'+9 hours')=?");
-  const mail = one("SELECT COUNT(*) n FROM form_jobs WHERE is_test=0 AND status='sent' AND channel='email' AND date(sent_at,'+9 hours')=?");
+  // 「今日送った数」は上限の判定と同じ数え方にする（戻りメールで失敗に変わった分も、送ったことに変わりない）
+  const form = one(`SELECT COUNT(*) n FROM form_jobs WHERE is_test=0 AND channel='form' AND ${sentTodaySql()}`);
+  const mail = one(`SELECT COUNT(*) n FROM form_jobs WHERE is_test=0 AND channel='email' AND ${sentTodaySql()}`);
   saveSetting("daily_summary_last", today);
   if (form + mail === 0) return; // 何も送っていない日は知らせない
   const appo = one("SELECT COUNT(*) n FROM form_jobs WHERE is_test=0 AND outcome='appointment' AND date(updated_at,'+9 hours')=?");

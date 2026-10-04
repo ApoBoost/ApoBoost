@@ -35,6 +35,9 @@ export const CAPTCHA_SELECTORS = [
   "iframe[src*='recaptcha/api2/anchor']", // reCAPTCHA v2 checkbox（人が押す必要がある）
   "iframe[src*='recaptcha/api2/bframe']", // reCAPTCHA の画像認証ポップアップ（送信を押したあとに出る。普段は画面外に隠れている）
   "iframe[src*='recaptcha/enterprise/bframe']",
+  "iframe[src*='recaptcha/enterprise/anchor']", // reCAPTCHA Enterprise のチェックボックス
+  ".wpcf7-quiz", // Contact Form 7 のクイズ欄（「1+1=?」）。ボット対策なので答えずにスキップする
+  "label:has(.wpcf7-quiz)",
   ".g-recaptcha[data-size='normal']",
   ".g-recaptcha:not([data-size='invisible'])",
   "iframe[src*='hcaptcha.com']",

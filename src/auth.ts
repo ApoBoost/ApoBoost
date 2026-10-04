@@ -100,9 +100,13 @@ export function needsFirstSetup(): boolean {
 
 const LOOPBACK_ADDR = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 const LOOPBACK_HOST = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+const PROXY_HEADERS = ["x-forwarded-for", "x-forwarded-host", "forwarded", "x-real-ip", "cf-connecting-ip", "via"];
 /** このPC自身から開いているか。初回設定は「先に開いた人が管理者になる」ため、同じWi-Fiの他人に取られないよう本人のPCに限る。
  *  接続元だけでなく Host も見るのは、悪意のあるサイトが名前の書き換え（DNSリバインディング）で localhost を叩くのを防ぐため */
 export function isLocalRequest(req: Request): boolean {
+  // 転送役（リバースプロキシ・トンネル・Cloudflare など）を通った要求は、接続元が 127.0.0.1 に見えても、実際は外から来ている。
+  // 転送役が付ける見出しが1つでもあれば、このPC自身からではないとみなす（初回設定を外の人に取られないように）
+  if (PROXY_HEADERS.some((h) => req.headers[h] !== undefined)) return false;
   return LOOPBACK_ADDR.has(String(req.socket.remoteAddress ?? "")) && LOOPBACK_HOST.has(String(req.hostname ?? "").toLowerCase());
 }
 
