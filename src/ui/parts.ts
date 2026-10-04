@@ -47,6 +47,25 @@ export function statusCell(j: Job): string {
   return statusTag(j.status);
 }
 
+/** 送信結果をお知らせの文にする。内部の値（sent / failed など）はそのまま出さず、
+ *  日本語の状態名と結果の1行目にする（「テスト送信の結果: sent」と出ていた） */
+export function resultNote(r: { status: string; result_text?: string | null }): string {
+  const first = String(r.result_text ?? "").split("\n")[0].trim().slice(0, 60);
+  return `${STATUS_LABEL[r.status as JobStatus] ?? "状態不明"}${first ? `（${first}）` : ""}`;
+}
+
+/** ボタンが2つ以上あるフォームの二重送信防止（data-once を付けたフォーム）。
+ *  共通の data-busy は押したボタンを送信の瞬間に無効にするため、ボタンの name/value（例: 「入力だけ試す」の dry=1）が
+ *  送られなくなる。ここでは2回目の送信だけを止め、ボタンの無効化は送信の後に回す */
+export const ONCE_SNIPPET = `<script>
+document.addEventListener("submit",(e)=>{const f=e.target;if(!(f instanceof HTMLFormElement)||!f.hasAttribute("data-once"))return;
+if(f.dataset.sent==="1"){e.preventDefault();return;}f.dataset.sent="1";const b=e.submitter;
+if(b){b.dataset.label=b.innerHTML;b.innerHTML='<span class="spin"></span>'+(b.dataset.busytext||"処理中…");}
+setTimeout(()=>f.querySelectorAll("button").forEach((x)=>{x.disabled=true}),0);},true);
+// 戻るボタンで戻ってきたときに押せないままにならないように
+addEventListener("pageshow",()=>document.querySelectorAll("form[data-once]").forEach((f)=>{delete f.dataset.sent;f.querySelectorAll("button").forEach((x)=>{x.disabled=false;if(x.dataset.label)x.innerHTML=x.dataset.label})}));
+</script>`;
+
 // ---- 表示用の日本語（#102）。内部の値（paused / template など）をそのまま画面に出さない ----
 export const CAMPAIGN_STATUS_LABEL: Record<string, string> = { draft: "準備中", running: "送信中", paused: "一時停止", done: "完了" };
 

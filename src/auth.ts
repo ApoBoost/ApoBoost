@@ -63,9 +63,9 @@ export function listUsers(): User[] {
   return getDb().prepare("SELECT * FROM users ORDER BY id").all() as User[];
 }
 
-/** 起動時: ユーザーが1人もいなければ管理者を作る。パスワードは ADMIN_PASSWORD か自動生成 */
 /** 最初の管理者のログインID。どのPCも「admin」だと、同じIDを狙われやすく、誰のアカウントか分からなくなるため、
- *  そのパソコンのユーザー名（例: johnnydeppstreasures）から作る。使えない場合はパソコン名、どちらも駄目なら admin */
+ *  そのパソコンのユーザー名（例: johnnydeppstreasures）から作る。使えない場合はパソコン名、どちらも駄目なら admin。
+ *  初回設定の画面では、この値を入力欄の初期値として出す */
 export function defaultAdminUsername(): string {
   const clean = (v: string) => v.normalize("NFKC").toLowerCase().replace(/[^a-z0-9._-]/g, "");
   const candidates = [os.userInfo?.().username ?? "", os.hostname().split(".")[0] ?? ""];
@@ -76,14 +76,45 @@ export function defaultAdminUsername(): string {
   return "admin";
 }
 
+/** 起動時: ユーザーが1人もいないとき、環境変数 ADMIN_USER / ADMIN_PASSWORD が渡されていれば管理者を作る。
+ *  渡されていなければ作らない（画面の初回設定で本人に決めてもらう）。
+ *  以前は自動で作ってターミナルにだけ表示していたが、黒い画面を読み飛ばしてログインできない問い合わせが多かったため */
 export function ensureFirstAdmin(): { username: string; password: string } | null {
-  const db = getDb();
-  const n = (db.prepare("SELECT COUNT(*) n FROM users").get() as { n: number }).n;
-  if (n > 0) return null;
-  const username = (process.env.ADMIN_USER ?? defaultAdminUsername()).toLowerCase();
-  const password = process.env.ADMIN_PASSWORD ?? randomPassword();
+  if (!process.env.ADMIN_USER && !process.env.ADMIN_PASSWORD) return null;
+  if (!needsFirstSetup()) return null;
+  const username = (process.env.ADMIN_USER || defaultAdminUsername()).toLowerCase();
+  const password = process.env.ADMIN_PASSWORD || randomPassword();
   createUser(username, password, { role: "admin", displayName: "管理者", mustChange: !process.env.ADMIN_PASSWORD });
   return { username, password };
+}
+
+// ---- 初回設定（管理者がまだいないとき）----
+// 一度でもユーザーができたら0人に戻ることはない（削除は無く停止だけ）ので、「いる」と分かったら覚えておき、毎回数えない
+let hasUsers = false;
+export function needsFirstSetup(): boolean {
+  if (hasUsers) return false;
+  const n = (getDb().prepare("SELECT COUNT(*) n FROM users").get() as { n: number }).n;
+  if (n > 0) hasUsers = true;
+  return !hasUsers;
+}
+
+const LOOPBACK_ADDR = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+const LOOPBACK_HOST = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+/** このPC自身から開いているか。初回設定は「先に開いた人が管理者になる」ため、同じWi-Fiの他人に取られないよう本人のPCに限る。
+ *  接続元だけでなく Host も見るのは、悪意のあるサイトが名前の書き換え（DNSリバインディング）で localhost を叩くのを防ぐため */
+export function isLocalRequest(req: Request): boolean {
+  return LOOPBACK_ADDR.has(String(req.socket.remoteAddress ?? "")) && LOOPBACK_HOST.has(String(req.hostname ?? "").toLowerCase());
+}
+
+/** 初回設定で最初の管理者を作る。2つの画面から同時に送られても1人しか作らないよう、数え直しと作成を1つの処理で行う */
+export function createFirstAdmin(username: string, password: string): User {
+  const db = getDb();
+  return db.transaction(() => {
+    if (!needsFirstSetup()) throw new Error("管理者はすでに設定されています。ログイン画面からログインしてください");
+    const u = createUser(username, password, { role: "admin", displayName: "管理者", mustChange: false });
+    hasUsers = true;
+    return u;
+  })();
 }
 
 // ---- セッション ----
@@ -113,8 +144,8 @@ export function endSession(req: Request, res: Response) {
 
 export type AuthedRequest = Request & { user?: User };
 
-/** 認証が要らないパス（ログイン画面・配信停止リンク） */
-const PUBLIC_PATHS = [/^\/login$/, /^\/logout$/, /^\/unsubscribe\//, /^\/healthz$/];
+/** 認証が要らないパス（ログイン画面・初回設定・配信停止リンク）。/welcome は経路の側で「管理者がまだいない・このPCから」を確かめる */
+const PUBLIC_PATHS = [/^\/login$/, /^\/logout$/, /^\/welcome$/, /^\/unsubscribe\//, /^\/healthz$/];
 
 export function authMiddleware(req: AuthedRequest, res: Response, next: NextFunction) {
   const db = getDb();
@@ -131,6 +162,8 @@ export function authMiddleware(req: AuthedRequest, res: Response, next: NextFunc
     if (req.user.must_change && !/^\/(password|logout)$/.test(req.path)) return res.redirect("/password");
     return next();
   }
+  // 管理者がまだいない: このPCから開いたときは、どの画面を開いても初回設定へ案内する（ログイン画面で止まらないように）
+  if (needsFirstSetup() && isLocalRequest(req) && !/^\/(welcome$|unsubscribe\/)/.test(req.path)) return res.redirect("/welcome");
   if (PUBLIC_PATHS.some((re) => re.test(req.path))) return next();
   const back = encodeURIComponent(req.originalUrl || "/");
   return res.redirect(`/login?next=${back}`);

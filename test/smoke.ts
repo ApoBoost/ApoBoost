@@ -161,6 +161,21 @@ try {
     const list = await (await get("/campaigns")).text();
     if (!list.includes("一時停止")) ng("キャンペーン一覧の状態が日本語になっていません");
   }
+  // ---- お知らせの行き先と、取り込みプレビューの見出し表示 ----
+  {
+    const post = (p: string, body: string) => fetch(`${BASE}${p}`, { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body });
+    // 行き先に ?kind= が付いていても、お知らせが出ること（以前は出なかった）
+    await post("/todo/bulk", "action=dismiss&ids=4&back=%2Ftodo%3Fkind%3Dcaptcha");
+    if (!(await (await get("/todo?kind=captcha")).text()).includes("見送りにしました")) ng("行き先に ?kind が付くと、お知らせが出ません");
+    await post("/todo/bulk", "action=undismiss&ids=4&back=%2Ftodo");
+    await get("/todo");
+    // セミコロン区切り・表記ゆれの見出しを読み、読み取れた／使わなかった見出しを出す
+    const fd = new FormData();
+    fd.append("pasted", "法人名;ホームページURL;担当者\nスモーク取込;https://imp.example.test/;山田");
+    const pv = await (await fetch(`${BASE}/campaigns/1/import`, { method: "POST", headers: { cookie }, body: fd })).text();
+    if (!pv.includes("法人名 → 企業名") || !pv.includes("ホームページURL → 企業URL") || !pv.includes("使わなかった見出し")) ng("取り込みプレビューに見出しの読み取り結果がありません");
+    if ((await post("/campaigns/1/import-cancel", "")).status !== 302) ng("取り込みの取り消しが通りません");
+  }
   // ホームは、キャンペーンごとに進み具合と数字を出す
   {
     const home = await (await get("/")).text();
@@ -186,6 +201,70 @@ try {
   ng(String((e as Error).message ?? e));
 } finally {
   stop();
+}
+
+// ---- 初回設定（管理者がまだいないとき）----
+// 空のデータで起動し、このPC（127.0.0.1）から開くと管理者を決める画面に案内され、決めたらそのままログインできること。
+// ターミナルにだけ出していた初期パスワードを読み飛ばして入れない、をなくすための画面
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fo-smoke-first-"));
+  const port = PORT + 1000;
+  const base = `http://127.0.0.1:${port}`;
+  const env: NodeJS.ProcessEnv = { ...process.env, PORT: String(port), CLEAN_PORT: "0", GAME: "0", DATA_DIR: dir, FO_OPEN: "0", SUPPORT_URL: "" };
+  delete env.ADMIN_USER; delete env.ADMIN_PASSWORD; // 渡すと従来どおり自動で作ってしまうため
+  const c = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { env, stdio: ["ignore", "pipe", "pipe"] });
+  let log = "";
+  c.stdout.on("data", (d) => (log += d));
+  c.stderr.on("data", (d) => (log += d));
+  const form = (p: string, body: string, headers: Record<string, string> = {}) =>
+    fetch(`${base}${p}`, { method: "POST", redirect: "manual", headers: { "content-type": "application/x-www-form-urlencoded", ...headers }, body });
+  try {
+    let up = false;
+    for (let i = 0; i < 60 && !up; i++) {
+      try { await fetch(`${base}/login`, { redirect: "manual" }); up = true; } catch { await new Promise((r) => setTimeout(r, 500)); }
+    }
+    if (!up) throw new Error(`初回設定の確認用に起動できませんでした:\n${log.slice(-600)}`);
+    const home = await fetch(`${base}/`, { redirect: "manual" });
+    if (home.status !== 302 || home.headers.get("location") !== "/welcome") ng(`管理者がいないのに、初回設定に案内されません（HTTP ${home.status} → ${home.headers.get("location")}）`);
+    const page = await (await fetch(`${base}/welcome`)).text();
+    if (!page.includes("管理者のログインIDとパスワードを決めて") || !page.includes('name="password2"')) ng("初回設定の画面が出ていません");
+    if (!log.includes("管理者のログインIDとパスワードを決めて")) ng("ターミナルに初回設定の案内が出ていません");
+    // 別のサイトから送り込まれた送信では作らない
+    const evil = await form("/welcome", "username=evil&password=evil-pass-123&password2=evil-pass-123", { origin: "http://evil.example.test" });
+    if (evil.status !== 403) ng(`別サイトからの初回設定が通っています（HTTP ${evil.status}）`);
+    const mismatch = await form("/welcome", "username=owner&password=owner-pass-123&password2=other-pass-123", { origin: base });
+    if (mismatch.status !== 400 || !(await mismatch.text()).includes("一致しません")) ng("確認用パスワードが違うのに通っています");
+    const ok = await form("/welcome", "username=Owner&password=owner-pass-123&password2=owner-pass-123", { origin: base });
+    const ck = (ok.headers.get("set-cookie") ?? "").split(";")[0];
+    if (ok.status !== 302 || !ck) ng(`初回設定で管理者を作れません（HTTP ${ok.status}）`);
+    else {
+      const top = await fetch(`${base}/`, { headers: { cookie: ck }, redirect: "manual" });
+      if (top.status !== 200 || !(await top.text()).includes("ホーム")) ng(`初回設定のあと、ログインした状態でホームが開きません（HTTP ${top.status}）`);
+      const again = await fetch(`${base}/welcome`, { redirect: "manual" });
+      if (again.status !== 302) ng("管理者を決めたあとも、初回設定の画面が開けてしまいます");
+      const relogin = await form("/login", "username=owner&password=owner-pass-123");
+      if (relogin.status !== 302) ng("初回設定で決めたID・パスワードでログインできません");
+    }
+    // 二重起動: 同じポートでもう1つ起動したら、すぐ「すでに起動しています」と言って正常終了（終了コード0）し、動いている方は止まらない。
+    // 0 以外で終わると Mac の自動起動（launchd）が10秒おきに起動し直し、ポートを使用中のまま永久に繰り返す
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "fo-smoke-second-"));
+    const c2 = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { env: { ...env, DATA_DIR: dir2 }, stdio: ["ignore", "pipe", "pipe"] });
+    let log2 = "";
+    c2.stdout.on("data", (d) => (log2 += d));
+    c2.stderr.on("data", (d) => (log2 += d));
+    const code2 = await Promise.race([
+      new Promise<number | null>((r) => c2.once("exit", (code) => r(code))),
+      new Promise<string>((r) => setTimeout(() => r("timeout"), 30_000)),
+    ]);
+    if (code2 === "timeout") { ng("二重起動したあと、30秒たっても終了しません"); try { c2.kill("SIGKILL"); } catch { /* すでに終了 */ } }
+    else if (code2 !== 0) ng(`二重起動の終了コードが 0 ではありません（${code2}）`);
+    else if (!log2.includes("すでに起動しています")) ng("二重起動のとき「すでに起動しています」と案内されません");
+    if (!(await fetch(`${base}/login`)).ok) ng("二重起動したら、動いていた方が止まってしまいました");
+  } catch (e) {
+    ng(String((e as Error).message ?? e));
+  } finally {
+    try { c.kill("SIGKILL"); } catch { /* すでに終了 */ }
+  }
 }
 
 if (failed) { console.error(`\nsmoke: ${failed}件 失敗`); process.exit(1); }

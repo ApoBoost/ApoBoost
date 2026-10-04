@@ -28,16 +28,16 @@ import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel
 import { errorPage } from "../ui/layout.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
-import { app, upload, db, redirectWith, takeFlash, me, appState, navUser, scope, fetchGoogleSheetCsv, suppImports, suppSyncKey, loadSuppSync, saveSuppSync, syncSuppressionsFor } from "../app/context.js";
+import { app, upload, db, safeAsync, adminOnly, redirectWith, takeFlash, me, appState, navUser, scope, fetchGoogleSheetCsv, suppImports, suppSyncKey, loadSuppSync, saveSuppSync, syncSuppressionsFor } from "../app/context.js";
 
 /** この画面の経路を登録する。server.ts から、ログイン確認などの共通処理のあとに呼ばれる */
 export function register(): void {
 // 返信の自動確認を今すぐ実行（ふだんは15分ごとに裏で動く）
-app.post("/replies/check", async (req, res) => {
+app.post("/replies/check", safeAsync(async (req, res) => {
   const back = /^\/campaigns\/\d+$/.test(String(req.body.back ?? "")) ? String(req.body.back) : "/";
-  const r = await checkReplies().catch((e) => ({ recorded: 0, errors: [String((e as Error)?.message ?? e)] }));
+  const r = await checkReplies().catch((e) => ({ recorded: 0, errors: [jpError(e, 160)] }));
   redirectWith(res, back, r.errors.length ? `返信の確認でエラー: ${r.errors.join(" / ")}` : `返信を確認しました（新しく記録した反応 ${r.recorded}件）`);
-});
+}, () => "/"));
 
 app.get("/suppressions", (req, res) => {
   const sc = scope(req);
@@ -84,8 +84,9 @@ app.post("/suppressions/sync-url", (req, res) => {
   redirectWith(res, "/suppressions", "共有リストを登録しました。1日1回、自動で取り込みます（今すぐ取り込むこともできます）");
 });
 
-// チーム共有の設定（#78 #79）
-app.post("/share/settings", (req, res) => {
+// チーム共有の設定（#78 #79）。全員の送信済み・除外の行き先を決める設定なので管理者だけ
+// （一般ユーザーが書き込み先を自分のURLに変えると、全員の送信記録がそこへ送られてしまう）
+app.post("/share/settings", adminOnly("/suppressions"), (req, res) => {
   const pull = String(req.body.sent_pull_url ?? "").trim();
   const push = String(req.body.push_url ?? "").trim();
   if (pull && !/spreadsheets\/d\//.test(pull)) return redirectWith(res, "/suppressions", "①はGoogleスプレッドシートの共有URL（/spreadsheets/d/… を含む）を貼ってください");
@@ -96,33 +97,33 @@ app.post("/share/settings", (req, res) => {
   redirectWith(res, "/suppressions", pull || push ? "チーム共有の設定を保存しました（1日1回、自動で同期します）" : "チーム共有の設定を解除しました");
 });
 
-app.post("/share/sync-now", async (req, res) => {
+app.post("/share/sync-now", safeAsync(async (req, res) => {
   const msg = await syncShare();
   redirectWith(res, "/suppressions", msg ? `同期しました: ${msg}` : "共有の設定がありません");
-});
+}, () => "/suppressions", "同期できませんでした"));
 
-// 送りたくない業種・キーワード（#87）// 送りたくない業種・キーワード（#87）
-app.post("/suppressions/industries", (req, res) => {
+// 送りたくない業種・キーワード（#87）。全員の取り込みに効くので管理者だけ
+app.post("/suppressions/industries", adminOnly("/suppressions"), (req, res) => {
   const words = String(req.body.industries ?? "").split(/[\n,、，]/).map((w) => w.trim()).filter((w) => w.length >= 2);
   saveSetting(S.excludedIndustries, words.join("\n"));
   redirectWith(res, "/suppressions", words.length ? `${words.length}件のキーワードを除外に設定しました（取り込み時と送信直前に確認します）` : "除外キーワードを解除しました");
 });
 
-// 返信の自動判定が覚えた言い回しを消す（#25）
-app.post("/reply-rules/:id/delete", (req, res) => {
+// 返信の自動判定が覚えた言い回しを消す（#25）。全員の自動判定に効くので管理者だけ
+app.post("/reply-rules/:id/delete", adminOnly("/suppressions"), (req, res) => {
   db.prepare("DELETE FROM reply_rules WHERE id=?").run(Number(req.params.id));
   clearReplyRulesCache();
   redirectWith(res, "/suppressions", "覚えた言い回しを削除しました");
 });
 
 // 今すぐ取り込む
-app.post("/suppressions/sync-now", async (req, res) => {
+app.post("/suppressions/sync-now", safeAsync(async (req, res) => {
   const msg = await syncSuppressionsFor(me(req).id);
   redirectWith(res, "/suppressions", `共有リストから取り込みました: ${msg}`);
-});
+}, () => "/suppressions", "取り込めませんでした"));
 
 /** 除外リストをCSVでまとめて追加 */
-app.post("/suppressions/import", upload.single("csv"), async (req, res) => {
+app.post("/suppressions/import", upload.single("csv"), safeAsync(async (req, res) => {
   const pasted = String(req.body.pasted ?? "").trim();
   const sheetUrl = String(req.body.sheet_url ?? "").trim();
   try {
@@ -136,9 +137,9 @@ app.post("/suppressions/import", upload.single("csv"), async (req, res) => {
     suppImports.set(me(req).id, r);
     res.redirect("/suppressions");
   } catch (e) {
-    redirectWith(res, "/suppressions", `取り込みエラー: ${String((e as Error).message)}`);
+    redirectWith(res, "/suppressions", `取り込みエラー: ${jpError(e, 200)}`);
   }
-});
+}, () => "/suppressions"));
 
 app.post("/suppressions", (req, res) => {
   const raw = String(req.body.domain ?? "").trim();
@@ -150,8 +151,9 @@ app.post("/suppressions", (req, res) => {
     db.prepare("INSERT INTO form_suppressions(company_name, domain, email, reason, owner_user_id) VALUES(?,NULL,?,?,?)").run(company, email, reason, me(req).id);
     return redirectWith(res, "/suppressions", `${company || email} を除外リストに追加しました`);
   }
-  const domain = domainOf(raw) || raw.toLowerCase();
-  if (!domain) return redirectWith(res, "/suppressions", "ドメインかメールアドレスを入れてください");
+  // 「なし」「-」などはドメインにしない（以前は意味の無い文字列がそのまま登録されていた）
+  const domain = domainOf(raw);
+  if (!domain) return redirectWith(res, "/suppressions", raw ? `「${raw.slice(0, 40)}」はドメインとして読めませんでした。example.co.jp のようなドメインか、URL・メールアドレスを入れてください` : "ドメインかメールアドレスを入れてください");
   const dup = db.prepare("SELECT 1 FROM form_suppressions WHERE domain=?").get(domain);
   if (dup) return redirectWith(res, "/suppressions", `${domain} はすでに登録されています`);
   db.prepare("INSERT INTO form_suppressions(company_name, domain, reason, owner_user_id) VALUES(?,?,?,?)").run(company, domain, reason, me(req).id);

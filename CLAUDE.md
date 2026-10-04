@@ -19,7 +19,8 @@ npx playwright install chromium  # 初回。フォーム操作用のブラウザ
 npm start                        # → http://localhost:3210
 ```
 
-初回起動時に管理者アカウントがターミナルに1度だけ表示されます。`ADMIN_USER` / `ADMIN_PASSWORD` を環境変数で渡せば自分で決められます。
+初回は、起動したPCのブラウザに「管理者のIDとパスワードを決める」画面（`/welcome`）が出ます（このPC自身から開いたときだけ。ほかの端末からは出ません）。`ADMIN_USER` / `ADMIN_PASSWORD` を環境変数で渡せば、画面を出さずにその値で作ります。
+同じフォルダで2つ目を起動しても、「すでに起動しています」と出てブラウザを開くだけで終わります（送信中の仕事には触りません）。
 `npm start` は `scripts/run.mjs` 経由で、アップデート後の自動再起動（終了コード75）に対応します。`npm run dev` は素の起動で、再起動しません。
 
 環境変数: `PORT`(3210) / `DATA_DIR`(./data) / `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` / `CHROMIUM_PATH` / `HEADLESS=0`(ブラウザを見ながらデバッグ) / `COOKIE_SECURE`

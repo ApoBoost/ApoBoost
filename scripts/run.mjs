@@ -13,6 +13,15 @@ function setTabTitle(title) {
 }
 setTabTitle("ApoBoost");
 
+// Node.js 20 未満では、使っている部品（better-sqlite3・Playwright・メール送受信）が動かず、
+// 英語の分かりにくいエラーで止まる。起動の前に日本語で止める（ダブルクリック起動のファイルでも同じ確認をしている）
+const NODE_MAJOR = Number(process.versions.node.split(".")[0]);
+if (NODE_MAJOR < 20) {
+  console.error(`\nNode.js が古いため ApoBoost を起動できません（いま: v${process.versions.node} / 必要: 20 以上）。`);
+  console.error("https://nodejs.org/ から「LTS」と書かれた方を入れ直して、もう一度起動してください。\n");
+  process.exit(1);
+}
+
 let current = null;
 function start() {
   // npx tsx 経由だと、終了の合図を受けた tsx が数秒でアプリを強制終了し、送信の途中で切れていた。

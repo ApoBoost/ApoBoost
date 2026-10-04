@@ -42,16 +42,108 @@ export const db = getDb();
 
 export const flashes = new Map<string, string>();
 
+/** お知らせを取り出すときの鍵＝「ユーザーID:パス」。
+ *  行き先の文字列そのままを鍵にしていたころは、`/todo?kind=captcha` や `/jobs/5#fix` に送ると
+ *  表示側（req.path は ? と # を含まない）と食い違って出なかった。ユーザー別にしないと、
+ *  同じ画面を開いた別の人に他人のお知らせが出ることもあった。 */
+export function flashKey(userId: number | undefined, to: string): string {
+  const p = String(to ?? "").split(/[?#]/)[0] || "/";
+  return `${userId ?? 0}:${p}`;
+}
+
+/** お知らせを積む。取り出されないまま溜まり続けないよう、古いものから捨てる */
+export function setFlash(req: express.Request, to: string, msg: string) {
+  const key = flashKey((req as AuthedRequest).user?.id, to);
+  flashes.delete(key); // 入れ直して「新しい」側に並べる
+  flashes.set(key, msg);
+  while (flashes.size > 1000) flashes.delete(flashes.keys().next().value as string);
+}
+
 export function redirectWith(res: express.Response, to: string, msg: string) {
-  flashes.set(to, msg);
+  setFlash(res.req, to, msg);
   res.redirect(to);
 }
 
 export function takeFlash(req: express.Request) {
-  const m = flashes.get(req.path) ?? "";
-  flashes.delete(req.path);
+  const own = flashKey((req as AuthedRequest).user?.id, req.path);
+  // ログイン前に積んだもの（ユーザー不明＝0）も拾う
+  const anon = flashKey(undefined, req.path);
+  const m = flashes.get(own) ?? flashes.get(anon) ?? "";
+  flashes.delete(own);
+  flashes.delete(anon);
   return m;
 }
+
+/** async の経路を包む。Express 4 は async 関数の失敗（reject）を拾わないため、
+ *  途中で例外が出ると応答が返らず、画面が「読み込み中」のまま固まっていた。
+ *  back を渡せばその画面に戻して日本語のお知らせを出し、無ければ共通のエラーページ（server.ts）に回す */
+export function safeAsync(
+  fn: (req: express.Request, res: express.Response, next: express.NextFunction) => unknown,
+  back?: (req: express.Request) => string,
+  label = "処理の途中でエラーが起きました",
+): express.RequestHandler {
+  return (req, res, next) => {
+    Promise.resolve()
+      .then(() => fn(req, res, next))
+      .catch((e) => {
+        if (res.headersSent) { logError("page", `${req.method} ${req.path}: ${jpError(e, 300)}`); return; }
+        if (!back) return next(e);
+        logError("page", `${req.method} ${req.path}: ${jpError(e, 300)}`);
+        redirectWith(res, back(req), `${label}: ${jpError(e, 160)}`);
+      });
+  };
+}
+
+/** この送り方でブラウザが要るか。メールはブラウザを使わない（起動しないぶん速く、ブラウザが入っていないPCでも送れる）。
+ *  ただし文面をAIで書くモードは、相手のHPを読むのにブラウザを使うのでメールでも起動する
+ *  （起動しないと「文面生成エラー」になる。worker.ts の getSiteInfo と同じ条件） */
+export function needsBrowser(channel: string, campaignId: number): boolean {
+  if (channel !== "email") return true;
+  const c = db.prepare("SELECT mode FROM form_campaigns WHERE id=?").get(campaignId) as { mode: string } | undefined;
+  return (c?.mode === "ai" || c?.mode === "hybrid") && activeProvider() !== "none";
+}
+
+/** 全体に効く設定を、管理者だけが変えられるようにする。
+ *  requireAdmin と違って行き止まりの403にせず、元の画面に戻して理由を出す
+ *  （除外リストの画面などは一般ユーザーにもフォームが見えているため） */
+export function adminOnly(back: string, msg = "この設定は全員に効くため、管理者だけが変更できます。管理者に依頼してください") {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if ((req as AuthedRequest).user?.role === "admin") return next();
+    redirectWith(res, back, msg);
+  };
+}
+
+/** キャンペーンの数値の入力を読む。
+ *  以前は `Number(x) || 既定値` で、0（例: メールは送らない＝メール上限0、0時開始）が既定値に戻っていた。
+ *  空欄・数字でないものは fallback（新規は既定値、編集は今の値）。範囲外は端に寄せる。
+ *  開始≧終了の時間帯は送る時間が無くなるので保存せず、fallback の時間帯に戻して理由を返す。
+ *  再送禁止期間は、空欄を「0＝制限なし」にしない（安全装置が知らないうちに外れないように） */
+export function campaignNumbers(b: Record<string, unknown>, fb: { daily_limit: number; email_daily_limit: number; send_window_start: number; send_window_end: number; resend_days: number }) {
+  const num = (v: unknown, def: number, min: number, max: number) => {
+    const s = String(v ?? "").trim();
+    const x = s === "" ? NaN : Number(s.normalize("NFKC"));
+    return Number.isFinite(x) ? Math.min(max, Math.max(min, Math.round(x))) : def;
+  };
+  const out = {
+    daily_limit: num(b.daily_limit, fb.daily_limit, 0, 100000),
+    email_daily_limit: num(b.email_daily_limit, fb.email_daily_limit, 0, 100000),
+    send_window_start: num(b.send_window_start, fb.send_window_start, 0, 23),
+    send_window_end: num(b.send_window_end, fb.send_window_end, 1, 24),
+    resend_days: num(b.resend_days, fb.resend_days, 0, 3650),
+    note: "",
+  };
+  if (out.send_window_start >= out.send_window_end) {
+    // 戻し先（今の値）まで壊れていたら既定の 9〜18時にする
+    const ok = fb.send_window_start < fb.send_window_end;
+    const s0 = ok ? fb.send_window_start : 9, e0 = ok ? fb.send_window_end : 18;
+    out.note = `送信時間帯の開始（${out.send_window_start}時）が終了（${out.send_window_end}時）と同じか後になっていたため、${s0}〜${e0}時にしました。変えるときは「開始 < 終了」で入れ直してください`;
+    out.send_window_start = s0;
+    out.send_window_end = e0;
+  }
+  return out;
+}
+
+export const CAMPAIGN_NUM_DEFAULTS = { daily_limit: 300, email_daily_limit: 100, send_window_start: 9, send_window_end: 18, resend_days: 90 };
 
 // ---- ログイン中のユーザー ----
 export function me(req: express.Request) {
@@ -435,7 +527,7 @@ export async function smtpCheckNote(senderId: number): Promise<string> {
   const bad = checkSmtpPassword(sd);
   if (bad) return `／メールの設定を確認してください: ${bad}`;
   try {
-    await Promise.race([testSmtp(sd), new Promise((_, rej) => setTimeout(() => rej(new Error("ETIMEDOUT 接続の確認が10秒で終わりませんでした")), 10_000))]);
+    await testSmtp(sd, 10_000); // 10秒で打ち切る（保存のたびに画面が固まらないように）
     clearEmailPause(sd);
     return `／メールの接続テストに成功しました（${sd.smtp_user}）`;
   } catch (e) {
@@ -464,8 +556,11 @@ export function validateSender(body: Record<string, unknown>): string | null {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return "メールアドレスの形式が正しくありません（例: sales@example.co.jp）";
   const re = g("reply_email");
   if (re && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(re)) return "返信受付メールの形式が正しくありません";
-  const tel = g("tel");
-  if (tel && !/^[0-9０-９\-ー－()（） 　]+$/.test(tel)) return "電話番号は数字とハイフンで入力してください";
+  // 電話番号は、全角数字・全角括弧や、見た目がハイフンの別の文字（‐ ‑ – — ― − ー ｰ －）で入力されることが多い。
+  // 弾かずに半角の数字とハイフンにそろえてから確かめ、そろえた値を保存する（フォームの数字だけの欄にもそのまま入れられるように）
+  const tel = g("tel").normalize("NFKC").replace(/[\u2010-\u2015\u2212\u30fc\uff70\ufe63\uff0d]/g, "-").replace(/\s+/g, " ").trim();
+  if ("tel" in body) body.tel = tel;
+  if (tel && !/^\+?[0-9\-() ]+$/.test(tel)) return "電話番号は数字とハイフンで入力してください（例: 03-1234-5678）";
   return null;
 }
 

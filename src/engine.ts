@@ -6,7 +6,7 @@ import os from "node:os";
 import { SCREENSHOT_DIR, type SenderProfile, type JobStatus } from "./db.js";
 import { detectRefusal, CAPTCHA_CHECK_SCRIPT, CHALLENGE_RE } from "./detect.js";
 import { findContactForm, detectFormService } from "./formFinder.js";
-import { collectFields, fillFields, clickNextButton, judgeOutcome, classify, hasHiddenTextarea, pageText, collectUnknownQuestions, toPendingQuestions, aiAnswerUnknownFields, allSubmitButtonsDisabled, fillRequiredLeftovers, fillAriaChoices, describeInvalidFields, clickBackButton, type PendingQuestion, type FieldInfo } from "./formFiller.js";
+import { collectFields, fillFields, clickNextButton, judgeOutcome, classify, hasHiddenTextarea, pageText, collectUnknownQuestions, toPendingQuestions, aiAnswerUnknownFields, allSubmitButtonsDisabled, fillRequiredLeftovers, fillAriaChoices, describeInvalidFields, clickBackButton, checkConfirmAgreements, type PendingQuestion, type FieldInfo } from "./formFiller.js";
 import { extractLegalName } from "./company.js";
 import { llm } from "./message.js";
 
@@ -31,7 +31,22 @@ export type SubmitResult = {
   screenshot: string;
   log: string[];
   pendingQuestions?: PendingQuestion[]; // 要確認: 利用者に画面で選んでもらう質問
+  // 送信（または確認）ボタンを1回でも押したか。押したあとの失敗は相手に届いている可能性があるので、自動で送り直してはいけない。
+  // 例外で終わった場合も正しく入る（worker の再試行の判断に使える）
+  pressed?: boolean;
 };
+
+/** フォームのあるフレーム（iframe の埋め込みフォーム）の中に、見える CAPTCHA があるか。
+ *  親ページの querySelectorAll は iframe の中を見ないので、iframe 内の reCAPTCHA / hCaptcha を見落として送っていた */
+async function captchaIn(page: Page, target: Page | Frame): Promise<string | null> {
+  const top = (await page.evaluate(CAPTCHA_CHECK_SCRIPT).catch(() => null)) as string | null;
+  if (top || target === page) return top;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // 返ってこないフレームで止まらないよう5秒で見切る
+    return (await Promise.race([target.evaluate(CAPTCHA_CHECK_SCRIPT).catch(() => null), new Promise<null>((res) => { timer = setTimeout(() => res(null), 5000); })])) as string | null;
+  } finally { if (timer) clearTimeout(timer); }
+}
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
@@ -140,6 +155,7 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
   const dialogs: string[] = [];
   page.on("dialog", (d) => { dialogs.push(d.message().replace(/\s+/g, " ").trim().slice(0, 120)); d.accept().catch(() => {}); });
   const shot = path.join(SCREENSHOT_DIR, `job-${input.jobId}.png`);
+  let pressed = false; // 送信・確認ボタンを押したか（押したあとの例外は「送信後の判定不能」にして、自動で送り直させない）
   const done = async (status: JobStatus, detail: string, pendingQuestions?: PendingQuestion[]): Promise<SubmitResult> => {
     let screenshot = "";
     try {
@@ -148,7 +164,7 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
     } catch {}
     const finalUrl = page.url();
     await ctx.close().catch(() => {});
-    return { status, detail, finalUrl, screenshot, log, pendingQuestions };
+    return { status, detail, finalUrl, screenshot, log, pendingQuestions, pressed };
   };
 
   try {
@@ -198,6 +214,11 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
       fields = await collectFields(target);
     }
     if (!fields.some((f) => classify(f) === "message") && !(service && fields.length >= 3)) return done("skip_no_form", "本文（textarea）欄が無い");
+    // iframe の埋め込みフォームなら、その中の CAPTCHA も見る（親ページからは見えない）
+    if (target !== page) {
+      const capF = await captchaIn(page, target);
+      if (capF) return done("skip_captcha", `CAPTCHAあり（埋め込みフォームの中） (${capF})`);
+    }
 
     const report = await fillFields(target, fields, { sender: input.sender, subject: input.subject, message: input.message });
     log.push(`filled: ${report.filled.join(",")}`);
@@ -257,6 +278,24 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
 
     const fieldCountBefore = fields.length;
     const urlBefore = page.url(); // 送信ボタンを押す前のURL（ページが切り替わったかの判定に使う）
+    // 結果の判定。押した直後でページが切り替わっている途中だと evaluate が落ちる（Execution context was destroyed）ので、
+    // 読み込みを待って1回だけやり直す。以前はここで例外になり、送信済みかもしれないのに自動の再試行に回っていた（二重送信）
+    const judge = async (afterSubmit: boolean) => {
+      try { return await judgeOutcome(page, fieldCountBefore, afterSubmit, textBefore, urlBefore, target); }
+      catch {
+        await page.waitForLoadState("domcontentloaded", { timeout: 8000 }).catch(() => {});
+        await page.waitForTimeout(1500);
+        return judgeOutcome(page, fieldCountBefore, afterSubmit, textBefore, urlBefore, target);
+      }
+    };
+    // 確認画面にだけある同意・必須のチェックを入れる（本文欄が無いと fillFields は何もしない）
+    const confirmPageChecks = async () => {
+      const more = await collectFields(target).catch(() => [] as FieldInfo[]);
+      if (more.length && !more.some((f) => classify(f) === "message")) await checkConfirmAgreements(target, more, log);
+    };
+    // エラー文に合わせた電話・郵便番号の書き方（「ハイフンなしで」「半角数字のみ」／「ハイフンを入れて」）
+    const numFormatOf = (detail: string) => /(ハイフン(なし|無し|不要|を?(入れ|含め|付け)(ず|ない))|ハイフン抜き|半角数字のみ|半角数字で|数字のみ|数字以外)/.test(detail) ? "digits" as const
+      : /ハイフン(\s*[（(]?[-－ー]?[）)]?\s*)?(を|も)?(入れ|含め|付け|区切)|ハイフン(あり|付き)/.test(detail) ? "hyphen" as const : undefined;
     let refilled = false; // 入力エラー後の埋め直しは1回だけ
     let advanced = false; // 確認ボタンを押して、確認画面へ進めたか（進めたあとは「送信」を優先して押す）
     let stuck = 0; // 確認ボタンを押しても入力画面のまま、が続いた回数
@@ -265,12 +304,13 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
       dialogs.length = 0;
       const urlAtRound = page.url();
       const kind = await clickNextButton(target, page, log, { preferSubmit: advanced });
+      if (kind !== "none") pressed = true;
       // ボタンを押したときにサイトが出した警告（alert）のうち、入力の不備を言っているもの
       const warned = dialogs.find((m) => /(入力|記入|選択|必須|未入力|正しく|エラー|チェック|同意|ください|下さい)/.test(m) && !/よろしい(です|でしょう)か/.test(m));
       if (warned) log.push(`サイトの警告: ${warned}`);
       if (kind === "none") {
         // 確認ボタンを押した先が、エラーや拒否のページだった（入力欄も送信ボタンも無い）場合は、その内容を理由にする
-        const why = await judgeOutcome(page, fieldCountBefore, false, textBefore, urlBefore);
+        const why = await judge(false);
         log.push(`judge[${round}]: ${why.status} ${why.detail}（ボタンなし）`);
         // 入力エラーのページなら、前の画面に戻って（電話番号なども入れて）1回だけやり直す
         if (why.status === "failed" && why.detail.startsWith("入力エラー") && !refilled && round < 3) {
@@ -279,7 +319,7 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
           log.push(`前の画面に戻って入れ直し: ${went ? "戻りました" : "戻れませんでした"}`);
           const again = await collectFields(target).catch(() => [] as FieldInfo[]);
           if (again.length) {
-            const r3 = await fillFields(target, again, { sender: input.sender, subject: input.subject, message: input.message }, { normalize: true });
+            const r3 = await fillFields(target, again, { sender: input.sender, subject: input.subject, message: input.message }, { normalize: true, numFormat: numFormatOf(why.detail) });
             log.push(`エラー後の自動修正・埋め直し: ${r3.filled.join(",") || "なし"}`);
             await fillRequiredLeftovers(target, log);
             await fillAriaChoices(target, log, { requiredOnly: false });
@@ -290,19 +330,20 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
         return done("failed", "送信ボタンが見つからない");
       }
       // 確認画面で CAPTCHA が出る場合
-      const cap2 = await page.evaluate(CAPTCHA_CHECK_SCRIPT).catch(() => null);
+      const cap2 = await captchaIn(page, target);
       if (cap2) {
         // 送信ボタンを押したら画像認証（reCAPTCHAのポップアップ）が出て止まったケースは未送信（sugoikaizen.com の実例）
         if (/bframe/.test(String(cap2))) return done("skip_captcha", `送信時に画像認証（reCAPTCHA）が表示され未送信 (${cap2})`);
         return done("skip_captcha", `確認画面にCAPTCHA (${cap2})`);
       }
-      let outcome = await judgeOutcome(page, fieldCountBefore, kind === "submit", textBefore, urlBefore);
+      let outcome = await judge(kind === "submit");
       if (outcome.status === "unsure" && warned) outcome = { status: "failed", detail: `入力エラー: ${warned}` };
       log.push(`judge[${round}]: ${outcome.status} ${outcome.detail}`);
       if (outcome.status === "sent") return done("sent", outcome.detail);
       if (outcome.status === "unsure" && outcome.detail.startsWith("確認画面")) {
         // ボタン名では確認ボタンと分からなかったが確認画面に進んでいた → 次のラウンドで「送信する」を押す
         log.push("確認画面を検知 → 送信ボタンを押す");
+        await confirmPageChecks();
         continue;
       }
       // サイトの側で断られた（スパム判定・403・サイトの不具合など）。入力を直しても通らないので、そのまま理由を返す
@@ -338,12 +379,13 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
           }
           // フリガナの文字種を指定された場合は、それに合わせる（#120）
           const kana = /ひらがな|平仮名/.test(outcome.detail) ? "hira" as const : /カタカナ|片仮名|全角カナ/.test(outcome.detail) ? "kata" as const : undefined;
-          const again = await collectFields(target);
+          const again = await collectFields(target).catch(() => [] as FieldInfo[]);
           // どの必須項目が空のまま弾かれたか（次のエラー表示に併記する）
           const emptyRequired = again.filter((f) => f.required && classify(f) !== "ignore" && !f.checked);
           if (again.length) {
-            const r3 = await fillFields(target, again, { sender: input.sender, subject: input.subject, message: input.message }, { normalize: true, kana });
-            log.push(`エラー後の自動修正・埋め直し: ${r3.filled.join(",") || "なし"}${kana ? `（フリガナは${kana === "hira" ? "ひらがな" : "カタカナ"}で入力）` : ""}`);
+            const numFormat = numFormatOf(outcome.detail);
+            const r3 = await fillFields(target, again, { sender: input.sender, subject: input.subject, message: input.message }, { normalize: true, kana, numFormat });
+            log.push(`エラー後の自動修正・埋め直し: ${r3.filled.join(",") || "なし"}${kana ? `（フリガナは${kana === "hira" ? "ひらがな" : "カタカナ"}で入力）` : ""}${numFormat ? `（電話・郵便番号は${numFormat === "digits" ? "数字だけ" : "ハイフンつき"}で入力）` : ""}`);
             // それでも空のまま残っている必須項目（判定できなかった質問など）を安全な値で埋める（#6）
             const extra = await fillRequiredLeftovers(target, log);
             // 見た目だけの選択肢（Googleフォーム等）で未選択のものに回答する（#119）
@@ -360,18 +402,19 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
       // 確認画面なら次のラウンドで送信ボタンを押す。確認画面の項目は再収集
       if (kind === "confirm") {
         // 確認画面に未入力の必須項目（同意チェック等）が残っていれば埋める
-        const more = await collectFields(target);
+        const more = await collectFields(target).catch(() => [] as FieldInfo[]);
         // 確認画面へ進めた（URLが変わった、または入力欄が減った）。次からは「送信」を優先して押す
         if (page.url() !== urlAtRound || more.length < fieldCountBefore) advanced = true;
         if (more.length) {
           const r2 = await fillFields(target, more, { sender: input.sender, subject: input.subject, message: input.message });
           if (r2.filled.length) log.push(`confirm-page filled: ${r2.filled.join(",")}`);
+          else if (!more.some((f) => classify(f) === "message")) await checkConfirmAgreements(target, more, log);
         }
         continue;
       }
       // submit を押したのに判定不能 → もう一度だけ待って判定
       await page.waitForTimeout(3000);
-      const again = await judgeOutcome(page, fieldCountBefore, true, textBefore, urlBefore);
+      const again = await judge(true);
       if (again.status === "sent") return done("sent", again.detail);
       // 届いたかどうかは会社によって違う（完了画面が出ている／確認画面で止まっている／画像認証で止まっている 等）ので、
       // 一律に送信済みにはしない（v0.3.51で一律送信済みにしたが取り消し）。自動再試行はしない（worker 側で除外）
@@ -380,6 +423,9 @@ export async function submitToCompany(browser: Browser, input: SubmitInput): Pro
     return done("failed", "確認画面を抜けられない");
   } catch (e) {
     log.push(`exception: ${String(e).slice(0, 200)}`);
+    // 送信・確認ボタンを押したあとの例外は、相手に届いている可能性がある。「例外」のままだと自動の再試行に回って二重送信になるので、
+    // 「送信後の判定不能」（自動では送り直さない）として返す
+    if (pressed) return done("failed", `送信後の判定不能: ボタンを押したあとに処理が止まり、届いたか確認できません（${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 100)}）`);
     return done("failed", `例外: ${String((e as Error).message ?? e).slice(0, 120)}`);
   }
 }

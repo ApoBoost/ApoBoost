@@ -15,54 +15,144 @@ export type CompanyRow = {
   representative: string;
 };
 
+// 見出しの別名。見出しは normHeader() でそろえてから「完全一致」で照らし合わせる
+// （部分一致にすると「担当者メール」を会社のメールに、「画像URL」を会社URLに取り違えるため）。
+// 並び順が優先順位: 同じ表に「会社名」と「店舗名」があれば「会社名」を使う
 const ALIASES: Record<keyof CompanyRow, string[]> = {
-  company_name: ["企業名", "会社名", "社名", "company", "company_name", "name"],
-  form_url: ["問い合わせフォーム", "お問い合わせフォーム", "フォームURL", "form_url", "contact_url", "form"],
-  site_url: ["企業URL", "URL", "ホームページ", "HP", "website", "site_url", "url"],
-  email: ["メール", "メールアドレス", "email", "mail", "e-mail"],
-  industry: ["大業界", "業界", "業種", "industry"],
-  sub_industry: ["小業界", "小業種", "sub_industry"],
-  prefecture: ["都道府県", "prefecture"],
-  representative: ["代表者名", "代表者", "代表", "representative"],
+  company_name: ["企業名", "会社名", "社名", "法人名", "商号", "企業名称", "会社名称", "法人名称", "company", "company_name", "companyname", "name", "屋号", "店舗名"],
+  form_url: ["問い合わせフォーム", "お問い合わせフォーム", "問合せフォーム", "お問合せフォーム", "問い合せフォーム", "お問い合せフォーム",
+    "フォームURL", "問い合わせフォームURL", "お問い合わせフォームURL", "問合せフォームURL", "お問合せフォームURL",
+    "問い合わせURL", "お問い合わせURL", "問合せURL", "お問合せURL", "問い合わせページ", "お問い合わせページ", "コンタクトURL",
+    "form_url", "contact_url", "inquiry_url", "form"],
+  site_url: ["企業URL", "URL", "ホームページ", "ホームページURL", "HP", "HP URL", "会社HP", "企業HP", "会社URL", "会社ホームページ", "企業ホームページ",
+    "公式サイト", "公式HP", "公式URL", "Webサイト", "ウェブサイト", "WebサイトURL", "ウェブサイトURL", "サイトURL", "web", "website", "site_url", "homepage", "url"],
+  email: ["メール", "メールアドレス", "Eメール", "Eメールアドレス", "代表メール", "代表メールアドレス", "会社メール", "会社メールアドレス",
+    "問い合わせメール", "お問い合わせメール", "email", "mail", "e-mail", "email_address", "mail_address"],
+  industry: ["大業界", "業界", "業種", "大業種", "業種分類", "industry"],
+  sub_industry: ["小業界", "小業種", "業種詳細", "sub_industry"],
+  prefecture: ["都道府県", "所在地都道府県", "prefecture"],
+  representative: ["代表者名", "代表者", "代表", "代表者氏名", "代表取締役", "representative"],
 };
 
-function pick(row: Record<string, string>, keys: string[]): string {
-  for (const k of keys) {
-    for (const col of Object.keys(row)) {
-      if (col.trim().toLowerCase() === k.toLowerCase()) return (row[col] ?? "").trim();
-    }
-  }
-  return "";
+/** 見出しをそろえる: 全角→半角（NFKC）・小文字・括弧の中身（「メールアドレス（代表）」の（代表））・空白・記号を除く。
+ *  「ホームページ URL」「HP_URL」「E-mail」「会社名※必須」なども同じ見出しとして読めるようにする */
+export function normHeader(h: string): string {
+  return String(h ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    // 括弧の中は外す。ただし読み仮名・英語表記の列（「会社名（カナ）」など）は別の列として残す
+    // （外すと「会社名」と同じ扱いになり、社名の代わりにフリガナを拾ってしまう）
+    .replace(/\(([^)]*)\)|\[([^\]]*)\]|【([^】]*)】|〔([^〕]*)〕|<([^>]*)>|〈([^〉]*)〉|《([^》]*)》/g, (_m, ...g: unknown[]) =>
+      READING_RE.test(g.slice(0, 7).filter((x) => typeof x === "string").join("")) ? "#kana" : "")
+    .replace(/※.*$/, "")
+    .replace(/[\s_\-‐―・:;：；.,、。\/／*＊]/g, "")
+    .trim();
 }
+
+const READING_RE = /カナ|かな|フリガナ|ふりがな|ヨミ|よみ|読み|kana|yomi|英|ローマ字|roman/i;
+
+/** 括弧などを外す前の見出し（NFKC・小文字・空白なし）。同じ見出しに読める列が複数あるとき、こちらが一致する列を優先する */
+const rawHeader = (h: string) => String(h ?? "").normalize("NFKC").toLowerCase().replace(/\s/g, "");
+
+const NORM_ALIASES = Object.fromEntries(Object.entries(ALIASES).map(([k, v]) => [k, v.map(normHeader)])) as Record<keyof CompanyRow, string[]>;
+
+/** 見出しの列から、項目ごとに使う列を決める（別名の優先順） */
+function columnFor(cols: string[], aliases: string[]): string | undefined {
+  const norm = cols.map(normHeader);
+  for (const a of aliases) {
+    if (!a) continue;
+    const hits = cols.filter((_, i) => norm[i] === a);
+    if (hits.length) return hits.find((c) => rawHeader(c) === a) ?? hits[0];
+  }
+  return undefined;
+}
+
+function pick(row: Record<string, string>, keys: string[]): string {
+  const col = columnFor(Object.keys(row), keys.map(normHeader));
+  return col === undefined ? "" : String(row[col] ?? "").trim();
+}
+
+export const COMPANY_FIELD_LABEL: Record<keyof CompanyRow, string> = {
+  company_name: "企業名", form_url: "問い合わせフォーム", site_url: "企業URL", email: "メール",
+  industry: "業種", sub_industry: "小業種", prefecture: "都道府県", representative: "代表者",
+};
+
+export type HeaderReport = { used: { header: string; field: string }[]; unused: string[] };
+
+/** 取り込みプレビューに出す「読み取れた見出し／使わなかった見出し」。
+ *  列名が違って読めていないことに、取り込む前に気づけるようにする */
+export function headerReport(headers: string[]): HeaderReport {
+  const cols = headers.map((h) => String(h ?? "").trim()).filter(Boolean);
+  const used: HeaderReport["used"] = [];
+  const taken = new Set<string>();
+  for (const k of Object.keys(ALIASES) as (keyof CompanyRow)[]) {
+    const col = columnFor(cols, NORM_ALIASES[k]);
+    if (col !== undefined) { used.push({ header: col, field: COMPANY_FIELD_LABEL[k] }); taken.add(col); }
+  }
+  return { used, unused: cols.filter((c) => !taken.has(c)) };
+}
+
+/** 読み取った行と、元の見出し（プレビューで見せる用） */
+export type CompanyRows = CompanyRow[] & { headers?: string[] };
 
 /** ヘッダー付きレコード配列を CompanyRow[] に変換（CSV・Excel・貼り付けで共通） */
-export function rowsToCompanies(rows: Record<string, string>[]): CompanyRow[] {
-  return rows
+export function rowsToCompanies(rows: Record<string, string>[], headers?: string[]): CompanyRows {
+  // 見出し→列の対応は全行で同じなので、先に1回だけ決める
+  const cols = headers ?? (rows[0] ? Object.keys(rows[0]) : []);
+  const colOf = Object.fromEntries((Object.keys(ALIASES) as (keyof CompanyRow)[]).map((k) => [k, columnFor(cols, NORM_ALIASES[k])])) as Record<keyof CompanyRow, string | undefined>;
+  const get = (r: Record<string, string>, k: keyof CompanyRow) => { const c = colOf[k]; return c === undefined ? "" : String(r[c] ?? "").trim(); };
+  const out: CompanyRows = rows
     .map((r) => ({
-      company_name: pick(r, ALIASES.company_name),
-      form_url: pick(r, ALIASES.form_url),
-      site_url: pick(r, ALIASES.site_url),
-      email: pick(r, ALIASES.email).toLowerCase(),
-      industry: pick(r, ALIASES.industry),
-      sub_industry: pick(r, ALIASES.sub_industry),
-      prefecture: pick(r, ALIASES.prefecture),
-      representative: pick(r, ALIASES.representative),
+      company_name: get(r, "company_name"),
+      form_url: get(r, "form_url"),
+      site_url: get(r, "site_url"),
+      email: get(r, "email").toLowerCase(),
+      industry: get(r, "industry"),
+      sub_industry: get(r, "sub_industry"),
+      prefecture: get(r, "prefecture"),
+      representative: get(r, "representative"),
     }))
     .filter((r) => r.company_name);
+  out.headers = cols;
+  return out;
 }
 
-export function parseCompanyCsv(buf: Buffer | string): CompanyRow[] {
+/** 区切り文字を1行目から決める。タブ（スプレッドシートからの貼り付け）・セミコロン（欧州設定のExcel）・カンマ */
+export function detectDelimiter(firstLine: string): string {
+  const outside = firstLine.replace(/"[^"]*"/g, ""); // 引用符の中の記号は数えない
+  if (outside.includes("\t") && !outside.includes(",")) return "\t";
+  if (outside.includes(";") && !outside.includes(",")) return ";";
+  return ",";
+}
+
+/** csv-parse を日本語のエラーで包む。セルの中の " は relax_quotes で読めるようにし、
+ *  それでも読めないとき（引用符が閉じていない等）は、何行目をどう直せばよいかを日本語で返す
+ *  （英語の「Invalid Opening Quote…」のまま取り込みが止まっていた） */
+function parseCsvJp<T>(text: string, opts: Record<string, unknown>): T {
+  try {
+    return parse(text, { skip_empty_lines: true, relax_column_count: true, relax_quotes: true, trim: true, ...opts }) as T;
+  } catch (e) {
+    const err = e as Error & { lines?: number; code?: string };
+    const where = err.lines ? `${err.lines}行目あたり` : "どこかの行";
+    if (/quote/i.test(err.message) || /QUOTE/.test(err.code ?? "")) {
+      throw new Error(`${where}で「"」（ダブルクォーテーション）の数が合わず、表として読めませんでした。その行のセルにある「"」を消すか全角の「”」に直してから、もう一度取り込んでください`);
+    }
+    throw new Error(`${where}が表として読めませんでした。Excelやスプレッドシートで開いて「CSV（UTF-8）」で保存し直してから取り込んでください（詳細: ${String(err.message).slice(0, 80)}）`);
+  }
+}
+
+export function parseCompanyCsv(buf: Buffer | string): CompanyRows {
   let text = typeof buf === "string" ? buf : buf.toString("utf8");
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   // Shift_JIS のExcel出力対策: 文字化けが目立つ場合は再デコード
   if (typeof buf !== "string" && /�/.test(text.slice(0, 2000))) {
     text = new TextDecoder("shift_jis").decode(buf);
   }
-  // タブ区切り（TSV・スプレッドシートからの貼り付け）も自動判定
-  const firstLine = text.slice(0, text.indexOf("\n") >= 0 ? text.indexOf("\n") : text.length);
-  const delimiter = firstLine.includes("\t") && !firstLine.includes(",") ? "\t" : ",";
-  const rows = parse(text, { columns: true, skip_empty_lines: true, relax_column_count: true, trim: true, delimiter }) as Record<string, string>[];
-  return rowsToCompanies(rows);
+  const firstLine = text.slice(0, text.indexOf("\n") >= 0 ? text.indexOf("\n") : text.length).replace(/\r$/, "");
+  const delimiter = detectDelimiter(firstLine);
+  let headers: string[] = [];
+  const rows = parseCsvJp<Record<string, string>[]>(text, { delimiter, columns: (h: string[]) => (headers = h.map((x) => String(x ?? "").trim())) });
+  return rowsToCompanies(rows, headers);
 }
 
 /** 2次元配列（1行目ヘッダー）をレコード配列にする */
@@ -76,19 +166,30 @@ function gridToRecords(grid: string[][]): Record<string, string>[] {
   });
 }
 
+/** Excel の文字列（共有文字列・セル内の文字列）から、表示される文字だけを取り出す。
+ *  ふりがな（<rPh>…</rPh>）は表示されない文字なので除く。除かないと「株式会社サンプルカブシキガイシャ」のように
+ *  会社名にフリガナがくっついていた。書式付きの文字列（<r><t>…</t></r> が複数）はつなげる */
+export function xlsxText(xml: string, decode: (s: string) => string = xmlDecode): string {
+  const body = String(xml ?? "").replace(/<rPh\b[\s\S]*?<\/rPh>/g, "").replace(/<phoneticPr\b[^>]*\/?>/g, "");
+  return (body.match(/<t(?:\s[^>]*)?>[\s\S]*?<\/t>/g) ?? []).map((t) => decode(t.replace(/<[^>]+>/g, ""))).join("");
+}
+
+function xmlDecode(s: string): string {
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&amp;/g, "&");
+}
+
 /** Excel(.xlsx) を読む。新しい依存を足さず、既存の adm-zip で中身のXMLを直接パースする */
-export async function parseCompanyXlsx(buf: Buffer): Promise<CompanyRow[]> {
+export async function parseCompanyXlsx(buf: Buffer): Promise<CompanyRows> {
   const AdmZip = (await import("adm-zip")).default;
   const zip = new AdmZip(buf);
   const readXml = (name: string) => zip.getEntry(name)?.getData().toString("utf8") ?? "";
-  const decode = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&amp;/g, "&");
+  const decode = xmlDecode;
   // 共有文字列テーブル
   const shared: string[] = [];
   const ss = readXml("xl/sharedStrings.xml");
-  for (const si of ss.match(/<si>[\s\S]*?<\/si>/g) ?? []) {
-    const parts = si.match(/<t[^>]*>([\s\S]*?)<\/t>/g)?.map((t) => decode(t.replace(/<[^>]+>/g, ""))) ?? [];
-    shared.push(parts.join(""));
-  }
+  for (const si of ss.match(/<si(?:\s[^>]*)?>[\s\S]*?<\/si>|<si\s*\/>/g) ?? []) shared.push(xlsxText(si));
   // 最初のシート
   let sheetXml = readXml("xl/worksheets/sheet1.xml");
   if (!sheetXml) { for (const e of zip.getEntries()) { if (/xl\/worksheets\/.*\.xml$/.test(e.entryName)) { sheetXml = e.getData().toString("utf8"); break; } } }
@@ -100,16 +201,16 @@ export async function parseCompanyXlsx(buf: Buffer): Promise<CompanyRow[]> {
       const ref = (cXml.match(/r="([A-Z]+\d+)"/) ?? [])[1] ?? "";
       const isStr = /t="s"/.test(cXml);
       const isInline = /t="inlineStr"/.test(cXml);
-      const raw = (cXml.match(/<v>([\s\S]*?)<\/v>/) ?? [])[1] ?? (cXml.match(/<t[^>]*>([\s\S]*?)<\/t>/) ?? [])[1] ?? "";
+      const raw = (cXml.match(/<v>([\s\S]*?)<\/v>/) ?? [])[1] ?? "";
       let val = decode(raw);
       if (isStr) val = shared[Number(raw)] ?? "";
-      else if (isInline) val = decode((cXml.match(/<t[^>]*>([\s\S]*?)<\/t>/) ?? [])[1] ?? "");
+      else if (isInline) val = xlsxText(cXml); // セル内の文字列もふりがなを除き、書式の切れ目をつなげる
       const ci = colNum(ref);
       cells[ci] = val;
     }
     grid.push(Array.from(cells, (v) => v ?? ""));
   }
-  return rowsToCompanies(gridToRecords(grid));
+  return rowsToCompanies(gridToRecords(grid), (grid[0] ?? []).map((h) => (h ?? "").trim()).filter(Boolean));
 }
 
 export type ExcludedRow = { company: string; reason: string; where: string };
@@ -145,7 +246,9 @@ export function importRowsToCampaign(campaignId: number, rows: CompanyRow[], opt
   const seen = new Set<string>();
 
   const tx = db.transaction(() => {
-    for (const r of rows) {
+    for (const r0 of rows) {
+      // URL欄の「なし」「-」「不明」などはURLとして扱わない（以前はフォームありと見なされ、メールがあっても送れなかった）
+      const r = { ...r0, form_url: domainOf(r0.form_url) ? r0.form_url.trim() : "", site_url: domainOf(r0.site_url) ? r0.site_url.trim() : "" };
       const hasForm = Boolean(r.form_url || r.site_url);
       const hasEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(r.email);
       let channel: "form" | "email" | null = null;
@@ -221,13 +324,14 @@ export function parseSuppressionText(text: string): SuppressionRow[] {
   if (!body) return [];
   const firstLine = body.split("\n")[0];
   // 1行目だけで決めると、1行目がドメインだけ（タブ無し）のとき以降のタブ区切り行が分割されない（実際に起きた）。全体で判定する
-  const delimiter = body.includes("\t") ? "\t" : ",";
-  const headerWords = Object.values(SUPP_ALIASES).flat().map((w) => w.toLowerCase());
-  const firstCells = firstLine.split(delimiter).map((c) => c.trim().replace(/^"|"$/g, "").toLowerCase());
-  const hasHeader = firstCells.some((c) => headerWords.includes(c));
+  // セミコロン区切り（欧州設定のExcel）は、カンマを含まないときだけそう読む（1列だけの貼り付けを壊さないように）
+  const delimiter = body.includes("\t") ? "\t" : body.includes(";") && !body.includes(",") ? ";" : ",";
+  const headerWords = Object.values(SUPP_ALIASES).flat().map(normHeader);
+  const firstCells = firstLine.split(delimiter).map((c) => normHeader(c.trim().replace(/^"|"$/g, "")));
+  const hasHeader = firstCells.some((c) => c && headerWords.includes(c));
   let rows: SuppressionRow[];
   if (hasHeader) {
-    const recs = parse(body, { columns: true, skip_empty_lines: true, relax_column_count: true, trim: true, delimiter }) as Record<string, string>[];
+    const recs = parseCsvJp<Record<string, string>[]>(body, { columns: true, delimiter });
     rows = recs.map((r) => ({
       company_name: pick(r, SUPP_ALIASES.company_name),
       domain: domainOf(pick(r, SUPP_ALIASES.domain)),
@@ -236,7 +340,7 @@ export function parseSuppressionText(text: string): SuppressionRow[] {
       reason: pick(r, SUPP_ALIASES.reason),
     }));
   } else {
-    const recs = parse(body, { columns: false, skip_empty_lines: true, relax_column_count: true, trim: true, delimiter }) as string[][];
+    const recs = parseCsvJp<string[][]>(body, { columns: false, delimiter });
     rows = recs.map((cells) => {
       const r: SuppressionRow = { company_name: "", domain: "", email: "", tel: "", reason: "" };
       for (const raw of cells) {

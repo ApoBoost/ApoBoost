@@ -351,10 +351,17 @@ async function urlsFromSitemap(page: Page, origin: string): Promise<string[]> {
 /** フォームのあるページへ遷移する。見つかれば最終URL、無ければ null */
 export async function findContactForm(page: Page, formUrl: string, siteUrl: string, note: { reason?: string } = {}): Promise<string | null> {
   const tried = new Set<string>();
+  // 開いた結果のURL（リダイレクト後）で、もう調べたページ。どのパスでもトップへ転送するサイトだと、
+  // よくあるパス約40本で毎回同じトップページをスクロールして調べ直し、1社に何分もかかっていた
+  const examined = new Set<string>();
+  const keyOf = (u: string) => u.split("#")[0].replace(/\/(index\.(html?|php))?$/i, "");
   const tryUrl = async (u: string) => {
     if (!u || tried.has(u)) return false;
     tried.add(u);
     if (!(await safeGoto(page, u))) return false;
+    const k = keyOf(page.url());
+    if (examined.has(k)) return false;
+    examined.add(k);
     return usableContactPage(page, note);
   };
 
@@ -382,6 +389,7 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
   }
   // トップページ内のリンクから探す（フッターのリンクを優先: #1）
   if (opened) {
+    examined.add(keyOf(page.url()));
     if (await usableContactPage(page, note)) return page.url();
     const links: { href: string; text: string; footer: boolean }[] = await page.evaluate(() =>
       Array.from(document.querySelectorAll("a[href]")).map((a) => {
@@ -404,8 +412,10 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
     }
   }
 
-  // よくあるパス
+  // よくあるパス。存在しないパスにも 200 で同じ「見つかりません」ページを返すサイトで時間がかかりすぎないよう、全体で90秒まで
+  const pathsUntil = Date.now() + 90_000;
   for (const p of COMMON_PATHS) {
+    if (Date.now() > pathsUntil) break;
     if (await tryUrl(origin + p)) return page.url();
   }
 

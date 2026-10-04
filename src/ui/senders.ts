@@ -22,6 +22,7 @@ export function senderForm(s?: Partial<SenderProfile>) {
 <label>配信停止ページのURL（任意・入れておくと到達率が上がります）</label>
 <input type="url" name="unsubscribe_url" value="${v("unsubscribe_url")}" placeholder="https://docs.google.com/forms/d/e/…/viewform">
 <p class="muted small" style="margin:4px 0 10px">メールの末尾と「配信停止」ボタン（Gmail等が出すもの）に、このURLを使います。受け取った人が<b>1クリックで停止を申し出られる</b>ようになり、迷惑メール報告を押される代わりにこちらに届きます。<br>Googleフォームで「メールアドレス」を聞くだけの簡単なフォームを1つ作って、そのURLを貼ってください。空の場合は、これまでどおり「本メールに『配信停止』と返信」での受付になります。</p>
+<p class="small" style="margin:-4px 0 10px;color:var(--ng)">${IC_WARN} このURL（外部のフォーム）に届いた申し出は、ApoBoostには自動で入りません。届いたら、そのアドレスを「除外リスト」に手で登録してください（登録しないと、また送ってしまいます）。メールで届いた「配信停止」は、送信用メールアドレスの受信箱を読んで自動で除外リストに入ります。</p>
 <label class="inline small" style="display:flex;gap:6px;align-items:flex-start;margin:6px 0;font-weight:400"><input type="checkbox" name="tls_insecure" value="1" ${s?.tls_insecure ? "checked" : ""} style="width:auto;margin-top:3px"> <span><b>セキュリティソフトの影響で送れない場合にチェック</b>（「self-signed certificate…」「certificate」を含むエラーが出るとき）<br><span class="muted">ESET・カスペルスキー等のメール保護や社内ネットワークが通信に割り込むと、証明書が差し替わって送信できません。チェックすると証明書の確認を省いて送れるようにします。<b>通信の安全性が下がる</b>ため、原因が分かっている場合だけにしてください（まずはセキュリティソフト側の「メール保護／SSLスキャン」をオフにする方が安全です）。</span></span></label>
 <details class="small muted"><summary>Gmail以外のメールサーバー</summary><div class="row"><div><label>SMTPホスト</label><input type="text" name="smtp_host" value="${esc(s?.smtp_host ?? "smtp.gmail.com")}" placeholder="smtp.gmail.com"></div><div><label>ポート（465 or 587）</label><input type="number" name="smtp_port" value="${esc(s?.smtp_port ?? 465)}" placeholder="465"></div></div>
 <p class="muted small" style="margin:6px 0 0"><b>SMTPホストとは：</b>メールを送り出すサーバーのアドレスです。プロバイダごとに決まっています。<br>
@@ -34,7 +35,8 @@ export function senderForm(s?: Partial<SenderProfile>) {
  *  以前は「未設定」が薄い文字で、編集は別ページ、新規追加は一覧の下にあった */
 export type SenderExtra = { sentToday: number; limit: number; note: string; paused: string };
 
-export function sendersView(list: SenderProfile[], usage: Record<number, number> = {}, extra: Record<number, SenderExtra> = {}, openId = 0) {
+/** draft: サーバー側のチェックで弾いた入力。id=0 は新規、それ以外はその送信者の編集フォームに、入力した値のまま出す */
+export function sendersView(list: SenderProfile[], usage: Record<number, number> = {}, extra: Record<number, SenderExtra> = {}, openId = 0, draft?: { id: number; values: Partial<SenderProfile> }) {
   const issues = (s: SenderProfile): string[] => {
     const out: string[] = [];
     if (!s.address?.trim()) out.push("住所が未登録（メールを送れません）");
@@ -59,10 +61,10 @@ ${list.length ? list.map((s) => {
 <div style="padding:0 18px 18px;border-top:1px solid var(--c-line)">
 ${ex?.paused ? `<p class="small" style="color:var(--ng)">${IC_WARN} ${esc(ex.paused)}</p>` : ""}
 <p class="muted" data-nohelp>利用中のキャンペーン: ${usage[s.id] ?? 0}件</p>
-${senderForm(s)}
+${senderForm(draft && draft.id === s.id ? { ...s, ...draft.values, id: s.id } : s)}
 ${mailOk ? `<form method="post" action="/senders/${s.id}/test" class="inline" data-busy data-busytext="接続を確認中…"><button class="btn small">メールの接続をテストする</button></form>` : ""}
 </div></details>`;
   }).join("") : `<div class="card"><p>まだ送信者がありません。下のフォームから登録してください。</p></div>`}
-<details class="card" id="newsender" ${list.length ? "" : "open"}><summary style="cursor:pointer;font-weight:700" id="new">＋ 新しい送信者を追加する</summary>
-<div style="margin-top:12px">${senderForm()}</div></details>`;
+<details class="card" id="newsender" ${list.length && !(draft && draft.id === 0) ? "" : "open"}><summary style="cursor:pointer;font-weight:700" id="new">＋ 新しい送信者を追加する</summary>
+<div style="margin-top:12px">${senderForm(draft && draft.id === 0 ? draft.values : undefined)}</div></details>`;
 }

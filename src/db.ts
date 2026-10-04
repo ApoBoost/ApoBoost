@@ -310,6 +310,8 @@ function migrate(db: Database.Database) {
   // 要対応を「見送り」にした日時（#115）。NULL=見送っていない
   addCol("form_jobs", "dismissed_at", "TEXT");
   addCol("form_jobs", "appo_seen_at", "TEXT");                           // アポを「確認した」日時。空＝未確認（メニューの数字に数える）
+  // メールの宛先側の一時エラー（4xx）で待機に戻したとき、この時刻（UTC）までは送り直さない。NULL＝すぐ送ってよい
+  addCol("form_jobs", "retry_after", "TEXT");
 
   // 質問箱から配布元（担当者）へ送った質問と、その返信。ticket は推測できない番号で、返信を読むための合い言葉になる
   db.exec(`CREATE TABLE IF NOT EXISTS support_tickets (
@@ -568,8 +570,16 @@ export function jst(ts: string | null | undefined): string {
 
 export function domainOf(url: string): string {
   try {
-    const u = new URL(url.startsWith("http") ? url : `https://${url}`);
-    return u.hostname.replace(/^www\./, "").toLowerCase();
+    const s = String(url ?? "").trim();
+    if (!s) return "";
+    const u = new URL(/^https?:\/\//i.test(s) ? s : s.startsWith("http") ? s : `https://${s}`);
+    const host = u.hostname.replace(/^www\./, "").toLowerCase();
+    // ドメインとして扱うのは「ドットを含む英数字の名前」だけ（日本語ドメインは xn-- の英数字になるので含まれる）。
+    // URL欄の「なし」「-」「不明」が「xn--68jub」「-」のようなドメインになり、再送禁止・除外・重複の判定で
+    // 無関係な会社どうしが同じ会社扱いされていた。localhost はテスト用のダミーサイトで使うので残す
+    if (host !== "localhost" && !/^[a-z0-9_-]+(\.[a-z0-9_-]+)+$/.test(host)) return "";
+    if (host.split(".").some((l) => !l || /^-|-$/.test(l))) return "";
+    return host;
   } catch {
     return "";
   }

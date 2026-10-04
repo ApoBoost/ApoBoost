@@ -26,9 +26,10 @@ import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmai
 import { notify, notifyEnabled } from "../notify.js";
 import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel } from "../update.js";
 import { errorPage } from "../ui/layout.js";
+import { resultNote } from "../ui/parts.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
-import { app, db, redirectWith, takeFlash, me, appState, navUser, scope, ownedJob, notFound, forbidden, loadCampaignFull, deleteJobsWhere, todoBack } from "../app/context.js";
+import { app, db, safeAsync, needsBrowser, redirectWith, takeFlash, me, appState, navUser, scope, ownedJob, notFound, forbidden, loadCampaignFull, deleteJobsWhere, todoBack } from "../app/context.js";
 
 /** この画面の経路を登録する。server.ts から、ログイン確認などの共通処理のあとに呼ばれる */
 export function register(): void {
@@ -64,7 +65,8 @@ app.post("/jobs/:id/outcome", (req, res) => {
   // 反応が変わったら「確認済み」は外す（新しくアポになったものは、もう一度メニューの数字に出す）
   db.prepare(`UPDATE form_jobs SET outcome=?, outcome_note=?, ${outcome !== j.outcome ? "appo_seen_at=NULL, " : ""}updated_at=datetime('now') WHERE id=?`).run(outcome, String(req.body.note ?? "").slice(0, 300), id);
   if (outcome === "declined") {
-    if (j.domain) db.prepare("INSERT OR IGNORE INTO form_suppressions(domain, reason) VALUES(?,?)").run(j.domain, `断り（${j.company_name}）`);
+    // 登録者を残す（無いと一般ユーザーの除外リストに出ず、自分で消せなかった）
+    if (j.domain) db.prepare("INSERT OR IGNORE INTO form_suppressions(company_name, domain, reason, owner_user_id) VALUES(?,?,?,?)").run(j.company_name, j.domain, `断り（${j.company_name}）`, me(req).id);
     if (j.email) optOut(j.email, `断り（${j.company_name}）`, me(req).id);
   }
   redirectWith(res, String(req.body.back ?? "") === "/appointments" ? "/appointments" : `/jobs/${id}`, `反応を記録しました${learned ? `／この返信の言い回し ${learned}件を覚えました（次から同じ言い回しは「${OUTCOME_LABEL[outcome] ?? outcome}」に振り分けます。設定画面で確認・削除できます）` : ""}`);
@@ -131,7 +133,7 @@ app.post("/jobs/:id/mark-sent", (req, res) => {
 });
 
 // 失敗ジョブの宛先・会社名を直して、その場で送り直す（一覧・詳細の「修正して再送信」）
-app.post("/jobs/:id/fix", async (req, res) => {
+app.post("/jobs/:id/fix", safeAsync(async (req, res) => {
   const id = Number(req.params.id);
   const j = ownedJob(req, id);
   if (!j) return notFound(req, res);
@@ -147,20 +149,22 @@ app.post("/jobs/:id/fix", async (req, res) => {
   // status は変えない（直前の失敗ステータスを processJob が履歴として拾えるようにするため）
   db.prepare("UPDATE form_jobs SET form_url=?, site_url=?, company_name=?, email=?, channel=?, domain=?, updated_at=datetime('now') WHERE id=?")
     .run(formUrl, siteUrl, company, email, channel, domain, id);
-  // メール送信ではブラウザを使わないので起動しない（そのぶん速く、古いOSでも動く）
-  const browser = channel === "email" ? null : await launchBrowser();
+  // メール送信ではブラウザを使わないので起動しない（そのぶん速く、古いOSでも動く）。
+  // 起動の失敗（ブラウザ未インストールなど）も画面に出せるよう try の中で起動する
+  let browser: Awaited<ReturnType<typeof launchBrowser>> | null = null;
   try {
+    if (needsBrowser(channel, j.campaign_id)) browser = await launchBrowser();
     const r = await processJob(browser as never, id);
-    redirectWith(res, `/jobs/${id}`, `${channel === "email" ? "メールで送信した結果" : "修正して再送信した結果"}: ${STATUS_LABEL[r.status] ?? r.status}${r.result_text ? `（${r.result_text.split("\n")[0].slice(0, 60)}）` : ""}`);
+    redirectWith(res, `/jobs/${id}`, `${channel === "email" ? "メールで送信した結果" : "修正して再送信した結果"}: ${resultNote(r)}`);
   } catch (e) {
-    redirectWith(res, `/jobs/${id}`, `再送信エラー: ${String((e as Error).message)}`);
+    redirectWith(res, `/jobs/${id}`, `再送信できませんでした: ${jpError(e, 160)}`);
   } finally {
     await browser?.close().catch(() => {});
   }
-});
+}, (req) => `/jobs/${Number(req.params.id)}`));
 
 // 要確認の質問に画面で回答して、その回答でその場で送り直す
-app.post("/jobs/:id/answer", async (req, res) => {
+app.post("/jobs/:id/answer", safeAsync(async (req, res) => {
   const id = Number(req.params.id);
   const j = ownedJob(req, id);
   if (!j) return notFound(req, res);
@@ -174,19 +178,20 @@ app.post("/jobs/:id/answer", async (req, res) => {
   }
   if (!answers.length) return redirectWith(res, `/jobs/${id}`, "回答が選ばれていません");
   db.prepare("UPDATE form_jobs SET manual_answers=?, updated_at=datetime('now') WHERE id=?").run(JSON.stringify(answers), id);
-  const browser = await launchBrowser();
+  let browser: Awaited<ReturnType<typeof launchBrowser>> | null = null;
   try {
+    browser = await launchBrowser();
     const r = await processJob(browser, id);
-    redirectWith(res, `/jobs/${id}`, `回答を反映して再送信した結果: ${STATUS_LABEL[r.status] ?? r.status}`);
+    redirectWith(res, `/jobs/${id}`, `回答を反映して再送信した結果: ${resultNote(r)}`);
   } catch (e) {
-    redirectWith(res, `/jobs/${id}`, `再送信エラー: ${String((e as Error).message)}`);
+    redirectWith(res, `/jobs/${id}`, `再送信できませんでした: ${jpError(e, 160)}`);
   } finally {
-    await browser.close().catch(() => {});
+    await browser?.close().catch(() => {});
   }
-});
+}, (req) => `/jobs/${Number(req.params.id)}`));
 
 // 画面にブラウザを開いてフォームを入力した状態で止める（送信はしない）。人が確認して送るための補助
-app.post("/jobs/:id/assist", async (req, res) => {
+app.post("/jobs/:id/assist", safeAsync(async (req, res) => {
   const id = Number(req.params.id);
   const j = ownedJob(req, id);
   if (!j) return forbidden(req, res);
@@ -204,19 +209,24 @@ app.post("/jobs/:id/assist", async (req, res) => {
   } catch (e) {
     redirectWith(res, todoBack(req, `/jobs/${id}`), `ブラウザを開けませんでした: ${jpError(e, 150)}`);
   }
-});
+}, (req) => todoBack(req, `/jobs/${Number(req.params.id)}`)));
 
-app.post("/jobs/:id/retry", async (req, res) => {
+app.post("/jobs/:id/retry", safeAsync(async (req, res) => {
   const id = Number(req.params.id);
-  if (!ownedJob(req, id)) return forbidden(req, res);
-  const browser = await launchBrowser();
+  const job = ownedJob(req, id);
+  if (!job) return forbidden(req, res);
+  // メールの会社は（AIでHPを読む場合を除き）ブラウザを使わない。起動の失敗も画面に出せるよう try の中で起動する
+  let browser: Awaited<ReturnType<typeof launchBrowser>> | null = null;
   try {
-    const j = await processJob(browser, id);
-    redirectWith(res, `/jobs/${id}`, `再試行の結果: ${j.status}`);
+    if (needsBrowser(job.channel, job.campaign_id)) browser = await launchBrowser();
+    const j = await processJob(browser as never, id);
+    redirectWith(res, `/jobs/${id}`, `再試行の結果: ${resultNote(j)}`);
+  } catch (e) {
+    redirectWith(res, `/jobs/${id}`, `再試行できませんでした: ${jpError(e, 160)}`);
   } finally {
-    await browser.close().catch(() => {});
+    await browser?.close().catch(() => {});
   }
-});
+}, (req) => `/jobs/${Number(req.params.id)}`));
 
 // 1社だけ待機に戻す（もう一度自動で送る）
 app.post("/jobs/:id/requeue", (req, res) => {

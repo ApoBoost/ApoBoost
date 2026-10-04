@@ -29,7 +29,7 @@ import { topHelpMisses } from "../support.js";
 import { errorPage } from "../ui/layout.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
-import { app, db, redirectWith, takeFlash, me, appState, navUser, scope, SENDER_COLS, setSetting, updateResults } from "../app/context.js";
+import { app, db, safeAsync, adminOnly, redirectWith, takeFlash, me, appState, navUser, scope, SENDER_COLS, setSetting, updateResults } from "../app/context.js";
 
 /** この画面の経路を登録する。server.ts から、ログイン確認などの共通処理のあとに呼ばれる */
 export function register(): void {
@@ -49,13 +49,14 @@ app.get("/backup.json", (req, res) => {
 
 // ミニゲーム（誰でも遊べる息抜き）。クレジットは「自分のキャンペーンでフォーム送信できた件数」から貯まる
 // おまけのゲームの表示オン／オフ（管理者のみ）
-app.post("/settings/notify", (req, res) => {
+// 通知はこのアプリを動かしているPCに出るもので、設定も全員共通。管理者の設定画面にしか出していないので管理者だけにする
+app.post("/settings/notify", requireAdmin, (req, res) => {
   db.prepare("INSERT INTO settings(key,value) VALUES('notify_desktop',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(req.body.notify_desktop === "1" ? "1" : "0");
   redirectWith(res, "/settings", req.body.notify_desktop === "1" ? "送信が止まったときにパソコンへ通知します" : "パソコンへの通知をオフにしました");
 });
 
 // 通知の見え方を確認する
-app.post("/settings/notify-test", (req, res) => {
+app.post("/settings/notify-test", requireAdmin, (req, res) => {
   notify("テスト通知", `この通知が出れば設定はOKです（${new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" })} に送信）`, `test:${Date.now()}`);
   redirectWith(res, "/settings", "テスト通知を送りました。数秒以内に、このページの右上と、パソコンの通知に出ます");
 });
@@ -74,7 +75,7 @@ app.post("/settings/effects", requireAdmin, (req, res) => {
 });
 
 // 通知の種類（#133 #134）
-app.post("/settings/notify-kinds", (req, res) => {
+app.post("/settings/notify-kinds", requireAdmin, (req, res) => {
   saveSettingValue(S.notifyReply, req.body.notify_reply === "1");
   saveSettingValue(S.dailySummary, req.body.daily_summary === "1");
   redirectWith(res, "/settings", "通知の設定を保存しました");
@@ -108,7 +109,8 @@ app.get("/logs", (req, res) => {
   res.send(layout("エラーログ", logsView(recentLogs(200, kind), kind, logCounts(), topHelpMisses(20)), takeFlash(req), navUser(req), appState.updateReady));
 });
 
-app.post("/logs/clear", (req, res) => {
+// ログは全員ぶんが1か所に入っているので、消せるのは管理者だけ（見るのは誰でも＝困ったときに自分で確かめられるように）
+app.post("/logs/clear", adminOnly("/logs", "ログを消せるのは管理者だけです"), (req, res) => {
   const n = clearLogs();
   redirectWith(res, "/logs", `${n}件のログを消しました`);
 });
@@ -135,7 +137,7 @@ app.get("/template.csv", (req, res) => {
   res.send(csv);
 });
 
-app.post("/backup/create", async (req, res) => {
+app.post("/backup/create", safeAsync(async (req, res) => {
   try {
     const b = await createBackup("manual");
     redirectWith(res, "/health", `バックアップを作りました（${backupLabel(b)}）。保存先: ${BACKUP_DIR}`);
@@ -143,10 +145,10 @@ app.post("/backup/create", async (req, res) => {
     logError("backup", `手動バックアップに失敗: ${jpError(e)}`);
     redirectWith(res, "/health", `バックアップに失敗しました: ${jpError(e, 160)}`);
   }
-});
+}, () => "/health"));
 
 // 復元は「予約 → 再起動時に入れ替え」。動いている最中にDBファイルを差し替えると壊れるため
-app.post("/backup/restore", requireAdmin, async (req, res) => {
+app.post("/backup/restore", requireAdmin, safeAsync(async (req, res) => {
   const file = String(req.body.file ?? "");
   const r = requestRestore(file);
   if (!r.ok) return redirectWith(res, "/health", r.error ?? "復元できませんでした");
@@ -157,7 +159,7 @@ app.post("/backup/restore", requireAdmin, async (req, res) => {
     <p><a class="btn" href="/">画面に戻る（30秒ほど待ってから）</a></p></div>`, "", navUser(req), appState.updateReady));
   await drainForShutdown();
   requestRestart();
-});
+}, () => "/health"));
 
 app.post("/settings/autostart", requireAdmin, (req, res) => {
   const on = req.body.autostart === "1";
@@ -192,7 +194,7 @@ app.post("/settings", requireAdmin, (req, res) => {
   redirectWith(res, "/settings", "保存しました");
 });
 
-app.post("/settings/ai", requireAdmin, async (req, res) => {
+app.post("/settings/ai", requireAdmin, safeAsync(async (req, res) => {
   const provider = req.body.provider === "gemini" ? "gemini" : "anthropic";
   const model = String(req.body.model ?? "").trim();
   const key = String(req.body.api_key ?? "").trim();
@@ -210,7 +212,7 @@ app.post("/settings/ai", requireAdmin, async (req, res) => {
   } else {
     redirectWith(res, "/settings", `接続テスト成功。AIが使えるようになりました（${provider} / ${validModel}）`);
   }
-});
+}, () => "/settings", "AIの設定を確かめられませんでした"));
 
 // ライセンス（#90）
 app.post("/settings/license", requireAdmin, (req, res) => {
@@ -237,29 +239,29 @@ app.post("/settings/ai/delete", requireAdmin, (req, res) => {
 });
 
 // 更新チャネルの切り替え（#94）
-app.post("/settings/update-channel", requireAdmin, async (req, res) => {
+app.post("/settings/update-channel", requireAdmin, safeAsync(async (req, res) => {
   const ch = req.body.channel === "beta" ? "beta" : "stable";
   saveSetting(S.updateChannel, ch);
   const st = await checkUpdate(true);
   appState.updateReady = st.available;
   redirectWith(res, "/update", ch === "beta" ? "先行版を受け取る設定にしました（新しい機能を先に試せますが、不具合が残っていることがあります）" : "安定版を受け取る設定にしました");
-});
+}, () => "/settings", "新しい版を確かめられませんでした"));
 
-app.get("/update", requireAdmin, async (req, res) => {
+app.get("/update", requireAdmin, safeAsync(async (req, res) => {
   const st = await checkUpdate();
   appState.updateReady = st.available;
   const result = updateResults.get(me(req).id);
   updateResults.delete(me(req).id);
   res.send(layout("アップデート", updateView(st, result, updateChannel()), takeFlash(req), navUser(req), appState.updateReady));
-});
+}));
 
-app.post("/update/check", requireAdmin, async (req, res) => {
+app.post("/update/check", requireAdmin, safeAsync(async (req, res) => {
   const st = await checkUpdate(true);
   appState.updateReady = st.available;
   redirectWith(res, "/update", st.available ? `v${st.latest} が公開されています` : st.error ?? "最新版です");
-});
+}, () => "/settings", "新しい版を確かめられませんでした"));
 
-app.post("/update", requireAdmin, async (req, res) => {
+app.post("/update", requireAdmin, safeAsync(async (req, res) => {
   const r = await applyUpdate();
   updateResults.set(me(req).id, r);
   if (r.ok) {
@@ -268,5 +270,5 @@ app.post("/update", requireAdmin, async (req, res) => {
     requestRestart();   // npm start で起動していれば自動で立ち上がり直す
   }
   res.redirect("/update");
-});
+}, () => "/settings", "更新できませんでした"));
 }

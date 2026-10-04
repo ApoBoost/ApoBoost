@@ -38,7 +38,10 @@ export function buildVars(job: Pick<Job, "company_name" | "industry" | "sub_indu
 export function renderTemplate(tpl: string, vars: Vars): string {
   // テンプレに「{{代表者名}}様」「{{代表者}}様」と書かれていても、連名で一人ずつ様が付く {{代表者}} に寄せる（様の重複も防ぐ）
   const t = tpl.replace(/\{\{\s*代表者名?\s*\}\}[\s　]*様/g, "{{代表者}}");
-  return t.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, k: string) => vars[k] ?? "");
+  // 知らない差し込み名（{{企業}} のような書き間違い）は置き換えずに残し、送る前の文面チェック（lintMessage）で止める。
+  // 以前は黙って空文字になり「 様」「の件で」のような欠けた文面のまま送られていた。
+  // 知っている名前で値が空のもの（{{業種}} が無い会社など）は、これまでどおり空にする（既存の文面が急に止まらないように）
+  return t.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (m, k: string) => (Object.prototype.hasOwnProperty.call(vars, k) ? vars[k] ?? "" : m));
 }
 
 // ---- LLM ----
@@ -155,6 +158,25 @@ export async function llm(system: string, user: string, maxTokens = 600): Promis
   throw new Error("AIのAPIキーが設定されていません（設定画面から登録できます）");
 }
 
+/** 文面のAI生成の失敗が「自分側の原因」（どの会社でも同じように失敗する）かを見分ける。
+ *  以前は APIキーの失効・残高切れ・混雑（429）・回線断のとき、待機中の会社を1社ずつ「失敗」にして、全社が次々失敗になっていた。
+ *  - config:    APIキー・残高・モデルの問題。直すまで何度やっても失敗するので、キャンペーンを一時停止して知らせる
+ *  - transient: 混雑・回線の問題。minutes 分だけAIを使う送信を止め、その後に自動で続ける
+ *  - null:      その会社だけの問題（または判断できない）。これまでどおり、その会社を失敗にする */
+export function aiErrorKind(e: unknown): { kind: "config" | "transient"; minutes: number } | null {
+  const msg = `${String((e as Error)?.message ?? e)} ${String(((e as { cause?: { code?: string; message?: string } })?.cause?.code) ?? "")}`;
+  const status = Number(msg.match(/^(?:anthropic|gemini) (\d{3})/)?.[1]) || 0;
+  // 月の上限（設定）に達した: 次の文面からテンプレートに切り替わるので、止めずにすぐ続ける
+  if (/今月のAI利用の上限/.test(msg)) return { kind: "transient", minutes: 0 };
+  if (status === 401 || status === 403 || /invalid.{0,20}(api.?key|x-api-key)|API key not valid|API_KEY_INVALID|PERMISSION_DENIED|authentication_error|credit balance|billing|insufficient[_ ]quota/i.test(msg)) return { kind: "config", minutes: 0 };
+  if (status === 404 || (status === 400 && /model/i.test(msg))) return { kind: "config", minutes: 0 };
+  if (status === 429 || /rate.?limit|RESOURCE_EXHAUSTED/i.test(msg)) return { kind: "transient", minutes: 5 };
+  if (status === 408 || status >= 500 || /overloaded/i.test(msg)) return { kind: "transient", minutes: 10 };
+  // 回線断（Node の fetch は「fetch failed」＋原因のコード）。ブラウザ（Playwright）のタイムアウト等は会社ごとの問題なので含めない
+  if (/fetch failed|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR_|other side closed/i.test(msg)) return { kind: "transient", minutes: 10 };
+  return null;
+}
+
 /** 接続テスト。成功なら null、失敗なら利用者向けの説明文を返す */
 export async function testAiConnection(): Promise<string | null> {
   try {
@@ -243,7 +265,8 @@ export async function composeMessage(job: Job, sender: SenderProfile, campaign: 
   vars["資料リンク"] = campaign.material_url || "";
   const variant = variantFor(job, campaign);
   const template = variant === "B" ? campaign.template_b : campaign.template_text;
-  const subject = renderTemplate(subjectFor(job, campaign, variant), vars);
+  // 件名の {{AI冒頭}} は以前から空にしていたので、そのまま空にする（知らない名前の扱いだけを変える）
+  const subject = renderTemplate(subjectFor(job, campaign, variant), { ...vars, AI冒頭: "" });
   let message: string;
   let aiUsed = false;
   const canAi = activeProvider() !== "none" && !aiOverBudget();
@@ -319,6 +342,8 @@ export function lintMessage(message: string, subject: string, channel: "form" | 
   if (/【ここに/.test(subject)) out.push({ level: "error", text: "件名の【ここに…】の部分が未記入です" });
   const leftover = message.match(/\{\{[^}]+\}\}/g);
   if (leftover) out.push({ level: "error", text: `差し込みが置き換わっていません: ${Array.from(new Set(leftover)).join(" ")}` });
+  const subjectLeft = subject.match(/\{\{[^}]+\}\}/g);
+  if (subjectLeft) out.push({ level: "error", text: `件名の差し込みが置き換わっていません: ${Array.from(new Set(subjectLeft)).join(" ")}` });
   const len = message.replace(/\s/g, "").length;
   if (len < 120) out.push({ level: "warn", text: `本文が短すぎます（${len}文字）。200〜500文字が目安です` });
   if (len > 1200) out.push({ level: "warn", text: `本文が長すぎます（${len}文字）。600文字以内が目安です` });

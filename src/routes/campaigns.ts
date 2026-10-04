@@ -26,9 +26,10 @@ import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmai
 import { notify, notifyEnabled } from "../notify.js";
 import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel } from "../update.js";
 import { errorPage } from "../ui/layout.js";
+import { resultNote } from "../ui/parts.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
-import { app, upload, db, flashes, redirectWith, takeFlash, me, appState, navUser, scope, ownedCampaign, ownedSender, notFound, forbidden, groupCandidates, applyGroupMembers, groupNames, retryTargetJobs, campaignRows, extraSenderIds, saveMaterial, removeMaterialFileIfUnused, loadCampaignFull, lastImports, pendingImports, previews, fetchGoogleSheetCsv, ReactionRow, jobFilter, CAMPAIGN_EXPORT_COLS, importHistory, recentUndo, deleteJobsWhere, setupState, setupProgress, todoCounts, lawKey, TODO_ANY, todoActive } from "../app/context.js";
+import { app, upload, db, setFlash, safeAsync, needsBrowser, redirectWith, takeFlash, me, appState, navUser, scope, ownedCampaign, ownedSender, notFound, forbidden, groupCandidates, applyGroupMembers, groupNames, retryTargetJobs, campaignRows, extraSenderIds, saveMaterial, removeMaterialFileIfUnused, loadCampaignFull, lastImports, pendingImports, previews, fetchGoogleSheetCsv, ReactionRow, jobFilter, CAMPAIGN_EXPORT_COLS, importHistory, recentUndo, deleteJobsWhere, setupState, setupProgress, todoCounts, lawKey, TODO_ANY, todoActive, campaignNumbers, CAMPAIGN_NUM_DEFAULTS } from "../app/context.js";
 
 /** この画面の経路を登録する。server.ts から、ログイン確認などの共通処理のあとに呼ばれる */
 export function register(): void {
@@ -123,13 +124,14 @@ app.post("/campaigns", upload.single("material_file"), (req, res) => {
   const channel = ["form_first", "email_first", "email_only", "form_only", "form", "email", "both"].includes(b.channel) ? b.channel : "form_first";
   if (!ownedSender(req, Number(b.sender_id))) return redirectWith(res, "/campaigns/new", "送信者を選び直してください");
   const materialUrl = String(b.material_url ?? "").trim();
+  const nums = campaignNumbers(b, CAMPAIGN_NUM_DEFAULTS);
   const r = db.prepare(`INSERT INTO form_campaigns(owner_user_id, name, sender_id, mode, subject_text, template_text, ai_instruction, daily_limit, send_window_start, send_window_end, weekdays_only, channel, email_daily_limit, resend_days, ignore_refusal, material_url, group_name, material_url_in_email, email_warmup, email_sender_ids, ab_enabled, template_b, subject_b, subject_alts)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(me(req).id, b.name, Number(b.sender_id), b.mode, b.subject_text ?? "", b.template_text ?? "", b.ai_instruction ?? "", Number(b.daily_limit) || 300, Number(b.send_window_start) || 9, Number(b.send_window_end) || 18, Number(b.weekdays_only) ? 1 : 0, channel, Number(b.email_daily_limit) || 100, Math.max(0, Number(b.resend_days ?? 90) || 0), Number(b.ignore_refusal) ? 1 : 0, materialUrl, String(b.group_name ?? "").trim(), b.material_url_in_email === "1" ? 1 : 0, b.email_warmup === "1" ? 1 : 0, extraSenderIds(req, b), b.ab_enabled === "1" ? 1 : 0, String(b.template_b ?? ""), String(b.subject_b ?? ""), String(b.subject_alts ?? ""));
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(me(req).id, b.name, Number(b.sender_id), b.mode, b.subject_text ?? "", b.template_text ?? "", b.ai_instruction ?? "", nums.daily_limit, nums.send_window_start, nums.send_window_end, Number(b.weekdays_only) ? 1 : 0, channel, nums.email_daily_limit, nums.resend_days, Number(b.ignore_refusal) ? 1 : 0, materialUrl, String(b.group_name ?? "").trim(), b.material_url_in_email === "1" ? 1 : 0, b.email_warmup === "1" ? 1 : 0, extraSenderIds(req, b), b.ab_enabled === "1" ? 1 : 0, String(b.template_b ?? ""), String(b.subject_b ?? ""), String(b.subject_alts ?? ""));
   const cid = Number(r.lastInsertRowid);
   // 資料ファイル（メール添付用）を保存する
   const warn = req.file ? saveMaterial(cid, req.file) : "";
   applyGroupMembers(req, cid, "", b);
-  redirectWith(res, `/campaigns/${cid}`, `キャンペーンを作成しました。CSVを取り込んでください。${warn ? `／${warn}` : ""}`);
+  redirectWith(res, `/campaigns/${cid}`, `キャンペーンを作成しました。CSVを取り込んでください。${warn ? `／${warn}` : ""}${nums.note ? `／${nums.note}` : ""}`);
 });
 
 // ---- キャンペーン編集 ----
@@ -150,8 +152,9 @@ app.post("/campaigns/:id/edit", upload.single("material_file"), (req, res) => {
   const b = req.body;
   const channel = ["form_first", "email_first", "email_only", "form_only", "form", "email", "both"].includes(b.channel) ? b.channel : "form_first";
   if (!ownedSender(req, Number(b.sender_id))) return redirectWith(res, `/campaigns/${id}/edit`, "送信者を選び直してください");
+  const nums = campaignNumbers(b, before);
   db.prepare(`UPDATE form_campaigns SET name=?, sender_id=?, mode=?, subject_text=?, template_text=?, ai_instruction=?, daily_limit=?, send_window_start=?, send_window_end=?, weekdays_only=?, channel=?, email_daily_limit=?, resend_days=?, ignore_refusal=?, material_url=?, group_name=?, material_url_in_email=?, email_warmup=?, email_sender_ids=?, ab_enabled=?, template_b=?, subject_b=?, subject_alts=? WHERE id=?`)
-    .run(b.name, Number(b.sender_id), b.mode, b.subject_text ?? "", b.template_text ?? "", b.ai_instruction ?? "", Number(b.daily_limit) || 300, Number(b.send_window_start) || 9, Number(b.send_window_end) || 18, Number(b.weekdays_only) ? 1 : 0, channel, Number(b.email_daily_limit) || 100, Math.max(0, Number(b.resend_days ?? 90) || 0), Number(b.ignore_refusal) ? 1 : 0, String(b.material_url ?? "").trim(), String(b.group_name ?? "").trim(), b.material_url_in_email === "1" ? 1 : 0, b.email_warmup === "1" ? 1 : 0, extraSenderIds(req, b), b.ab_enabled === "1" ? 1 : 0, String(b.template_b ?? ""), String(b.subject_b ?? ""), String(b.subject_alts ?? ""), id);
+    .run(b.name, Number(b.sender_id), b.mode, b.subject_text ?? "", b.template_text ?? "", b.ai_instruction ?? "", nums.daily_limit, nums.send_window_start, nums.send_window_end, Number(b.weekdays_only) ? 1 : 0, channel, nums.email_daily_limit, nums.resend_days, Number(b.ignore_refusal) ? 1 : 0, String(b.material_url ?? "").trim(), String(b.group_name ?? "").trim(), b.material_url_in_email === "1" ? 1 : 0, b.email_warmup === "1" ? 1 : 0, extraSenderIds(req, b), b.ab_enabled === "1" ? 1 : 0, String(b.template_b ?? ""), String(b.subject_b ?? ""), String(b.subject_alts ?? ""), id);
   const attachWarn = req.file ? saveMaterial(id, req.file) : "";
   if (req.file) { /* 保存済み。注意文は下の完了メッセージに付ける */ }
   else if (b.remove_attach === "1" && before.attach_path) {
@@ -159,10 +162,10 @@ app.post("/campaigns/:id/edit", upload.single("material_file"), (req, res) => {
     db.prepare("UPDATE form_campaigns SET attach_path='', attach_name='' WHERE id=?").run(id);
     removeMaterialFileIfUnused(before.attach_path);
     applyGroupMembers(req, id, prevGroupName, b);
-    return redirectWith(res, `/campaigns/${id}/edit`, `添付ファイル「${before.attach_name}」を削除しました（メールは添付なしで送られます）`);
+    return redirectWith(res, `/campaigns/${id}/edit`, `添付ファイル「${before.attach_name}」を削除しました（メールは添付なしで送られます）${nums.note ? `／${nums.note}` : ""}`);
   }
   applyGroupMembers(req, id, prevGroupName, b);
-  redirectWith(res, `/campaigns/${id}`, `キャンペーンを保存しました${attachWarn ? `／${attachWarn}` : ""}`);
+  redirectWith(res, `/campaigns/${id}`, `キャンペーンを保存しました${attachWarn ? `／${attachWarn}` : ""}${nums.note ? `／${nums.note}` : ""}`);
 });
 
 app.get("/campaigns/:id", (req, res) => {
@@ -270,7 +273,7 @@ app.get("/campaigns/:id/test", (req, res) => {
   res.send(layout(`テスト送信 | ${c.name}`, testView(c, tests), takeFlash(req), navUser(req), appState.updateReady));
 });
 
-app.post("/campaigns/:id/import", upload.single("csv"), async (req, res) => {
+app.post("/campaigns/:id/import", upload.single("csv"), safeAsync(async (req, res) => {
   const id = Number(req.params.id);
   if (!ownedCampaign(req, id)) return forbidden(req, res);
   const pasted = String(req.body.pasted ?? "").trim();
@@ -296,9 +299,9 @@ app.post("/campaigns/:id/import", upload.single("csv"), async (req, res) => {
     const c = loadCampaignFull(req, id)!;
     res.send(layout(`取り込みプレビュー | ${c.name}`, importPreviewView(c, rows, dry, srcLabel), takeFlash(req), navUser(req), appState.updateReady));
   } catch (e) {
-    redirectWith(res, `/campaigns/${id}`, `取り込みエラー: ${String((e as Error).message)}`);
+    redirectWith(res, `/campaigns/${id}`, `取り込みエラー: ${jpError(e, 200)}`);
   }
-});
+}, (req) => `/campaigns/${Number(req.params.id)}`));
 
 // プレビューを確認して実際に取り込む
 app.post("/campaigns/:id/import-confirm", (req, res) => {
@@ -316,11 +319,13 @@ app.post("/campaigns/:id/import-confirm", (req, res) => {
 // プレビューを取り消す
 app.post("/campaigns/:id/import-cancel", (req, res) => {
   const id = Number(req.params.id);
+  // 他人のキャンペーンの取り込み待ちを消せないように
+  if (!ownedCampaign(req, id)) return forbidden(req, res);
   pendingImports.delete(id);
   redirectWith(res, `/campaigns/${id}`, "取り込みを取り消しました");
 });
 
-app.post("/campaigns/:id/preview", async (req, res) => {
+app.post("/campaigns/:id/preview", safeAsync(async (req, res) => {
   const id = Number(req.params.id);
   const c = loadCampaignFull(req, id);
   if (!c) return notFound(req, res);
@@ -346,9 +351,9 @@ app.post("/campaigns/:id/preview", async (req, res) => {
   } catch (e) {
     redirectWith(res, `/campaigns/${id}`, `プレビュー生成エラー: ${jpError(e, 160)}`);
   }
-});
+}, (req) => `/campaigns/${Number(req.params.id)}`));
 
-app.post("/campaigns/:id/test", async (req, res) => {
+app.post("/campaigns/:id/test", safeAsync(async (req, res) => {
   const id = Number(req.params.id);
   if (!ownedCampaign(req, id)) return forbidden(req, res);
   const url = String(req.body.url ?? "").trim();
@@ -359,18 +364,21 @@ app.post("/campaigns/:id/test", async (req, res) => {
   const r = email
     ? db.prepare("INSERT INTO form_jobs(campaign_id, company_name, form_url, site_url, industry, domain, is_test, channel, email) VALUES(?,?,?,?,?,?,1,'email',?)").run(id, company, "", "", "テスト業種", email.split("@")[1] ?? "", email)
     : db.prepare("INSERT INTO form_jobs(campaign_id, company_name, form_url, site_url, industry, domain, is_test) VALUES(?,?,?,?,?,?,1)").run(id, company, url, url, "テスト業種", domainOf(url));
-  const browser = await launchBrowser();
+  // メールのテストはブラウザを使わない（ブラウザが入っていないPCでもメールは試せるように）。
+  // 起動の失敗も画面に出せるよう try の中で起動する（外で失敗すると応答が返らず、画面が固まっていた）
+  let browser: Awaited<ReturnType<typeof launchBrowser>> | null = null;
   try {
-    const j = await processJob(browser, Number(r.lastInsertRowid), { dryRun: dry });
-    redirectWith(res, `/jobs/${j.id}`, dry ? "入力テストが終わりました。スクリーンショットで入力内容を確認してください" : `テスト送信の結果: ${j.status}`);
+    if (needsBrowser(email ? "email" : "form", id)) browser = await launchBrowser();
+    const j = await processJob(browser as never, Number(r.lastInsertRowid), { dryRun: dry });
+    redirectWith(res, `/jobs/${j.id}`, dry ? "入力テストが終わりました。スクリーンショットで入力内容を確認してください" : `テスト送信の結果: ${resultNote(j)}`);
   } catch (e) {
-    redirectWith(res, `/campaigns/${id}/test`, `テスト送信エラー: ${String((e as Error).message)}`);
+    redirectWith(res, `/campaigns/${id}/test`, `テスト送信できませんでした: ${jpError(e, 160)}`);
   } finally {
-    await browser.close().catch(() => {});
+    await browser?.close().catch(() => {});
   }
-});
+}, (req) => `/campaigns/${Number(req.params.id)}/test`));
 
-app.post("/campaigns/:id/start", async (req, res) => {
+app.post("/campaigns/:id/start", safeAsync(async (req, res) => {
   const id = Number(req.params.id);
   const camp = ownedCampaign(req, id);
   if (!camp) return forbidden(req, res);
@@ -383,7 +391,7 @@ app.post("/campaigns/:id/start", async (req, res) => {
   const willSendEmail = only !== "form" && channelMode(camp.channel) !== "form_only";
   // 営業メールの表示義務の確認を、最初の1回だけ見てもらう（#85）
   if (willSendEmail && !getSetting(lawKey(me(req).id), "")) {
-    flashes.set("/law", "営業メールを送る前に、法律で必要な表示（名称・住所・配信停止の連絡先）をご確認ください。確認は最初の1回だけです");
+    setFlash(req, "/law", "営業メールを送る前に、法律で必要な表示（名称・住所・配信停止の連絡先）をご確認ください。確認は最初の1回だけです");
     return res.redirect("/law");
   }
   if (willSendEmail) {
@@ -413,7 +421,7 @@ app.post("/campaigns/:id/start", async (req, res) => {
   runCampaign(id, { ignoreWindow }).then((r) => console.log(`[campaign ${id}] ${r.processed}件処理 (${r.reason})`)).catch((e) => { console.error(e); logError("worker", `送信を開始できませんでした: ${jpError(e)}`); });
   const onlyLabel = only === "email" ? "メールの会社だけ" : only === "form" ? "フォームの会社だけ" : "すべて";
   redirectWith(res, `/campaigns/${id}`, `送信を開始しました（対象: ${onlyLabel}${ignoreWindow ? "・時間帯を無視" : ""}）${ignoreWindow ? "" : "。送信時間帯外の場合は時間になると自動で始まります"}`);
-});
+}, (req) => `/campaigns/${Number(req.params.id)}`, "開始できませんでした"));
 
 app.post("/campaigns/:id/scan", (req, res) => {
   const id = Number(req.params.id);
@@ -492,7 +500,7 @@ app.get("/campaigns/:id/export.csv", (req, res) => {
 });
 
 /** 手動送信リスト: CAPTCHA等で自動送信できなかった会社を、人が送るためのURL＋文面つきで書き出す */
-app.get("/campaigns/:id/manual.csv", async (req, res) => {
+app.get("/campaigns/:id/manual.csv", safeAsync(async (req, res) => {
   const id = Number(req.params.id);
   const c = loadCampaignFull(req, id);
   if (!c) return notFound(req, res);
@@ -509,7 +517,7 @@ app.get("/campaigns/:id/manual.csv", async (req, res) => {
   res.setHeader("content-type", "text/csv; charset=utf-8");
   res.setHeader("content-disposition", `attachment; filename=manual-${id}.csv`);
   res.send("\ufeff" + lines.join("\n"));
-});
+}));
 
 // キャンペーンを複製（設定・文面をコピー。会社リストや送信履歴はコピーしない）
 // キャンペーンを削除（取り込んだ会社・送信履歴・スクリーンショット・添付資料も）。除外リストは共通なので残す。
@@ -573,17 +581,18 @@ app.post("/campaigns/import", upload.single("file"), (req, res) => {
     const senderId = Number(req.body.sender_id);
     if (!ownedSender(req, senderId)) return redirectWith(res, "/", "送信者を選んでください（読み込んだ設定は、自分の送信者に結び付けます）");
     const str = (k: string, fb = "") => String(c[k] ?? fb);
-    const num = (k: string, fb: number) => (Number.isFinite(Number(c[k])) ? Number(c[k]) : fb);
+    // 画面での作成・編集と同じ読み方（範囲・開始＜終了）にそろえる
+    const nums = campaignNumbers(c, CAMPAIGN_NUM_DEFAULTS);
     const channel = ["form_first", "email_first", "email_only", "form_only"].includes(str("channel")) ? str("channel") : "form_first";
     const mode = ["template", "tpl_ai", "hybrid", "ai"].includes(str("mode")) ? str("mode") : "template";
     const r = db.prepare(`INSERT INTO form_campaigns(owner_user_id, name, sender_id, mode, subject_text, template_text, ai_instruction, daily_limit, send_window_start, send_window_end, weekdays_only, channel, email_daily_limit, resend_days, ignore_refusal, material_url, group_name, material_url_in_email, status)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft')`)
       .run(me(req).id, str("name", "読み込んだキャンペーン"), senderId, mode, str("subject_text"), str("template_text"), str("ai_instruction"),
-        num("daily_limit", 300), num("send_window_start", 9), num("send_window_end", 18), Number(c.weekdays_only) ? 1 : 0, channel,
-        num("email_daily_limit", 100), num("resend_days", 90), Number(c.ignore_refusal) ? 1 : 0, str("material_url"), str("group_name"), Number(c.material_url_in_email) ? 1 : 0);
+        nums.daily_limit, nums.send_window_start, nums.send_window_end, Number(c.weekdays_only) ? 1 : 0, channel,
+        nums.email_daily_limit, nums.resend_days, Number(c.ignore_refusal) ? 1 : 0, str("material_url"), str("group_name"), Number(c.material_url_in_email) ? 1 : 0);
     redirectWith(res, `/campaigns/${r.lastInsertRowid}`, "キャンペーンの設定を読み込みました。会社リストを取り込んで開始してください");
   } catch (e) {
-    redirectWith(res, "/", `読み込みエラー: ${String((e as Error).message).slice(0, 120)}`);
+    redirectWith(res, "/", `読み込みエラー: ${e instanceof SyntaxError ? "ファイルの中身が壊れているか、キャンペーンの設定ファイル（.json）ではありません" : jpError(e, 120)}`);
   }
 });
 

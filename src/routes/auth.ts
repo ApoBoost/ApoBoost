@@ -27,15 +27,48 @@ import { notify, notifyEnabled } from "../notify.js";
 import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel } from "../update.js";
 import { errorPage } from "../ui/layout.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
-import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
+import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, needsFirstSetup, isLocalRequest, createFirstAdmin, defaultAdminUsername, type AuthedRequest } from "../auth.js";
+import { firstAdminPage } from "../ui/account.js";
 import { app, db, redirectWith, takeFlash, me, appState, navUser, loginFails, LOGIN_WINDOW, recentFails, issuedOnce, shareUrls } from "../app/context.js";
+
+/** 管理者がまだいないのに、このPC以外から開いたときの案内 */
+const FIRST_SETUP_ELSEWHERE = "まだ管理者が決まっていません。ApoBoost を起動したパソコンで http://localhost:" + (process.env.PORT ?? 3210) + " を開き、管理者のログインIDとパスワードを決めてください";
 
 /** この画面の経路を登録する。server.ts から、ログイン確認などの共通処理のあとに呼ばれる */
 export function register(): void {
 // ---- ログイン画面 ----
 app.get("/login", (req, res) => {
   if ((req as AuthedRequest).user) return res.redirect("/");
-  res.send(loginPage({ next: String(req.query.next ?? "/") }));
+  // 管理者がまだいないのに他のPCから開いた場合: ここではログインできないので、どこで何をすればよいかを出す
+  const notice = needsFirstSetup() ? FIRST_SETUP_ELSEWHERE : undefined;
+  res.send(loginPage({ next: String(req.query.next ?? "/"), notice }));
+});
+
+// ---- 初回設定（管理者がまだいないとき、このPCから開いた人に管理者のIDとパスワードを決めてもらう）----
+app.get("/welcome", (req, res) => {
+  if (!needsFirstSetup()) return res.redirect("/");
+  if (!isLocalRequest(req)) return res.status(403).send(loginPage({ notice: FIRST_SETUP_ELSEWHERE }));
+  res.send(firstAdminPage({ username: defaultAdminUsername() }));
+});
+
+app.post("/welcome", (req, res) => {
+  if (!needsFirstSetup()) return res.redirect("/login");
+  if (!isLocalRequest(req)) return res.status(403).send(loginPage({ notice: FIRST_SETUP_ELSEWHERE }));
+  // 別のサイトからこの画面に送り込まれた送信は受けない（他人が決めたパスワードで管理者を作られないように）。
+  // いまのブラウザはフォーム送信に Origin を付けるので、付いていれば自分のURLと一致するかを見る
+  const origin = String(req.headers.origin ?? "");
+  if (origin && origin !== `${req.protocol}://${req.headers.host}`) return res.status(403).send(firstAdminPage({ error: "この画面は、ApoBoost の画面から開いて送ってください" }));
+  const username = String(req.body.username ?? "").trim();
+  const p1 = String(req.body.password ?? ""), p2 = String(req.body.password2 ?? "");
+  if (p1 !== p2) return res.status(400).send(firstAdminPage({ username, error: "パスワードが一致しません。もう一度入力してください" }));
+  try {
+    const u = createFirstAdmin(username, p1);
+    logInfo("auth", `最初の管理者を作りました（ログインID: ${u.username}）`);
+    startSession(res, u.id);
+    redirectWith(res, "/", `管理者「${u.username}」でログインしました。下の「はじめの設定」から進めてください`);
+  } catch (e) {
+    res.status(400).send(firstAdminPage({ username, error: String((e as Error).message) }));
+  }
 });
 
 app.post("/login", (req, res) => {

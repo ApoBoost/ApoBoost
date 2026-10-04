@@ -64,7 +64,9 @@ export function enableAutostart(): { ok: boolean; message: string } {
     }
     // Windows
     fs.mkdirSync(WIN_STARTUP, { recursive: true });
-    const bat = `@echo off\r\nrem ApoBoostをログイン時に起動する（画面右上の設定から作成されたファイルです）\r\ncd /d "${ROOT}"\r\nstart "ApoBoost" /min cmd /c "npm start"\r\n`;
+    // chcp 65001 を先に置く: このファイルは UTF-8 で書くが、cmd は既定で Shift_JIS として読むため、
+    // フォルダ名に日本語があると cd に失敗して起動しなかった（ApoBoost起動.bat と同じ対策）
+    const bat = `@echo off\r\nchcp 65001 >nul\r\nrem ApoBoostをログイン時に起動する（画面右上の設定から作成されたファイルです）\r\ncd /d "${ROOT}"\r\nstart "ApoBoost" /min cmd /c "npm start"\r\n`;
     fs.writeFileSync(WIN_FILE, bat, "utf8");
     logInfo("autostart", "ログイン時の自動起動をオンにしました（Windows）");
     return { ok: true, message: "パソコンのログイン時に自動で起動します（最小化された黒い画面が1つ出ます。閉じないでください）" };
@@ -73,6 +75,15 @@ export function enableAutostart(): { ok: boolean; message: string } {
     logError("autostart", `自動起動の設定に失敗: ${msg}`);
     return { ok: false, message: `設定に失敗しました: ${msg.slice(0, 160)}` };
   }
+}
+
+/** 起動時: 以前の版で作った Windows の自動起動ファイル（chcp 65001 が無い）を作り直す。
+ *  日本語のフォルダに置いたPCでは、古いファイルのままだと自動起動が黙って失敗し続けるため */
+export function repairAutostart(): void {
+  if (process.platform !== "win32") return;
+  try {
+    if (fs.existsSync(WIN_FILE) && !fs.readFileSync(WIN_FILE, "utf8").includes("chcp 65001")) enableAutostart();
+  } catch { /* 読めなくても起動は続ける */ }
 }
 
 export function disableAutostart(): { ok: boolean; message: string } {

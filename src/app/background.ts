@@ -31,7 +31,9 @@ import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, 
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
 import { app, db, refreshUpdateFlag, syncAllSuppressions, autoUpdateIfEnabled, dailySummaryIfDue, onReplyErr, onShareErr, onSuppErr } from "./context.js";
 
-/** タイマーと終了時の処理を仕掛ける。起動時に1回だけ呼ぶ */
+/** タイマーと終了時の処理を仕掛ける。起動時に1回だけ、待ち受け（listen）に成功してから呼ぶ。
+ *  下の「送信中→失敗」の後始末は、ApoBoost がこのPCで自分しか動いていない前提の処理なので、
+ *  二重起動（ポートが使用中）のときに走ると、動いている方の送信中の会社を失敗にしてしまう（server.ts 参照） */
 export function startBackground(): void {
 // ---- 起動時: 前回アプリが止まったときに「送信中」のまま残った会社 ----
 // 送信の途中でアプリが止まると、そのまま「送信中」で永久に残り、再送信の対象にもならなかった。

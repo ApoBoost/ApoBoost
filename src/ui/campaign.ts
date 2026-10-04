@@ -4,7 +4,8 @@ import { STATUS_LABEL, OUTCOME_LABEL, CHANNEL_LABEL, channelMode, jst, type Camp
 import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
 import { esc, layout, n, type NavUser, IC_MAIL, IC_FORM, IC_WARN } from "./layout.js";
-import { statusTag, errKindTag, scoreTag, statusCell, MODE_LABEL, campaignStatusTag, STATUS_LEGEND, post } from "./parts.js";
+import { statusTag, errKindTag, scoreTag, statusCell, MODE_LABEL, campaignStatusTag, STATUS_LEGEND, post, ONCE_SNIPPET } from "./parts.js";
+import { headerReport, type CompanyRows } from "../csv.js";
 
 export function campaignForm(senders: SenderProfile[], defaults: Partial<Campaign>, provider: string, editId?: number, groups: string[] = [], others: { id: number; name: string; group_name: string }[] = []) {
   const d = (k: keyof Campaign, fb: unknown = "") => esc(defaults[k] ?? fb);
@@ -82,7 +83,7 @@ ${provider === "none" ? '<p class="muted small" data-nohelp>AIを使うモード
 <label>AIへの追加指示（任意）</label><input type="text" name="ai_instruction" value="${d("ai_instruction")}" placeholder="例: 採用課題に寄せる／飲食店向けに集客の話をする">
 </div><div data-step="3"><h2>③ 上限と時間帯</h2>
 ${editId ? "" : `<p class="muted" data-nohelp>ここは最初のままで大丈夫です。あとから「設定を変える」でいつでも変更できます。</p>`}
-<div class="row3"><div><label>1日の上限（フォーム／メール）</label><div class="row"><input type="number" name="daily_limit" value="${d("daily_limit", 300)}" title="フォーム" placeholder="フォーム"><input type="number" name="email_daily_limit" value="${d("email_daily_limit", 100)}" title="メール" placeholder="メール"></div></div><div><label>送信時間帯（開始・終了 時）</label><div class="row"><input type="number" name="send_window_start" value="${d("send_window_start", 9)}" min="0" max="23"><input type="number" name="send_window_end" value="${d("send_window_end", 18)}" min="1" max="24"></div></div><div><label>平日のみ</label><select name="weekdays_only"><option value="1" ${Number(defaults.weekdays_only ?? 1) ? "selected" : ""}>はい</option><option value="0" ${defaults.weekdays_only !== undefined && !Number(defaults.weekdays_only) ? "selected" : ""}>土日も送る</option></select></div></div>
+<div class="row3"><div><label>1日の上限（フォーム／メール）</label><div class="row"><input type="number" name="daily_limit" value="${d("daily_limit", 300)}" min="0" title="フォーム（0にするとフォームでは送りません）" placeholder="フォーム"><input type="number" name="email_daily_limit" value="${d("email_daily_limit", 100)}" min="0" title="メール（0にするとメールでは送りません）" placeholder="メール"></div></div><div><label>送信時間帯（開始・終了 時）</label><div class="row"><input type="number" name="send_window_start" id="winstart" value="${d("send_window_start", 9)}" min="0" max="23"><input type="number" name="send_window_end" id="winend" value="${d("send_window_end", 18)}" min="1" max="24"></div></div><div><label>平日のみ</label><select name="weekdays_only"><option value="1" ${Number(defaults.weekdays_only ?? 1) ? "selected" : ""}>はい</option><option value="0" ${defaults.weekdays_only !== undefined && !Number(defaults.weekdays_only) ? "selected" : ""}>土日も送る</option></select></div></div>
 <div class="small" style="margin:-4px 0 14px;padding:10px 12px;background:var(--honey-50);border:1px solid var(--honey);border-radius:8px;line-height:1.7">
 <b>${IC_WARN} メールの上限は少なめに（Gmailのアカウント停止を防ぐため）</b><br>
 短時間に大量に送ると、Googleに「普段と違う利用」と判断され、<b>アカウントが一時停止</b>されます（通常1時間〜最大24時間。停止中は送信も返信の確認もできません）。上限の数だけでなく、次の条件が重なると止められやすくなります。<br>
@@ -97,7 +98,7 @@ ${editId ? "" : `<p class="muted" data-nohelp>ここは最初のままで大丈�
 ${senders.length > 1 ? `<label>メールで使う送信アカウントを増やす（任意）</label>
 <p class="muted small" style="margin:0 0 6px">上限に達したアカウントの代わりに、ここで選んだアカウントから続けて送ります（1日に送れる数が増えます）。署名・住所も、実際に送ったアカウントのものになります。</p>
 <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px">${senders.filter((x) => x.id !== Number(defaults.sender_id ?? 0)).map((x) => `<label class="small" style="display:flex;align-items:center;gap:6px;font-weight:400"><input type="checkbox" name="email_sender_ids" value="${x.id}" ${String(defaults.email_sender_ids ?? "").split(",").includes(String(x.id)) ? "checked" : ""} style="width:auto">${esc(x.label || x.company)}（${esc(x.smtp_user || x.email)}）</label>`).join("")}</div>` : ""}
-<div class="row3"><div><label>同じ会社への再送を止める期間（日・0で制限なし）</label><input type="number" name="resend_days" value="${d("resend_days", 90)}" min="0"></div><div><label>「営業お断り」のサイト</label><select name="ignore_refusal"><option value="0" ${Number(defaults.ignore_refusal ?? 0) ? "" : "selected"}>送らない（推奨）</option><option value="1" ${Number(defaults.ignore_refusal ?? 0) ? "selected" : ""}>送る（クレームの恐れあり）</option></select></div><div></div></div>
+<div class="row3"><div><label>同じ会社への再送を止める期間（日・0で制限なし）</label><input type="number" name="resend_days" value="${d("resend_days", 90)}" min="0" max="3650"></div><div><label>「営業お断り」のサイト</label><select name="ignore_refusal"><option value="0" ${Number(defaults.ignore_refusal ?? 0) ? "" : "selected"}>送らない（推奨）</option><option value="1" ${Number(defaults.ignore_refusal ?? 0) ? "selected" : ""}>送る（クレームの恐れあり）</option></select></div><div></div></div>
 <h2>資料の添付（任意）</h2>
 <p class="muted">メール送信では下のファイルを添付します。フォーム送信ではファイルを添付できないため、代わりに「資料の公開リンク」を本文末尾に自動で載せます（本文に {{資料リンク}} を書けばその位置に入ります）。</p>
 <div class="row"><div><label>資料ファイル（メール添付用・PDF等）</label><input type="file" name="material_file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.png,.jpg">${defaults.attach_name ? `<p class="muted small" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">現在の添付: <b>${d("attach_name")}</b>（新しいファイルを選ぶと置き換わります）${editId ? `<input type="hidden" name="remove_attach" value="0"><button type="button" class="btn sub small" data-n="${d("attach_name")}" onclick="if(confirm('添付ファイル「' + this.dataset.n + '」を削除します。以後のメールは添付なしで送られます（画面のほかの変更も一緒に保存されます）。よろしいですか？')){var f=this.form;f.querySelector('input[name=remove_attach]').value='1';f.querySelectorAll('[required]').forEach(function(x){x.removeAttribute('required')});if(f.requestSubmit){f.requestSubmit()}else{f.submit()}}">添付を削除</button>` : ""}</p>` : ""}</div><div><label>資料の公開リンク（フォーム本文用・URL）</label><input type="url" name="material_url" value="${d("material_url")}" placeholder="https://（Googleドライブ等の共有リンク）"><label class="inline small" style="display:flex;gap:6px;align-items:center;margin-top:6px;font-weight:400"><input type="checkbox" name="material_url_in_email" value="1" style="width:auto" ${Number((defaults as { material_url_in_email?: number }).material_url_in_email ?? 0) ? "checked" : ""}> メールの本文にもこのリンクを載せる</label><p class="muted small" style="margin:2px 0 0">重い資料を添付すると、相手が受け取れずに戻ってきたり、Gmailが一時停止されやすくなります。メールでもリンクで送る場合は、ここにチェックを入れて上の添付を削除してください。</p><p class="muted small">このアプリは各自のPCで動くため、アップロードしたファイルに外部から見えるURLは付けられません。フォーム用にはドライブ等で共有した公開リンクを貼ってください。</p></div></div>
@@ -105,6 +106,12 @@ ${senders.length > 1 ? `<label>メールで使う送信アカウントを増や�
 <p id="stepnav" style="display:flex;gap:8px;align-items:center;margin-top:18px">
 ${editId ? "" : `<button type="button" class="btn" id="stepback" hidden>← 戻る</button><button type="button" class="btn primary" id="stepnext">次へ →</button>`}
 <button class="btn primary" id="stepsubmit">${editId ? "保存する" : "作成する"}</button></p></form>
+<script>
+// 送信時間帯は「開始 < 終了」でないと1通も送れないので、保存の前に止める（サーバー側でも確かめる）
+(()=>{const s=document.getElementById("winstart"),e=document.getElementById("winend");if(!s||!e)return;
+const chk=()=>{const a=Number(s.value),b=Number(e.value);e.setCustomValidity(s.value!==""&&e.value!==""&&a>=b?"終了の時刻は、開始の時刻より後にしてください（例: 9時〜18時）":"")};
+s.addEventListener("input",chk);e.addEventListener("input",chk);chk();})();
+</script>
 ${editId ? "" : `<script>
 // 新しいキャンペーンは3ステップで作る（#109）。30項目が1画面に並んでいて、どこまで入れればよいか分からなかったため。
 // 入力内容は1つのフォームのままなので、途中で画面を離れても下書きとして残る。
@@ -116,6 +123,9 @@ ${editId ? "" : `<script>
   // いまのステップの必須欄が空なら先に進ませない
   const valid=()=>{const bad=Array.from(steps[cur-1].querySelectorAll("input,select,textarea")).find(el=>!el.checkValidity());if(bad){bad.reportValidity();return false;}return true;};
   next.addEventListener("click",()=>{if(valid())show(cur+1)});
+  // 途中のステップで Enter を押すと、③を見ないまま作成されていた（隠れている「作成する」が押された扱いになる）。
+  // ③より前では送信せず「次へ」と同じ動きにする
+  document.getElementById("campform").addEventListener("submit",(e)=>{if(cur<3){e.preventDefault();e.stopImmediatePropagation();if(valid())show(cur+1);}});
   back.addEventListener("click",()=>show(cur-1));
   bar.querySelectorAll("a").forEach(a=>{a.style.cursor="pointer";a.addEventListener("click",()=>{const to=Number(a.dataset.go);if(to<cur||valid())show(to)})});
   // 途中のステップに必須欄の未入力があるまま送信しようとした場合は、そのステップを開く
@@ -470,8 +480,11 @@ setTimeout(()=>location.reload(),15000); // 一覧の中身も15秒ごとに更�
 
 /** テスト送信の専用ページ。自社フォーム宛ての動作確認と、テスト履歴 */
 /** 取り込みプレビュー: 実際に登録する前に、先頭数行と件数内訳を見せて確認してもらう */
-export function importPreviewView(c: Campaign & { sender: SenderProfile }, rows: import("../csv.js").CompanyRow[], summary: import("../csv.js").ImportSummary, srcLabel: string): string {
+export function importPreviewView(c: Campaign & { sender: SenderProfile }, rows: CompanyRows, summary: import("../csv.js").ImportSummary, srcLabel: string): string {
   const sample = rows.slice(0, 8);
+  // どの見出しをどの項目として読んだか／読まなかったか。列名が違って読めていないことに、取り込む前に気づけるように
+  const hr = headerReport(rows.headers ?? []);
+  const noUrlCol = !hr.used.some((u) => u.field === "企業URL" || u.field === "問い合わせフォーム" || u.field === "メール");
   const cell = (v: string) => `<td class="small">${esc((v || "").slice(0, 40)) || '<span class="muted">―</span>'}</td>`;
   const willSend = summary.added, willSkip = summary.excluded + summary.suppressed + summary.duplicated + summary.noUrl;
   return `<h1>取り込みプレビュー <span class="tag">${esc(srcLabel)}</span></h1>
@@ -483,6 +496,11 @@ ${summary.noEntity && summary.noEntity.length ? `<p class="small" style="color:v
 <form method="post" action="/campaigns/${c.id}/import-confirm" class="inline" data-busy><button class="btn primary" data-busytext="取り込み中…">この内容で取り込む（${rows.length}行）</button></form>
 <form method="post" action="/campaigns/${c.id}/import-cancel" class="inline"><button class="btn sub">やめる</button></form>
 </div>
+${rows.headers ? `<div class="card"><h2 style="margin-top:0">見出しの読み取り</h2>
+<p class="small" style="margin:0 0 6px"><b>読み取れた見出し:</b> ${hr.used.length ? hr.used.map((u) => `<span class="tag">${esc(u.header)} → ${esc(u.field)}</span>`).join(" ") : '<span class="muted">なし</span>'}</p>
+${hr.unused.length ? `<p class="small" style="margin:0 0 6px"><b>使わなかった見出し:</b> ${hr.unused.slice(0, 30).map((h) => `<span class="tag skip">${esc(h)}</span>`).join(" ")}${hr.unused.length > 30 ? ` <span class="muted">ほか ${n(hr.unused.length - 30)}列</span>` : ""}</p>
+<p class="muted small" style="margin:0">使いたい列が「使わなかった見出し」にある場合は、その列の1行目を「企業名」「企業URL」「問い合わせフォーム」「メール」などに書き換えてから取り込み直してください。</p>` : ""}
+${noUrlCol ? `<p class="small" style="margin:6px 0 0;color:var(--ng)">${IC_WARN} 送信先（企業URL・問い合わせフォーム・メール）の列が見つかりません。このままでは送れる会社がありません。</p>` : ""}</div>` : ""}
 <h2>先頭 ${sample.length} 行の読み取り結果（列がずれていないか確認してください）</h2>
 <p class="muted small">下の各列に正しい値が入っていれば、見出しの対応は合っています。ずれている場合は、取り込み元の1行目の見出し（企業名 / 企業URL / 問い合わせフォーム / メール …）をご確認ください。</p>
 <div style="overflow-x:auto"><table><tr><th>企業名</th><th>問い合わせフォーム</th><th>企業URL</th><th>メール</th><th>業種</th><th>都道府県</th><th>代表者</th></tr>
@@ -499,9 +517,10 @@ export function testView(c: Campaign & { sender: SenderProfile }, tests: Job[]) 
 <p><a href="/campaigns/${c.id}">← キャンペーンに戻る</a></p>
 <div class="card"><h2 style="margin-top:0">自社のフォームに送って動作確認</h2>
 <p class="muted">実在の他社には送らないでください。テスト送信は本送信の件数・履歴とは別に記録されます。</p>
-<form method="post" action="/campaigns/${c.id}/test"><div class="row"><div><label>テスト先フォームURL</label><input type="url" name="url" required placeholder="https://自社サイト/contact/"></div><div><label>会社名（差し込み確認用）</label><input type="text" name="company" value="テスト株式会社"></div></div>
-<p><button class="btn sub" name="dry" value="1">入力だけ試す（送信しない）</button> <button class="btn">実際に送信する</button></p></form>
-${channelMode(c.channel) !== "form_only" ? `<form method="post" action="/campaigns/${c.id}/test"><label>メールのテスト（自分のアドレスに1通送る）</label><div class="row"><input type="email" name="email" placeholder="自分のメールアドレス"><button class="btn">テストメールを送る</button></div></form>` : ""}</div>
+<form method="post" action="/campaigns/${c.id}/test" data-once><div class="row"><div><label>テスト先フォームURL</label><input type="url" name="url" required placeholder="https://自社サイト/contact/"></div><div><label>会社名（差し込み確認用）</label><input type="text" name="company" value="テスト株式会社"></div></div>
+<p><button class="btn sub" name="dry" value="1" data-busytext="入力しています…">入力だけ試す（送信しない）</button> <button class="btn" data-busytext="送信しています…">実際に送信する</button></p></form>
+${channelMode(c.channel) !== "form_only" ? `<form method="post" action="/campaigns/${c.id}/test" data-once><label>メールのテスト（自分のアドレスに1通送る）</label><div class="row"><input type="email" name="email" placeholder="自分のメールアドレス"><button class="btn" data-busytext="送信しています…">テストメールを送る</button></div></form>` : ""}</div>
+${ONCE_SNIPPET}
 <h2>テスト履歴（最新20件）</h2>
 ${tests.length ? `<table><tr><th>ID</th><th>宛先</th><th>送り方</th><th>状態</th><th>結果</th><th>日時</th></tr>
 ${tests.map((j) => `<tr><td><a href="/jobs/${j.id}">${j.id}</a></td><td>${esc(j.company_name)}<br><span class="muted small">${esc(j.form_url || j.email)}</span></td><td class="small">${j.channel === "email" ? IC_MAIL + " メール" : IC_FORM + " フォーム"}</td><td>${statusTag(j.status)}</td><td class="small">${esc((j.result_text || "").split("\n")[0].slice(0, 70))}</td><td class="small">${esc(jst(j.updated_at))}</td></tr>`).join("")}

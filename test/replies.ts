@@ -240,3 +240,22 @@ console.log("replies: ALL OK");
   assert.equal(decideInterrupted([], claim, false).verdict, "unknown", "控えが残らないサービスでは決めない");
   console.log("interrupted: ALL OK");
 }
+
+// 送信用アカウントを切り替えて送ったメール（#24）: 返信・戻りメールは「実際に送ったアカウント」の受信箱で照合する
+{
+  const { applyBounce, isOurBounce } = await import("../src/replies.js");
+  const OTHER = "other@sender.example";
+  // キャンペーンの送信者は MAILBOX だが、実際には別アカウント（otherSender）で送った
+  const jSw = db.prepare(`INSERT INTO form_jobs(campaign_id,company_name,email,domain,channel,status,sent_at,message_used,sent_by_sender) VALUES(?,?,?,?,'email','sent','2026-09-10 01:00:00',?,?)`)
+    .run(camp, "切替株式会社", "info@switched.example", "switched.example", SENT_MSG, otherSender).lastInsertRowid as number;
+  assert.equal(applyIncomingMail(MAILBOX, mail("info@switched.example", "Re: ご提案", "日程を調整させてください")), null, "送っていない受信箱（キャンペーンの送信者）では記録しない");
+  assert.equal(applyIncomingMail(OTHER, mail("info@switched.example", "Re: ご提案", "日程を調整させてください")), jSw, "実際に送ったアカウントの受信箱に来た返信で記録する");
+  assert.equal(get(jSw).outcome, "appointment");
+  const jSwB = db.prepare(`INSERT INTO form_jobs(campaign_id,company_name,email,domain,channel,status,sent_at,message_used,sent_by_sender) VALUES(?,?,?,?,'email','sent','2026-09-10 01:00:00',?,?)`)
+    .run(camp, "切替戻り株式会社", "nobody@switched-bounce.example", "switched-bounce.example", SENT_MSG, otherSender).lastInsertRowid as number;
+  const bounce = mail("mailer-daemon@googlemail.com", "Delivery Status Notification (Failure)", "アドレス不明 メールは nobody@switched-bounce.example に配信されませんでした。 550 5.1.1 User unknown");
+  assert.equal(applyBounce(MAILBOX, bounce), null, "キャンペーンの送信者の受信箱に来た戻りメールでは記録しない");
+  assert.equal(applyBounce(OTHER, bounce), jSwB, "実際に送ったアカウントの戻りメールで失敗にする");
+  assert.equal(isOurBounce(OTHER, bounce), true, "振り分けでも、実際に送ったアカウントの戻りメールと分かる");
+  console.log("switched sender: ALL OK");
+}

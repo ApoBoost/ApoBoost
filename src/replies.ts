@@ -5,7 +5,7 @@
 import { ImapFlow } from "imapflow";
 import type { Readable } from "node:stream";
 import { getDb, getSetting, setSetting, FREE_MAIL_DOMAINS, jst, type SenderProfile } from "./db.js";
-import { optOut, emailPause } from "./email.js";
+import { optOut, emailPause, normalizeAppPassword, STOP_BY_MAIL_LEAD } from "./email.js";
 import { notify } from "./notify.js";
 import { S, settingOn } from "./settings.js";
 
@@ -143,7 +143,13 @@ export function classifyReply(subject: string, body: string): ReplyVerdict & { e
 type SentJob = { id: number; company_name: string; email: string; domain: string; sent_at: string; outcome: string; outcome_note: string; message_used: string; owner_user_id: number | null };
 
 // こちらのメールの署名・配信停止の案内（email.ts の buildEmailBody）。返信に引用されて「配信停止」で断りにならないよう除く
-const FOOTER_ECHO = "今後このご案内が不要な場合は、お手数ですが本メールに「配信停止」とご返信ください\n以後お送りしません。\n今後このご案内が不要な場合は、以下のリンクからお手続きください。";
+const FOOTER_ECHO = `今後このご案内が不要な場合は、お手数ですが本メールに「配信停止」とご返信ください\n以後お送りしません。\n今後このご案内が不要な場合は、以下のリンクからお手続きください。\n${STOP_BY_MAIL_LEAD}`;
+
+// 実際に送ったアカウント。送信用アカウントを切り替えて送ったメール（#24）は form_jobs.sent_by_sender に入っている。
+// 以前はキャンペーンの送信者（sender_id）で照合していたため、切り替え先の受信箱に来た返信・戻りメールを取りこぼし、
+// 送信中に止まったメールも本来の送信者の送信済みフォルダを見て「未送信」と判断していた（二重送信の恐れ）。
+// sent_by_sender が無い行（フォーム送信・この列ができる前の送信）はキャンペーンの送信者で送っている
+const SENT_BY = "COALESCE(j.sent_by_sender, c.sender_id)";
 
 const RANK: Record<string, number> = { "": 0, replied: 1, appointment: 2, declined: 2 };
 
@@ -172,7 +178,7 @@ export function findSentJob(mailbox: string, m: IncomingMail): SentJob | undefin
   const at = m.date.toISOString().replace("T", " ").slice(0, 19);
   // この受信箱（送信用アカウント）を使う送信者から、このメールより前に送った会社（直近90日）
   const base = `SELECT j.id, j.company_name, j.email, j.domain, j.sent_at, j.outcome, j.outcome_note, j.message_used, s.owner_user_id
-    FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=c.sender_id
+    FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=${SENT_BY}
     WHERE j.is_test=0 AND j.status='sent' AND j.sent_at IS NOT NULL AND j.sent_at <= ? AND j.sent_at >= datetime(?, '-90 days')
       AND lower(s.smtp_user)=?`;
   let job = db.prepare(`${base} AND lower(j.email)=? ORDER BY j.sent_at DESC LIMIT 1`).get(at, at, mailbox.toLowerCase(), from) as SentJob | undefined;
@@ -373,7 +379,7 @@ export function inboxCategory(mailbox: string, m: IncomingMail, ownNames: string
 function namesRecentlySentCompany(mailbox: string, at: Date, hay: string): boolean {
   const to = at.toISOString().replace("T", " ").slice(0, 19);
   const from = new Date(at.getTime() - 3 * 3600_000).toISOString().replace("T", " ").slice(0, 19);
-  const rows = getDb().prepare(`SELECT j.company_name n FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=c.sender_id
+  const rows = getDb().prepare(`SELECT j.company_name n FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=${SENT_BY}
     WHERE lower(s.smtp_user)=? AND j.status='sent' AND j.is_test=0 AND j.sent_at BETWEEN ? AND ? LIMIT 500`).all(mailbox.toLowerCase(), from, to) as { n: string }[];
   return rows.some((r) => {
     const core = squash(r.n).replace(/(株式会社|有限会社|合同会社|合資会社|一般社団法人|一般財団法人|社会福祉法人|医療法人|学校法人|\(株\)|（株）|\(有\)|（有）)/g, "");
@@ -386,7 +392,7 @@ const templateLineCache = new Map<string, { at: number; lines: string[] }>();
 function sentTemplateLines(mailbox: string): string[] {
   const hit = templateLineCache.get(mailbox);
   if (hit && Date.now() - hit.at < 10 * 60_000) return hit.lines;
-  const rows = getDb().prepare(`SELECT j.message_used m FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=c.sender_id
+  const rows = getDb().prepare(`SELECT j.message_used m FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=${SENT_BY}
     WHERE lower(s.smtp_user)=? AND j.status='sent' AND j.is_test=0 AND j.message_used<>'' ORDER BY j.id DESC LIMIT 300`).all(mailbox.toLowerCase()) as { m: string }[];
   const freq = new Map<string, number>();
   for (const r of rows) for (const l of new Set(r.m.split(/\r?\n/).map(squash).filter((x) => x.length >= 15))) freq.set(l, (freq.get(l) ?? 0) + 1);
@@ -440,7 +446,7 @@ export function isOurBounce(mailbox: string, m: IncomingMail): boolean {
   if (APP_SENT_RE.test(m.text)) return true;
   if (!addrs.length) return false;
   const db = getDb();
-  return addrs.some((addr) => !!db.prepare(`SELECT 1 FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=c.sender_id
+  return addrs.some((addr) => !!db.prepare(`SELECT 1 FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=${SENT_BY}
     WHERE j.is_test=0 AND j.channel='email' AND lower(j.email)=? AND lower(s.smtp_user)=? LIMIT 1`).get(addr, mailbox.toLowerCase()));
 }
 
@@ -455,7 +461,7 @@ export function applyBounce(mailbox: string, m: IncomingMail): number | null {
   const db = getDb();
   const at = m.date.toISOString().replace("T", " ").slice(0, 19);
   for (const addr of addrs) {
-    const job = db.prepare(`SELECT j.id, j.company_name, j.result_text FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=c.sender_id
+    const job = db.prepare(`SELECT j.id, j.company_name, j.result_text FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=${SENT_BY}
       WHERE j.is_test=0 AND j.channel='email' AND j.status='sent' AND lower(j.email)=? AND lower(s.smtp_user)=? AND j.sent_at <= datetime(?, '+10 minutes') AND j.sent_at >= datetime(?, '-30 days')
       ORDER BY j.sent_at DESC LIMIT 1`).get(addr, mailbox.toLowerCase(), at, at) as { id: number; company_name: string; result_text: string } | undefined;
     if (!job) continue;
@@ -524,9 +530,10 @@ export async function checkReplies(): Promise<{ recorded: number; errors: string
   let recorded = 0;
   const errors: string[] = [];
   try {
-    // 直近90日に送信済みがある送信用アカウントだけ見る（受信箱ごとに1回）
+    // 直近90日に送信済みがある送信用アカウントだけ見る（受信箱ごとに1回）。
+    // 切り替え先のアカウント（キャンペーンの送信者ではないもの）で送った分も対象にする
     const senders = db.prepare(`SELECT s.* FROM sender_profiles s WHERE s.smtp_user<>'' AND s.smtp_pass<>'' AND s.reply_check=1
-      AND EXISTS (SELECT 1 FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id WHERE c.sender_id=s.id AND j.status='sent' AND j.is_test=0 AND j.sent_at >= datetime('now','-90 days'))
+      AND EXISTS (SELECT 1 FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id WHERE ${SENT_BY}=s.id AND j.status='sent' AND j.is_test=0 AND j.sent_at >= datetime('now','-90 days'))
       ORDER BY s.id`).all() as SenderProfile[];
     const seen = new Set<string>();
     for (const s of senders) {
@@ -544,7 +551,7 @@ export async function checkReplies(): Promise<{ recorded: number; errors: string
       }
       const state = (db.prepare("SELECT * FROM reply_scans WHERE mailbox=?").get(mailbox) as ScanState | undefined) ?? { mailbox, uidvalidity: "", last_uid: 0, checked_at: null, error: "", found: 0 };
       const open = async () => {
-        const c = new ImapFlow({ host: imapHostFor(s), port: 993, secure: true, auth: { user: s.smtp_user, pass: s.smtp_pass.replace(/^([a-z]{4}) ([a-z]{4}) ([a-z]{4}) ([a-z]{4})$/i, "$1$2$3$4") }, logger: false, socketTimeout: 60_000, ...(s.tls_insecure ? { tls: { rejectUnauthorized: false } } : {}) });
+        const c = new ImapFlow({ host: imapHostFor(s), port: 993, secure: true, auth: { user: s.smtp_user.trim(), pass: normalizeAppPassword(s.smtp_pass) }, logger: false, socketTimeout: 60_000, ...(s.tls_insecure ? { tls: { rejectUnauthorized: false } } : {}) });
         c.on("error", () => { /* 切断等。下でつなぎ直すか、catch で拾う */ });
         await c.connect();
         return { c, l: await c.getMailboxLock("INBOX") };
@@ -568,7 +575,7 @@ export async function checkReplies(): Promise<{ recorded: number; errors: string
             uids = ((await client.search({ uid: `${state.last_uid + 1}:*` }, { uid: true })) || []).filter((u) => u > state.last_uid);
           } else {
             // 初回（または受信箱が作り直された）: 最初の送信の前日以降に届いたメールを見る
-            const first = db.prepare(`SELECT MIN(j.sent_at) t FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=c.sender_id
+            const first = db.prepare(`SELECT MIN(j.sent_at) t FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=${SENT_BY}
               WHERE lower(s.smtp_user)=? AND j.status='sent' AND j.is_test=0 AND j.sent_at >= datetime('now','-90 days')`).get(mailbox) as { t: string | null };
             const since = new Date(new Date((first.t ?? "").replace(" ", "T") + "Z").getTime() - 86400_000);
             uids = (await client.search({ since: isNaN(since.getTime()) ? new Date(Date.now() - 7 * 86400_000) : since }, { uid: true })) || [];
@@ -690,6 +697,9 @@ export async function checkReplies(): Promise<{ recorded: number; errors: string
   } finally {
     checking = false;
   }
+  // 送信の最後で通信が切れた・起動時に確認できなかったメールを、ここでも確かめ直す
+  // （以前は起動時に1回だけで、つながらなければ次の起動まで「要確認」のままだった）
+  await verifyInterruptedEmails().catch(() => {});
   return { recorded, errors };
 }
 
@@ -711,6 +721,8 @@ export function replyScanStatus(sender: SenderProfile | undefined): { enabled: b
 // 送れていなければ「待機」に戻して続きから自動で送る。
 
 export const INTERRUPTED_PREFIX = "送信中にアプリが止まったため中断";
+/** 本文（DATA）を送り切った後にメールサーバーとの通信が切れた送信。届いているかもしれないので、送り直さずに同じ確認に回す */
+export const CUT_PREFIX = "送信の最後で通信が切れたため中断";
 
 /** 送信済みフォルダにあった同じ宛先のメールの日時から判断する。
  *  中断した送信の開始時刻（claimAt）より少し前以降に送ったものがあれば送信済み。
@@ -723,19 +735,33 @@ export function decideInterrupted(sentDates: Date[], claimAt: Date, keepsSentCop
 
 type InterruptedRow = { id: number; email: string; updated_at: string; sender_id: number };
 
-/** 起動時に呼ぶ。送信中に止まったメールを送信済みフォルダで確認して、送信済み／待機に振り分ける。戻り値は振り分けた件数 */
+let verifying = false;
+
+/** 送信中に止まった／送信の最後で通信が切れたメールを、実際に送ったアカウントの送信済みフォルダで確認して、
+ *  送信済み／待機に振り分ける。起動時・送信の最後で切れたとき・返信の確認のついでに呼ぶ。戻り値は振り分けた件数 */
 export async function verifyInterruptedEmails(): Promise<{ sent: number; requeued: number; unknown: number }> {
-  const db = getDb();
-  const rows = db.prepare(`SELECT j.id, j.email, j.updated_at, c.sender_id FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id
-    WHERE j.status='failed' AND j.channel='email' AND j.email<>'' AND j.result_text LIKE ?`).all(`${INTERRUPTED_PREFIX}%`) as InterruptedRow[];
   const out = { sent: 0, requeued: 0, unknown: 0 };
+  if (verifying) return out; // 同じメールを2か所から同時に確かめない
+  verifying = true;
+  try { return await verifyInterruptedInner(out); } finally { verifying = false; }
+}
+
+async function verifyInterruptedInner(out: { sent: number; requeued: number; unknown: number }): Promise<{ sent: number; requeued: number; unknown: number }> {
+  const db = getDb();
+  // 照合するのは「実際に送ったアカウント」。送る直前に sent_by_sender を書いているので、切り替え先で送った分も正しい送信済みフォルダを見る
+  const rows = db.prepare(`SELECT j.id, j.email, j.updated_at, ${SENT_BY} sender_id FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id
+    WHERE j.status='failed' AND j.channel='email' AND j.email<>'' AND (j.result_text LIKE ? OR j.result_text LIKE ?)`).all(`${INTERRUPTED_PREFIX}%`, `${CUT_PREFIX}%`) as InterruptedRow[];
+  if (!rows.length) return out;
   const bySender = new Map<number, InterruptedRow[]>();
   for (const r of rows) bySender.set(r.sender_id, [...(bySender.get(r.sender_id) ?? []), r]);
   for (const [senderId, jobs] of bySender) {
     const s = db.prepare("SELECT * FROM sender_profiles WHERE id=?").get(senderId) as SenderProfile | undefined;
     if (!s || !s.smtp_user || !s.smtp_pass) { out.unknown += jobs.length; continue; }
+    // ログインを拒否されて止めているアカウントには、確認のためでもログインしない（何度も試すと解除が遅れる）
+    const paused = emailPause(s);
+    if (paused && /ログイン|拒否|パスワード|2段階|一時停止され|認証/.test(paused.reason)) { out.unknown += jobs.length; continue; }
     const keepsSentCopy = /gmail|google/i.test(s.smtp_host || "smtp.gmail.com");
-    const client = new ImapFlow({ host: imapHostFor(s), port: 993, secure: true, auth: { user: s.smtp_user, pass: s.smtp_pass.replace(/^([a-z]{4}) ([a-z]{4}) ([a-z]{4}) ([a-z]{4})$/i, "$1$2$3$4") }, logger: false, socketTimeout: 60_000, ...(s.tls_insecure ? { tls: { rejectUnauthorized: false } } : {}) });
+    const client = new ImapFlow({ host: imapHostFor(s), port: 993, secure: true, auth: { user: s.smtp_user.trim(), pass: normalizeAppPassword(s.smtp_pass) }, logger: false, socketTimeout: 60_000, ...(s.tls_insecure ? { tls: { rejectUnauthorized: false } } : {}) });
     client.on("error", () => { /* 下の catch で拾う */ });
     try {
       await client.connect();
@@ -754,12 +780,12 @@ export async function verifyInterruptedEmails(): Promise<{ sent: number; requeue
           const d = decideInterrupted(dates, claimAt, keepsSentCopy);
           if (d.verdict === "sent") {
             db.prepare("UPDATE form_jobs SET status='sent', sent_at=?, result_text=?, updated_at=datetime('now') WHERE id=? AND status='failed'")
-              .run(d.at.toISOString().replace("T", " ").slice(0, 19), `メール送信（${j.email}）※送信中にアプリが止まったが、送信済みフォルダで送信を確認`, j.id);
+              .run(d.at.toISOString().replace("T", " ").slice(0, 19), `メール送信（${j.email}）※送信の途中で止まったが、送信済みフォルダで送信を確認`, j.id);
             out.sent++;
           } else if (d.verdict === "not_sent") {
             // 送れていなかったので待機に戻す（実行中のキャンペーンなら続きで自動送信される）
             db.prepare("UPDATE form_jobs SET status='queued', result_text=?, updated_at=datetime('now') WHERE id=? AND status='failed'")
-              .run("再送信待ち: 送信中にアプリが止まったが、送信済みフォルダに無く未送信と確認", j.id);
+              .run("再送信待ち: 送信の途中で止まったが、送信済みフォルダに無く未送信と確認", j.id);
             out.requeued++;
           } else out.unknown++;
         }

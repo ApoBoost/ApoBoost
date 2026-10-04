@@ -8,12 +8,8 @@ import { FX_LOGIN } from "./fx.js";
 
 // ================= ログイン関連の画面 =================
 
-/** ログイン画面（ヘッダー無しの独立レイアウト） */
-export function loginPage(opts: { error?: string; next?: string } = {}): string {
-  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ログイン | ApoBoost</title>
-<style>
-body{margin:0;font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;background:#F5F5F7;color:#1D1D1F;-webkit-font-smoothing:antialiased;display:flex;align-items:center;justify-content:center;min-height:100vh;font-size:14px}
+/** ログイン画面と初回設定の画面で共通の見た目（ヘッダー無しの独立レイアウト） */
+const AUTH_CSS = `body{margin:0;font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;background:#F5F5F7;color:#1D1D1F;-webkit-font-smoothing:antialiased;display:flex;align-items:center;justify-content:center;min-height:100vh;font-size:14px}
 .box{background:#fff;border:1px solid rgba(0,0,0,.04);border-radius:18px;padding:36px 32px;width:348px;box-shadow:0 2px 16px rgba(0,0,0,.06)}
 h1{margin:0 0 6px;text-align:center}
 .sub{text-align:center;color:#6E6E73;font-size:13px;margin:0 0 22px}
@@ -44,14 +40,44 @@ input:focus{outline:0;border-color:#0071E3;box-shadow:0 0 0 4px rgba(0,113,227,.
 @keyframes sheen{from{background-position:150% 0}to{background-position:-50% 0}}
 @keyframes sheen2{from{background-position:150% 0}to{background-position:-50% 0}}
 @media (prefers-reduced-motion:reduce){body,.box,.logo,.logo::after{animation:none!important}button{transition:none}}
-</style></head><body>
+.note{background:#F5F5F7;color:#6E6E73;border-radius:8px;padding:9px 12px;font-size:12px;line-height:1.6;margin:14px 0 0}
+.info{background:#E8F2FD;color:#0B4F94;border-radius:8px;padding:9px 12px;font-size:13px;line-height:1.6;margin-bottom:6px}
+`;
+
+/** ログイン画面（ヘッダー無しの独立レイアウト）。notice は「管理者がまだいない」ときの案内など */
+export function loginPage(opts: { error?: string; next?: string; notice?: string } = {}): string {
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ログイン | ApoBoost</title>
+<style>
+${AUTH_CSS}</style></head><body>
 <form class="box" method="post" action="/login">
 <h1><span class="logo"><img class="mark" src="/assets/logo.png?v=2" alt="ApoBoost" width="220" height="44"></span></h1><p class="sub">フォーム＆メール営業</p>
+${opts.notice ? `<div class="info">${esc(opts.notice)}</div>` : ""}
 ${opts.error ? `<div class="err">${esc(opts.error)}</div>` : ""}
 <input type="hidden" name="next" value="${esc(opts.next ?? "/")}">
 <label>ログインID</label><input name="username" autocomplete="username" autofocus required>
 <label>パスワード</label><input name="password" type="password" autocomplete="current-password" required>
 <button>ログイン</button>
+<img class="buddy" src="/assets/mascot.png?v=1" alt="" onerror="this.remove()">
+</form>${FX_LOGIN}</body></html>`;
+}
+
+/** 初回設定: 最初の管理者のログインIDとパスワードを本人に決めてもらう（このPCから開いたときだけ出る）。
+ *  ターミナルに出したIDとパスワードを読み飛ばしてログインできない、という導入時のつまずきをなくすため */
+export function firstAdminPage(opts: { error?: string; username?: string } = {}): string {
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>はじめに | ApoBoost</title>
+<style>
+${AUTH_CSS}</style></head><body>
+<form class="box" method="post" action="/welcome">
+<h1><span class="logo"><img class="mark" src="/assets/logo.png?v=2" alt="ApoBoost" width="220" height="44"></span></h1>
+<p class="sub">はじめに、管理者のログインIDとパスワードを決めてください</p>
+${opts.error ? `<div class="err">${esc(opts.error)}</div>` : ""}
+<label>ログインID（半角英数字・._- の3〜32文字）</label><input name="username" value="${esc(opts.username ?? "")}" autocomplete="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9._\\-]{3,32}">
+<label>パスワード（8文字以上）</label><input name="password" type="password" autocomplete="new-password" autofocus required minlength="8">
+<label>パスワード（確認のためもう一度）</label><input name="password2" type="password" autocomplete="new-password" required minlength="8">
+<button>決めてはじめる</button>
+<p class="note">このIDとパスワードで次回からログインします。控えておいてください。メンバーのアカウントは、あとから「ユーザー管理」で発行できます。</p>
 <img class="buddy" src="/assets/mascot.png?v=1" alt="" onerror="this.remove()">
 </form>${FX_LOGIN}</body></html>`;
 }
