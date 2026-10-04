@@ -1,4 +1,6 @@
 {
   "_comment": "配布したApoBoostが更新を確認しに行く先。配布元を変える場合だけ書き換えてください。",
-  "manifest_url": "https://raw.githubusercontent.com/ApoBoost/ApoBoost/main/release.json"
+  "manifest_url": "https://raw.githubusercontent.com/ApoBoost/ApoBoost/main/release.json",
+  "_support_comment": "質問箱の「担当者に送る」の送り先（配布元の Apps Script のウェブアプリURL）。空のあいだは、その機能は出ません。手順は CLAUDE.md。",
+  "support_url": ""
 }

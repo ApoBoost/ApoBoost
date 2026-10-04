@@ -38,6 +38,7 @@ import * as sendersRoutes from "./routes/senders.js";
 import * as listsRoutes from "./routes/lists.js";
 import * as settingsRoutes from "./routes/settings.js";
 import * as pagesRoutes from "./routes/pages.js";
+import * as supportRoutes from "./routes/support.js";
 import { startBackground } from "./app/background.js";
 
 app.use(express.urlencoded({ extended: false }));
@@ -53,6 +54,7 @@ sendersRoutes.register();
 listsRoutes.register();
 settingsRoutes.register();
 pagesRoutes.register();
+supportRoutes.register();
 
 startBackground();
 

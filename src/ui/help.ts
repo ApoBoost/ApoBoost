@@ -73,10 +73,13 @@ export const HELP_TOPICS: HelpTopic[] = [
   },
 ];
 
-/** ログイン後の全画面に入れる（</body> の直前）。右下の丸いボタンを押すと開く */
+/** ログイン後の全画面に入れる（</body> の直前）。右下の丸いボタンを押すと開く。
+ *  ・答える前に、1秒ほど「・・・」（入力中）を出す。すぐ答えが出ると機械的で、読む側の気持ちが追いつかないため
+ *  ・用意した答えで解決しないときは、担当者（配布元）に質問を送れる。返信はこのチャットに届く（support.ts） */
 export const HELP_WIDGET = `<style>
 #fo-help-btn{position:fixed;right:18px;bottom:18px;z-index:80;width:58px;height:58px;border-radius:50%;border:1px solid rgba(0,0,0,.08);background:#fff url(/assets/mascot.png?v=1) 42% 6%/165% auto no-repeat;box-shadow:0 6px 20px rgba(0,0,0,.18);cursor:pointer;padding:0;transition:transform .15s,box-shadow .15s}
 #fo-help-btn:hover{transform:translateY(-2px);box-shadow:0 10px 26px rgba(0,0,0,.22)}
+#fo-help-btn.new::after{content:"";position:absolute;right:2px;top:2px;width:14px;height:14px;border-radius:50%;background:var(--c-ng);border:2px solid #fff}
 #fo-help{position:fixed;right:18px;bottom:18px;z-index:81;width:372px;max-width:calc(100vw - 24px);height:min(600px,calc(100vh - 36px));display:flex;flex-direction:column;background:#F5F5F7;border-radius:22px;box-shadow:0 18px 60px rgba(0,0,0,.28),0 0 0 1px rgba(0,0,0,.06);overflow:hidden}
 #fo-help[hidden]{display:none}
 #fo-help .hd{display:flex;align-items:center;gap:10px;padding:14px 14px 12px;background:#fff;border-bottom:1px solid var(--c-line)}
@@ -89,15 +92,27 @@ export const HELP_WIDGET = `<style>
 #fo-help .msg{max-width:88%;padding:9px 13px;border-radius:16px;font-size:14px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
 #fo-help .bot{align-self:flex-start;background:#fff;border-bottom-left-radius:5px}
 #fo-help .me{align-self:flex-end;background:var(--c-brand);color:#fff;border-bottom-right-radius:5px}
+#fo-help .staff{border:1px solid var(--c-brand);}
+#fo-help .staff::before{content:"担当者より";display:block;font-size:11px;font-weight:700;color:var(--c-brand);margin-bottom:2px}
+#fo-help .note{align-self:center;font-size:12px;color:var(--c-ink-3);margin:2px 0}
 #fo-help .bot a{display:inline-block;margin:8px 6px 0 0;padding:4px 11px;border-radius:8px;background:var(--c-brand-bg);color:var(--c-link);font-size:13px;font-weight:600;text-decoration:none}
 #fo-help .bot a:hover{background:#DCEBFD}
+/* 入力中の「・・・」 */
+#fo-help .typing{display:inline-flex;gap:5px;align-items:center;padding:13px 15px}
+#fo-help .typing i{width:7px;height:7px;border-radius:50%;background:#A1A1A6;animation:fo-dot 1s ease-in-out infinite}
+#fo-help .typing i:nth-child(2){animation-delay:.15s}
+#fo-help .typing i:nth-child(3){animation-delay:.3s}
+@keyframes fo-dot{0%,60%,100%{transform:translateY(0);opacity:.45}30%{transform:translateY(-4px);opacity:1}}
+@media (prefers-reduced-motion:reduce){#fo-help .typing i{animation:none}}
 #fo-help .opts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;margin:2px 0 6px}
 #fo-help .opts button{font:inherit;font-size:13.5px;padding:7px 13px;border-radius:999px;border:1px solid var(--c-line-strong);background:#fff;color:var(--c-ink);cursor:pointer;text-align:left;line-height:1.4}
 #fo-help .opts button:hover{border-color:var(--c-brand);color:var(--c-brand)}
 #fo-help .opts button.sub{background:transparent;border-color:transparent;color:var(--c-ink-3)}
-#fo-help form{display:flex;gap:8px;padding:10px 12px 12px;background:#fff;border-top:1px solid var(--c-line)}
-#fo-help form input{flex:1;min-width:0;border-radius:999px;padding:8px 14px}
-#fo-help form button{flex:none;border:0;border-radius:999px;background:var(--c-brand);color:#fff;font:inherit;font-weight:600;padding:0 16px;cursor:pointer}
+#fo-help form{display:flex;gap:8px;padding:10px 12px 12px;background:#fff;border-top:1px solid var(--c-line);align-items:flex-end}
+#fo-help form textarea{flex:1;min-width:0;min-height:38px;max-height:120px;height:38px;border-radius:19px;padding:8px 14px;resize:none;line-height:1.5}
+#fo-help form.ask textarea{height:84px;border-radius:14px}
+#fo-help form button{flex:none;border:0;border-radius:999px;background:var(--c-brand);color:#fff;font:inherit;font-weight:600;padding:0 16px;height:38px;cursor:pointer}
+#fo-help form button[disabled]{opacity:.5}
 @media (max-width:520px){#fo-help{right:0;bottom:0;width:100vw;max-width:100vw;height:86vh;border-radius:22px 22px 0 0}}
 @media print{#fo-help,#fo-help-btn{display:none!important}}
 </style>
@@ -105,48 +120,100 @@ export const HELP_WIDGET = `<style>
 <div id="fo-help" hidden role="dialog" aria-label="質問箱">
 <div class="hd"><div class="ava" aria-hidden="true"></div><div><b>ApoBoost 質問箱</b><span>よくある質問に、その場でお答えします</span></div><button class="x" type="button" aria-label="閉じる">×</button></div>
 <div class="log" aria-live="polite"></div>
-<form autocomplete="off"><input type="text" id="fo-help-q" placeholder="言葉で探す（例: アプリパスワード）" aria-label="言葉で探す"><button>探す</button></form>
+<form autocomplete="off"><textarea id="fo-help-q" rows="1" placeholder="言葉で探す（例: アプリパスワード）" aria-label="質問を入力"></textarea><button>探す</button></form>
 </div>
 <script>
-// 質問箱。答えはすべてこのページに入っている（通信しない・AIを使わない）
+// 質問箱。用意した答えはすべてこのページに入っている（AIは使わない）。
+// 通信するのは、担当者への質問を送るとき・その返信を取りに行くときだけ（このアプリのサーバーを通る）
 (function(){
   var TOPICS = ${JSON.stringify(HELP_TOPICS).replace(/</g, "\\u003c")};
   var box = document.getElementById("fo-help"), btn = document.getElementById("fo-help-btn");
   if (!box || !btn) return;
-  var log = box.querySelector(".log"), form = box.querySelector("form"), input = document.getElementById("fo-help-q");
-  var started = false;
+  var log = box.querySelector(".log"), form = box.querySelector("form"), input = document.getElementById("fo-help-q"), sendBtn = form.querySelector("button");
+  var started = false, staffOn = false, askMode = false;
+  var TYPE_MS = 1000;
   function el(tag, cls, text){ var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function scroll(){ log.scrollTop = log.scrollHeight; }
-  function bot(text, links){
-    var m = el("div", "msg bot", text);
+  // 順番どおりに出すための列。答えの前に「・・・」を1秒ほど出す
+  var queue = Promise.resolve();
+  function later(fn){ queue = queue.then(fn); return queue; }
+  function wait(ms){ return new Promise(function(ok){ setTimeout(ok, ms); }); }
+  function addBot(text, links, cls){
+    var m = el("div", "msg bot" + (cls ? " " + cls : ""), text);
     (links || []).forEach(function(l){ var a = el("a", "", l[1]); a.href = l[0]; if (l[0].indexOf("http") === 0) { a.target = "_blank"; a.rel = "noopener"; a.textContent = l[1] + " ↗"; } m.appendChild(a); });
     log.appendChild(m); scroll();
   }
-  function me(text){ log.appendChild(el("div", "msg me", text)); scroll(); }
+  function bot(text, links){
+    return later(function(){
+      clearOpts();
+      var t = el("div", "msg bot typing"); t.setAttribute("aria-label", "入力中"); t.appendChild(el("i")); t.appendChild(el("i")); t.appendChild(el("i"));
+      log.appendChild(t); scroll();
+      return wait(TYPE_MS).then(function(){ t.remove(); addBot(text, links); });
+    });
+  }
+  function me(text){ return later(function(){ clearOpts(); log.appendChild(el("div", "msg me", text)); scroll(); }); }
+  function note(text){ log.appendChild(el("div", "note", text)); scroll(); }
+  function clearOpts(){ var old = log.querySelectorAll(".opts"); for (var i = 0; i < old.length; i++) old[i].remove(); }
   function opts(list){
-    // 前に出した選択肢は片づける（古いボタンが残っていると、どれを押せばよいか迷う）
-    var old = log.querySelectorAll(".opts"); for (var i = 0; i < old.length; i++) old[i].remove();
-    var wrap = el("div", "opts");
-    list.forEach(function(o){ var b = el("button", o.sub ? "sub" : "", o.label); b.type = "button"; b.onclick = function(){ o.run(); }; wrap.appendChild(b); });
-    log.appendChild(wrap); scroll();
+    return later(function(){
+      // 前に出した選択肢は片づける（古いボタンが残っていると、どれを押せばよいか迷う）
+      clearOpts();
+      var wrap = el("div", "opts");
+      list.forEach(function(o){ var b = el("button", o.sub ? "sub" : "", o.label); b.type = "button"; b.onclick = function(){ o.run(); }; wrap.appendChild(b); });
+      log.appendChild(wrap); scroll();
+    });
+  }
+  function topicButtons(){
+    var list = TOPICS.map(function(t){ return { label: t.title, run: function(){ me(t.title); topic(t); } }; });
+    if (staffOn) list.push({ label: "担当者に質問する", sub: true, run: function(){ me("担当者に質問する"); askStaff(); } });
+    return list;
   }
   function home(first){
     bot(first ? "こんにちは。困りごとに近いものを選んでください。下の欄に言葉を入れて探すこともできます。" : "ほかに知りたいことはありますか？");
-    opts(TOPICS.map(function(t){ return { label: t.title, run: function(){ me(t.title); topic(t); } }; }));
+    opts(topicButtons());
   }
   function topic(t){
     bot("「" + t.title + "」について、近いものを選んでください。");
     opts(t.items.map(function(it){ return { label: it.q, run: function(){ me(it.q); answer(it, t); } }; }).concat([{ label: "← 最初に戻る", sub: true, run: function(){ home(false); } }]));
+  }
+  function unsolved(){
+    if (staffOn) { askStaff(); return; }
+    bot("お役に立てずすみません。ご利用ガイドに、画面ごとのくわしい手順があります。それでも解決しないときは、動作チェックの「診断ファイル」を配布元に送ってください。", [["/guide", "ご利用ガイド"], ["/health", "動作チェック"]]);
+    opts([{ label: "最初に戻る", run: function(){ home(false); } }]);
   }
   function answer(it, t){
     bot(it.a, it.links);
     var more = [];
     if (t) more.push({ label: "「" + t.title + "」のほかの質問", run: function(){ topic(t); } });
     more.push({ label: "最初に戻る", run: function(){ home(false); } });
-    more.push({ label: "解決しなかった", sub: true, run: function(){ me("解決しなかった"); bot("お役に立てずすみません。ご利用ガイドに、画面ごとのくわしい手順があります。それでも解決しないときは、動作チェックの「診断ファイル」を配布元に送ってください。", [["/guide", "ご利用ガイド"], ["/health", "動作チェック"]]); opts([{ label: "最初に戻る", run: function(){ home(false); } }]); } });
+    more.push({ label: "解決しなかった", sub: true, run: function(){ me("解決しなかった"); unsolved(); } });
     opts(more);
   }
-  // 言葉で探す: 入力した言葉の「2文字ずつの切れ端」が、質問・キーワード・答えにいくつ入っているかで並べる
+  // ---- 担当者に質問する ----
+  function setAsk(on){
+    askMode = on; form.className = on ? "ask" : "";
+    input.placeholder = on ? "困っていることを、くわしく書いてください" : "言葉で探す（例: アプリパスワード）";
+    sendBtn.textContent = on ? "送る" : "探す";
+    if (on) setTimeout(function(){ input.focus(); }, 50);
+  }
+  function askStaff(){
+    bot("担当者に質問を送ります。困っていることを下の欄にくわしく書いて、「送る」を押してください。\\n\\n送られるのは、質問の文章・ご利用の版・会社名・開いている画面です。営業リストや送信履歴は送られません。");
+    opts([{ label: "やめる", sub: true, run: function(){ setAsk(false); home(false); } }]);
+    later(function(){ setAsk(true); });
+  }
+  function sendToStaff(text){
+    me(text); setAsk(false); sendBtn.disabled = true;
+    fetch("/support/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: text, page: location.pathname }) })
+      .then(function(r){ return r.json().catch(function(){ return { ok: false }; }); })
+      .then(function(j){
+        if (!j.ok) { bot(j.error || "送れませんでした。時間を置いてもう一度お試しください。"); opts([{ label: "もう一度書く", run: function(){ askStaff(); } }, { label: "最初に戻る", sub: true, run: function(){ home(false); } }]); return; }
+        bot(j.sent ? "担当者に送りました。追って、このチャットでご連絡します。\\n返信が届くと、右下のボタンに赤い印が付きます（通知をオンにしていれば、通知でもお知らせします）。" : "質問を控えました。いまは配布元につながらなかったので、つながり次第、自動で送ります。返信は、このチャットに届きます。");
+        opts([{ label: "最初に戻る", run: function(){ home(false); } }]);
+      })
+      .catch(function(){ bot("送れませんでした。時間を置いてもう一度お試しください。"); opts([{ label: "もう一度書く", run: function(){ askStaff(); } }]); })
+      .then(function(){ sendBtn.disabled = false; });
+  }
+  // ---- 言葉で探す: 入力した言葉の「2文字ずつの切れ端」が、質問・キーワード・答えにいくつ入っているかで並べる ----
   function search(text){
     var q = text.replace(/[\\s　、。？?！!]/g, "").toLowerCase();
     if (!q) return [];
@@ -163,17 +230,50 @@ export const HELP_WIDGET = `<style>
   form.addEventListener("submit", function(e){
     e.preventDefault();
     var text = input.value.trim(); if (!text) return;
-    input.value = ""; me(text);
+    input.value = "";
+    if (askMode) { if (text.length < 5) { input.value = text; note("もう少しくわしく書いてください"); return; } sendToStaff(text); return; }
+    me(text);
     var hits = search(text);
-    if (!hits.length) { bot("その言葉では見つかりませんでした。言い方を変えるか、下から選んでください。"); opts(TOPICS.map(function(t){ return { label: t.title, run: function(){ me(t.title); topic(t); } }; })); return; }
+    if (!hits.length) {
+      bot(staffOn ? "用意した答えの中には見つかりませんでした。このまま担当者に質問を送ることもできます。" : "その言葉では見つかりませんでした。言い方を変えるか、下から選んでください。");
+      opts((staffOn ? [{ label: "この内容を担当者に送る", run: function(){ sendToStaff(text); } }] : []).concat(topicButtons()));
+      return;
+    }
     if (hits.length === 1 || hits[0].s >= hits[1].s * 2) { answer(hits[0].it, hits[0].t); return; }
     bot("近い質問が見つかりました。");
     opts(hits.map(function(h){ return { label: h.it.q, run: function(){ me(h.it.q); answer(h.it, h.t); } }; }).concat([{ label: "最初に戻る", sub: true, run: function(){ home(false); } }]));
   });
-  function open(){ box.hidden = false; btn.hidden = true; if (!started) { started = true; home(true); } setTimeout(function(){ input.focus(); }, 50); }
+  // Enter で送る（Shift+Enter は改行）。日本語の変換中の Enter では送らない
+  input.addEventListener("keydown", function(e){ if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit ? form.requestSubmit() : sendBtn.click(); } });
+  // ---- 担当者とのこれまでのやり取り ----
+  function loadThread(seen){
+    return fetch("/support/thread" + (seen ? "?seen=1" : ""), { cache: "no-store" }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; });
+  }
+  function showThread(list){
+    if (!list || !list.length) return;
+    note("担当者とのこれまでのやり取り");
+    list.forEach(function(t){
+      log.appendChild(el("div", "msg me", t.question));
+      if (t.reply) addBot(t.reply, null, "staff"); else note(t.sent ? "担当者からの返信を待っています" : "まだ送れていません（つながり次第、自動で送ります）");
+    });
+    note("ここから新しい質問");
+  }
+  function open(){
+    box.hidden = false; btn.hidden = true; btn.classList.remove("new");
+    if (!started) {
+      started = true;
+      loadThread(true).then(function(j){ if (j) { staffOn = !!j.enabled; showThread(j.list); } home(true); });
+    } else {
+      // 開き直したとき、新しい返信が来ていれば出す
+      loadThread(true).then(function(j){ if (j && j.unread) { j.list.filter(function(t){ return t.reply; }).slice(-j.unread).forEach(function(t){ later(function(){ log.appendChild(el("div", "msg me", t.question)); addBot(t.reply, null, "staff"); }); }); } });
+    }
+    setTimeout(function(){ input.focus(); }, 50);
+  }
   function close(){ box.hidden = true; btn.hidden = false; }
   btn.addEventListener("click", open);
   box.querySelector(".x").addEventListener("click", close);
   addEventListener("keydown", function(e){ if (e.key === "Escape" && !box.hidden) close(); });
+  // 読んでいない返信があれば、右下のボタンに赤い印を付ける
+  loadThread(false).then(function(j){ if (j && j.unread) btn.classList.add("new"); });
 })();
 </script>`;

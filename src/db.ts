@@ -311,6 +311,21 @@ function migrate(db: Database.Database) {
   addCol("form_jobs", "dismissed_at", "TEXT");
   addCol("form_jobs", "appo_seen_at", "TEXT");                           // アポを「確認した」日時。空＝未確認（メニューの数字に数える）
 
+  // 質問箱から配布元（担当者）へ送った質問と、その返信。ticket は推測できない番号で、返信を読むための合い言葉になる
+  db.exec(`CREATE TABLE IF NOT EXISTS support_tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket TEXT NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL DEFAULT 0,
+    who TEXT NOT NULL DEFAULT '',
+    question TEXT NOT NULL DEFAULT '',
+    page TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    sent_ok INTEGER NOT NULL DEFAULT 0,    -- 配布元に届いたか（0なら、あとで送り直す）
+    reply TEXT NOT NULL DEFAULT '',
+    replied_at TEXT,
+    seen_at TEXT
+  )`);
+
   // 画面で見られるエラーログ。これまでは黒い画面（ターミナル）を見るしかなく、閉じると何も分からなかった。
   // 直近500件だけ残す（applog.ts 側で間引く）
   db.exec(`CREATE TABLE IF NOT EXISTS app_logs (

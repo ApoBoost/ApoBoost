@@ -24,6 +24,7 @@ import { canSendNow, drainForShutdown, clearStaleRuns, runCampaign, requestStop,
 import { launchBrowser, openAndFill } from "../engine.js";
 import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmails, learnFromCorrection, loadReplyRules, clearReplyRulesCache } from "../replies.js";
 import { notify, notifyEnabled } from "../notify.js";
+import { pollSupportReplies } from "../support.js";
 import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel } from "../update.js";
 import { errorPage } from "../ui/layout.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
@@ -75,6 +76,9 @@ setInterval(() => { autoBackupIfDue().catch((e) => logError("backup", jpError(e)
 setTimeout(() => { autoUpdateIfEnabled().catch(() => {}); }, 3 * 60_000);
 
 setInterval(() => { autoUpdateIfEnabled().catch(() => {}); }, 6 * 60 * 60_000);
+
+// 質問箱: 担当者からの返信を5分ごとに見に行く（返信待ちの質問があるときだけ通信する）
+setInterval(() => { pollSupportReplies().catch(() => 0); }, 5 * 60_000);
 
 setInterval(() => { try { dailySummaryIfDue(); } catch (e) { logError("summary", jpError(e)); } }, 5 * 60_000);
 
