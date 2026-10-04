@@ -1,14 +1,14 @@
 {
-  "version": "1.0.9",
+  "version": "1.0.10",
   "notes": "右下の質問箱を強化: よく見られている質問・「この会社について質問する」・担当者への質問と返信・問い合わせの終了と過去の一覧",
   "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-  "published_at": "2026-10-04T12:56:42.291Z",
+  "published_at": "2026-10-04T12:56:50.269Z",
   "channels": {
     "stable": {
-      "version": "1.0.9",
+      "version": "1.0.10",
       "notes": "右下の質問箱を強化: よく見られている質問・「この会社について質問する」・担当者への質問と返信・問い合わせの終了と過去の一覧",
       "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-      "published_at": "2026-10-04T12:56:42.291Z"
+      "published_at": "2026-10-04T12:56:50.269Z"
     }
   }
 }
