@@ -97,6 +97,22 @@ document.addEventListener("click", (e) => {
   document.querySelectorAll("details.menu[open]").forEach((d) => { if (!d.contains(e.target) || (e.target.closest && e.target.closest(".pop a, .pop button[type=button]"))) d.removeAttribute("open"); });
 });
 addEventListener("keydown", (e) => { if (e.key === "Escape") document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open")); });
+// 開いた中身は画面に対して置く（表やカードの端で切れて見えなくなったため）。下に入りきらないときは上に開く
+document.addEventListener("toggle", (e) => {
+  const d = e.target;
+  if (!d.matches || !d.matches("details.menu") || !d.open) return;
+  const pop = d.querySelector(".pop"), r = d.querySelector("summary").getBoundingClientRect();
+  if (!pop) return;
+  pop.style.position = "fixed"; pop.style.right = "auto";
+  // ボタンの右端に揃える。画面の左右にはみ出すときは内側に寄せる
+  const w = pop.offsetWidth;
+  pop.style.left = Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + "px";
+  const h = pop.offsetHeight, below = innerHeight - r.bottom - 8;
+  pop.style.top = (h > below && r.top - 8 > below ? Math.max(8, r.top - 4 - h) : r.bottom + 4) + "px";
+}, true);
+// 画面に対して置いているので、スクロールすると位置がずれる。ずれる前に閉じる
+addEventListener("scroll", () => document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open")), true);
+addEventListener("resize", () => document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open")));
 </script>
 <script>
 // 入力途中の自動保存（data-draft を付けたフォーム: 送信者・キャンペーン）。
