@@ -1,14 +1,14 @@
 {
-  "version": "1.0.2",
-  "notes": "要対応に溜まる失敗を減らしました（電話番号が必須の欄の読み取り、エラー表示の検知、確認画面の送信ボタン探しを強化）。受信箱に残っていた受付確認メールも振り分けます",
+  "version": "1.0.3",
+  "notes": "キャンペーンと関係のないフォーム（求職者向けの登録・応募フォーム）には入力しないようにしました",
   "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-  "published_at": "2026-10-04T06:16:47.281Z",
+  "published_at": "2026-10-04T06:39:20.866Z",
   "channels": {
     "stable": {
-      "version": "1.0.2",
-      "notes": "要対応に溜まる失敗を減らしました（電話番号が必須の欄の読み取り、エラー表示の検知、確認画面の送信ボタン探しを強化）。受信箱に残っていた受付確認メールも振り分けます",
+      "version": "1.0.3",
+      "notes": "キャンペーンと関係のないフォーム（求職者向けの登録・応募フォーム）には入力しないようにしました",
       "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-      "published_at": "2026-10-04T06:16:47.281Z"
+      "published_at": "2026-10-04T06:39:20.866Z"
     }
   }
 }
