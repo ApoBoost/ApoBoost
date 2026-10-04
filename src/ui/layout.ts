@@ -7,6 +7,15 @@ export const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
 /** 数字を桁区切りにする（#128）。1384 と 1,384 が混ざっていたので、画面に出す数字は必ずここを通す */
 export const n = (v: number | null | undefined) => Number(v ?? 0).toLocaleString("ja-JP");
 
+// 線画のアイコン。絵文字（📝 ✉ ⚠ など）は端末によって見た目が変わり、色も付いて画面から浮くので使わない。
+// 線の太さと角の丸みを揃えた小さなSVGを、文字と同じ色（currentColor）で出す
+const IC = (d: string, cls = "") => `<svg class="ic${cls ? " " + cls : ""}" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+export const IC_MAIL = IC('<rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3.5 7.5 12 13.5l8.5-6"/>');
+export const IC_FORM = IC('<rect x="4.5" y="3.5" width="15" height="17" rx="2.5"/><path d="M8 8.5h8M8 12h8M8 15.5h5"/>');
+export const IC_WARN = IC('<path d="M12 4 2.8 19.5h18.4L12 4Z"/><path d="M12 10v4.5"/><circle cx="12" cy="17" r=".6" fill="currentColor"/>', "ic-warn");
+export const IC_CHECK = IC('<circle cx="12" cy="12" r="9"/><path d="m8 12.3 2.8 2.8L16.2 9.5"/>', "ic-ok");
+const IC_GAME = IC('<rect x="2.5" y="7" width="19" height="10.5" rx="5.2"/><path d="M7 10.5v3.5M5.2 12.2h3.6"/><circle cx="15.5" cy="11" r=".7" fill="currentColor"/><circle cx="18" cy="13.4" r=".7" fill="currentColor"/>');
+
 export type NavUser = { username: string; display_name: string; role: string; gameOn?: boolean; todo?: number; appo?: number; effects?: boolean; path?: string } | null;
 
 // ロゴは assets/ の画像を使う。画像を差し替えたら ?v= の数字を上げる（ブラウザが古い絵を1時間覚えているため）
@@ -30,7 +39,7 @@ function navOf(user: NonNullable<NavUser>): string {
 <a href="/stats"${at((x) => x.startsWith("/stats") || x.startsWith("/report"))}>成果</a>
 <a href="/guide"${at((x) => x.startsWith("/guide"))}>ガイド</a>
 <a href="/settings"${inSettings ? ' class="on"' : ""}>設定</a>
-${user.gameOn ? `<a href="/game" title="待ち時間の息抜きに">🎰</a>` : ""}
+${user.gameOn ? `<a href="/game" title="待ち時間の息抜きに" aria-label="ミニゲーム">${IC_GAME}</a>` : ""}
 </nav>`;
 }
 
@@ -60,7 +69,7 @@ export function layout(title: string, body: string, flash = "", user: NavUser = 
 <title>${esc(title)} | ApoBoost</title>
 <link rel="icon" href="${FAVICON}">
 <style>${CSS}</style></head><body>
-<header class="top"><a class="logo" href="/">${LOGO}</a>${user ? `${navOf(user)}<div class="right">${user.role === "admin" && updateReady ? `<a class="upd" href="/update">新しい版があります</a>` : ""}<span>${esc(user.display_name || user.username)}${user.role === "admin" ? "（管理者）" : ""}</span><a href="/password">パスワード</a><a href="/logout">ログアウト</a></div>` : ""}</header>
+<header class="top"><a class="logo" href="/">${LOGO}</a>${user ? `${navOf(user)}<div class="right">${user.role === "admin" && updateReady ? `<a class="upd" href="/update">新しい版があります</a>` : ""}<span>${esc(user.display_name || user.username)}${user.role === "admin" && (user.display_name || user.username) !== "管理者" ? "（管理者）" : ""}</span><a href="/password">パスワード</a><a href="/logout">ログアウト</a></div>` : ""}</header>
 <main>${flash ? `<div class="flash">${esc(flash)}</div>` : ""}${user ? settingsTabsFor(user) : ""}${body}</main>
 <script>
 // 送信系フォームの送信中スピナー＋二重送信防止（既存 .spin スタイルを流用）
@@ -92,7 +101,7 @@ try{d=JSON.parse(localStorage.getItem(key)||"null")}catch(e){}
 let restoring=false;
 if(d&&d.values&&JSON.stringify(d.values)!==JSON.stringify(orig)){restoring=true;put(f,d.values);restoring=false;
 const bar=document.createElement("div");bar.className="flash";bar.style.margin="0 0 12px";
-bar.innerHTML='✎ 前回の入力途中の内容を復元しました（'+new Date(d.at).toLocaleString("ja-JP",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"})+'）。まだ保存はされていません。 <button type="button" class="btn sub small">復元をやめて元に戻す</button>';
+bar.innerHTML='前回の入力途中の内容を復元しました（'+new Date(d.at).toLocaleString("ja-JP",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"})+'）。まだ保存はされていません。 <button type="button" class="btn sub small">復元をやめて元に戻す</button>';
 bar.querySelector("button").onclick=()=>{restoring=true;put(f,orig);restoring=false;try{localStorage.removeItem(key)}catch(e){}bar.remove()};f.prepend(bar);}
 let t;const save=()=>{if(restoring)return;clearTimeout(t);t=setTimeout(()=>{try{const v=snap(f);if(JSON.stringify(v)===JSON.stringify(orig))localStorage.removeItem(key);else localStorage.setItem(key,JSON.stringify({at:Date.now(),values:v}))}catch(e){}},300)};
 f.addEventListener("input",save);f.addEventListener("change",save);
@@ -110,7 +119,7 @@ f.addEventListener("submit",()=>{clearTimeout(t);try{localStorage.removeItem(key
     if(el.closest("[data-nohelp]")||el.closest(".helpbody")) return;
     const text=(el.textContent||"").trim();
     if(text.length<60) return;
-    if(/[⚠✕]/.test(text)) return;
+    if(/[⚠✕]/.test(text)||el.querySelector(".ic-warn")) return;
     const st=el.getAttribute("style")||"";
     if(/color:\\s*var\\(--(ng|warn)\\)/.test(st)) return;
     const id="fo-help-"+(++seq);

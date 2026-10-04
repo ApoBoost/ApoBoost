@@ -13,28 +13,27 @@ export function loginPage(opts: { error?: string; next?: string } = {}): string 
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ログイン | ApoBoost</title>
 <style>
-body{margin:0;font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;background:#F3F6FB;color:#0B1B3F;display:flex;align-items:center;justify-content:center;min-height:100vh;font-size:14px}
-.box{background:#fff;border:1px solid #DCE3EE;border-radius:14px;padding:32px 30px;width:340px;box-shadow:0 2px 16px rgba(6,34,86,.08)}
+body{margin:0;font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;background:#F5F5F7;color:#1D1D1F;-webkit-font-smoothing:antialiased;display:flex;align-items:center;justify-content:center;min-height:100vh;font-size:14px}
+.box{background:#fff;border:1px solid rgba(0,0,0,.04);border-radius:18px;padding:36px 32px;width:348px;box-shadow:0 2px 16px rgba(0,0,0,.06)}
 h1{margin:0 0 6px;text-align:center}
-.sub{text-align:center;color:#66728A;font-size:12px;margin:0 0 22px}
-label{display:block;font-size:12px;color:#66728A;margin:12px 0 4px}
-input{width:100%;padding:10px 12px;border:1px solid #C2CCDB;border-radius:8px;font-size:14px}
-button{width:100%;margin-top:20px;padding:11px;background:#0A66E8;color:#fff;border:0;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer}
+.sub{text-align:center;color:#6E6E73;font-size:13px;margin:0 0 22px}
+label{display:block;font-size:12px;color:#6E6E73;margin:12px 0 4px}
+input{width:100%;padding:10px 12px;border:1px solid #D2D2D7;border-radius:10px;font-size:15px}
+button{width:100%;margin-top:20px;padding:11px;background:#0071E3;color:#fff;border:0;border-radius:10px;font-weight:600;font-size:15px;cursor:pointer}
 .err{background:#FDECEA;color:#C62828;border-radius:8px;padding:9px 12px;font-size:13px;margin-bottom:6px}
 .mark{display:block}
 *{box-sizing:border-box}
-/* ---- 動き：開いたときにロゴが左から飛んできて、光が1度だけ横切る。背景は淡い青がゆっくり動く ---- */
-body{background:linear-gradient(120deg,#EAF2FF,#F3F6FB 35%,#E3F6FD 70%,#F3F6FB);background-size:300% 300%;animation:bg 18s ease-in-out infinite}
+/* ---- 動き：開いたときにロゴが左から飛んできて、光が1度だけ横切る ---- */
 .box{animation:up .5s ease-out both}
 .logo{position:relative;display:inline-block;vertical-align:top;animation:fly .7s cubic-bezier(.2,.9,.25,1) .1s both}
 /* 光はロゴの形で切り抜く（四角い帯が見えないように）。logo.png は背景が透明 */
 .logo::after{content:"";position:absolute;inset:0;background:linear-gradient(105deg,transparent 40%,rgba(255,255,255,.85) 50%,transparent 60%) no-repeat;background-size:250% 100%;background-position:150% 0;-webkit-mask:url(/assets/logo.png?v=2) center/100% 100% no-repeat;mask:url(/assets/logo.png?v=2) center/100% 100% no-repeat;animation:sheen 1.1s ease-in-out .8s 1 both;pointer-events:none}
 .logo:hover::after{animation:sheen2 1.1s ease-in-out 1}
 button{transition:transform .15s,box-shadow .15s,background .15s}
-button:hover{background:#0858CC;transform:translateY(-1px);box-shadow:0 6px 16px rgba(10,102,232,.3)}
-button:active{transform:none;box-shadow:none}
+button:hover{background:#0077ED}
+button:active{transform:scale(.99)}
 input{transition:border-color .15s,box-shadow .15s}
-input:focus{outline:0;border-color:#0A66E8;box-shadow:0 0 0 3px rgba(10,102,232,.18)}
+input:focus{outline:0;border-color:#0071E3;box-shadow:0 0 0 4px rgba(0,113,227,.18)}
 @keyframes bg{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
 @keyframes up{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
 @keyframes fly{from{opacity:0;transform:translateX(-46px) skewX(-8deg)}to{opacity:1;transform:none}}

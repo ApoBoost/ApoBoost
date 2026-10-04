@@ -2,7 +2,7 @@
 import { STATUS_LABEL, OUTCOME_LABEL, CHANNEL_LABEL, channelMode, jst, type Campaign, type Job, type SenderProfile, type JobStatus } from "../db.js";
 import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
-import { esc, layout, n, type NavUser } from "./layout.js";
+import { esc, layout, n, type NavUser, IC_MAIL, IC_FORM, IC_WARN } from "./layout.js";
 import { post } from "./parts.js";
 
 export function senderForm(s?: Partial<SenderProfile>) {
@@ -11,7 +11,7 @@ export function senderForm(s?: Partial<SenderProfile>) {
 <div class="row"><div><label>ラベル（管理用）</label><input type="text" name="label" value="${v("label")}" placeholder="社内用 / ○○社用" required></div><div><label>会社名 *</label><input type="text" name="company" value="${v("company")}" required></div></div>
 <div class="row"><div><label>業種</label><input type="text" name="industry" value="${v("industry")}"></div><div><label>担当者名 *（姓と名の間にスペース）</label><input type="text" name="person" value="${v("person")}" placeholder="田中 太郎" required></div></div>
 <div class="row"><div><label>担当者名フリガナ</label><input type="text" name="person_kana" value="${v("person_kana")}" placeholder="タナカ タロウ"></div><div><label>メール *（フォームに入力するアドレス）</label><input type="email" name="email" value="${v("email")}" required></div></div>
-<div class="row"><div><label>返信受付メール（本文に載せる。空なら上と同じ）</label><input type="email" name="reply_email" value="${v("reply_email")}"></div><div><label>電話（ハイフン区切り）</label><input type="text" name="tel" value="${v("tel")}" placeholder="03-1234-5678"><p class="muted" style="color:var(--ng)">⚠ フォームでは電話番号が必須になっていることが多く、未入力のままだとかなりの確率で送信エラーになります。必ず入力してください。</p>
+<div class="row"><div><label>返信受付メール（本文に載せる。空なら上と同じ）</label><input type="email" name="reply_email" value="${v("reply_email")}"></div><div><label>電話（ハイフン区切り）</label><input type="text" name="tel" value="${v("tel")}" placeholder="03-1234-5678"><p class="muted" style="color:var(--ng)">${IC_WARN} フォームでは電話番号が必須になっていることが多く、未入力のままだとかなりの確率で送信エラーになります。必ず入力してください。</p>
 <label class="inline small" style="display:flex;gap:6px;align-items:flex-start;margin-top:6px;font-weight:400"><input type="checkbox" name="tel_required_only" value="1" ${s?.tel_required_only ? "checked" : ""} style="width:auto;margin-top:3px"> <span><b>電話番号が必須の欄にだけ入力する</b>（任意の欄には書かない）<br><span class="muted">電話番号を相手に伝えたくない場合に。サイト側で必須だった場合は、弾かれた後の埋め直しで入力して再送します。</span></span></label></div></div>
 <div class="row3"><div><label>郵便番号</label><input type="text" name="postal" value="${v("postal")}" placeholder="114-0001"></div><div><label>住所（都道府県から）※メールで送る場合は必須</label><input type="text" name="address" value="${v("address")}"><p class="muted small" style="margin:2px 0 0">営業メールには送信者の名称・住所・配信停止の連絡先の表示が法律（特定電子メール法）で必要なため、メールの末尾に自動で載せます。</p></div><div><label>自社URL</label><input type="url" name="url" value="${v("url")}"></div></div>
 <h2>メールで送る場合の設定（任意。フォームだけなら不要）</h2>
@@ -51,13 +51,13 @@ ${list.length ? list.map((s) => {
     return `<details class="card" style="padding:0" ${openId === s.id ? "open" : ""}>
 <summary style="cursor:pointer;padding:16px 18px;display:flex;gap:10px 18px;align-items:center;flex-wrap:wrap;list-style:none">
   <span style="min-width:200px"><b>${esc(s.label || s.company)}</b><br><span class="muted" data-nohelp>${esc(s.company)} ${esc(s.person)}</span></span>
-  <span class="small" style="min-width:210px">${mailOk ? `✉ ${esc(s.smtp_user)}` : "📝 フォーム送信のみ"}</span>
+  <span class="small" style="min-width:210px">${mailOk ? `${IC_MAIL} ${esc(s.smtp_user)}` : `${IC_FORM} フォーム送信のみ`}</span>
   <span>${iss.length ? iss.map((i) => `<span class="tag failed" style="margin:2px 4px 2px 0">${esc(i)}</span>`).join("") : `<span class="tag sent">設定OK</span>`}${ex?.paused ? ` <span class="tag failed">メール一時停止中</span>` : ""}</span>
   ${mailOk && ex ? `<span class="small" style="margin-left:auto;text-align:right">今日のメール <b>${n(ex.sentToday)} / ${n(ex.limit)}通</b>${ex.note ? `<br><span class="muted" data-nohelp>${esc(ex.note)}</span>` : ""}</span>` : `<span style="margin-left:auto"></span>`}
   <span class="btn small">編集</span>
 </summary>
 <div style="padding:0 18px 18px;border-top:1px solid var(--c-line)">
-${ex?.paused ? `<p class="small" style="color:var(--ng)">⚠ ${esc(ex.paused)}</p>` : ""}
+${ex?.paused ? `<p class="small" style="color:var(--ng)">${IC_WARN} ${esc(ex.paused)}</p>` : ""}
 <p class="muted" data-nohelp>利用中のキャンペーン: ${usage[s.id] ?? 0}件</p>
 ${senderForm(s)}
 ${mailOk ? `<form method="post" action="/senders/${s.id}/test" class="inline" data-busy data-busytext="接続を確認中…"><button class="btn small">メールの接続をテストする</button></form>` : ""}

@@ -2,7 +2,7 @@
 import { STATUS_LABEL, OUTCOME_LABEL, CHANNEL_LABEL, channelMode, jst, type Campaign, type Job, type SenderProfile, type JobStatus } from "../db.js";
 import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
-import { esc, layout, n, type NavUser } from "./layout.js";
+import { esc, layout, n, type NavUser, IC_WARN } from "./layout.js";
 import { MODE_LABEL, campaignStatusTag, post } from "./parts.js";
 
 /** ホーム上部の「今日やることが分かる1画面」（#49 #108 #132 #137） */
@@ -85,7 +85,7 @@ function campaignHomeCard(c: CampaignHome): string {
     ${stat("要対応", `${n(todoOther)}<span class="unit">社</span>`, "失敗など。送り直せます", "/todo", todoOther ? "var(--c-ng)" : "")}
     ${c.todoCaptcha ? stat("画像認証", `${n(c.todoCaptcha)}<span class="unit">社</span>`, "手作業で送る場合だけ", "/todo?kind=captcha") : ""}
   </div>
-  ${c.paused ? `<p class="small" style="margin:10px 0 0;color:var(--ng)">⚠ メール送信を一時停止中: ${esc(c.paused)}</p>` : ""}
+  ${c.paused ? `<p class="small" style="margin:10px 0 0;color:var(--ng)">${IC_WARN} メール送信を一時停止中: ${esc(c.paused)}</p>` : ""}
 </div>`;
 }
 

@@ -40,9 +40,9 @@ app.post("/senders/:id/test", async (req, res) => {
     const bad = checkSmtpPassword(s);
     if (bad) throw new Error(bad);
     await testSmtp(s);
-    redirectWith(res, "/senders", `✅ メールの接続テストに成功しました（${s.smtp_user}）`);
+    redirectWith(res, "/senders", `メールの接続テストに成功しました（${s.smtp_user}）`);
   } catch (e) {
-    redirectWith(res, `/senders/${s.id}`, `⚠ 接続できませんでした: ${explainSmtpError(e, s)}`);
+    redirectWith(res, `/senders/${s.id}`, `接続できませんでした: ${explainSmtpError(e, s)}`);
   }
 });
 

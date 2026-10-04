@@ -3,7 +3,7 @@ import { thumb, ZOOM_SNIPPET } from "./parts.js";
 import { STATUS_LABEL, OUTCOME_LABEL, CHANNEL_LABEL, channelMode, jst, type Campaign, type Job, type SenderProfile, type JobStatus } from "../db.js";
 import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
-import { esc, layout, n, type NavUser } from "./layout.js";
+import { esc, layout, n, type NavUser, IC_MAIL, IC_FORM, IC_WARN } from "./layout.js";
 import { statusTag, errKindTag, scoreTag, statusCell, MODE_LABEL, campaignStatusTag, STATUS_LEGEND, post } from "./parts.js";
 
 export function campaignForm(senders: SenderProfile[], defaults: Partial<Campaign>, provider: string, editId?: number, groups: string[] = [], others: { id: number; name: string; group_name: string }[] = []) {
@@ -44,7 +44,7 @@ ${(() => {
 <b>テンプレ＋質問だけAI（おすすめ）:</b> 文面はテンプレ（0円）のまま、想定外の質問欄が出たときだけAIが回答します。全文生成をしないぶん<b>全文AIの1/5〜1/10の費用</b>で、成功率はテンプレのみより大きく上がります（AIを呼ぶのは想定外の質問が出た一部の会社だけ）。<br>
 <b>ハイブリッド:</b> 冒頭1〜2文だけAIが書くので安い（約0.2円/件）ぶん、想定外の質問欄には対応できず、そのフォームは失敗になりやすくなります。<br>
 ※ チェック欄・選択肢はどのモードでも自動対応します。画像認証（CAPTCHA）はどのモードでも突破しません。</p>
-${provider === "none" ? '<p class="muted">⚠ AIを使うモードは、先に<a href="/settings"><b>設定画面でAPIキーの登録</b></a>が必要です（管理者のみ）。料金の目安や取得手順も設定画面に書いてあります。未設定のままではテンプレートのみで送られます。</p>' : ""}
+${provider === "none" ? '<p class="muted">' + IC_WARN + ' AIを使うモードは、先に<a href="/settings"><b>設定画面でAPIキーの登録</b></a>が必要です（管理者のみ）。料金の目安や取得手順も設定画面に書いてあります。未設定のままではテンプレートのみで送られます。</p>' : ""}
 </div><div data-step="2"><h2>② 文面</h2>
 <label>件名（件名欄があるフォーム用）</label><input type="text" name="subject_text" value="${d("subject_text", "【ここに件名】のご案内")}">
 <label>本文テンプレート</label>
@@ -84,7 +84,7 @@ ${provider === "none" ? '<p class="muted">⚠ AIを使うモードは、先に<a
 ${editId ? "" : `<p class="muted" data-nohelp>ここは最初のままで大丈夫です。あとから「設定を変える」でいつでも変更できます。</p>`}
 <div class="row3"><div><label>1日の上限（フォーム／メール）</label><div class="row"><input type="number" name="daily_limit" value="${d("daily_limit", 300)}" title="フォーム" placeholder="フォーム"><input type="number" name="email_daily_limit" value="${d("email_daily_limit", 100)}" title="メール" placeholder="メール"></div></div><div><label>送信時間帯（開始・終了 時）</label><div class="row"><input type="number" name="send_window_start" value="${d("send_window_start", 9)}" min="0" max="23"><input type="number" name="send_window_end" value="${d("send_window_end", 18)}" min="1" max="24"></div></div><div><label>平日のみ</label><select name="weekdays_only"><option value="1" ${Number(defaults.weekdays_only ?? 1) ? "selected" : ""}>はい</option><option value="0" ${defaults.weekdays_only !== undefined && !Number(defaults.weekdays_only) ? "selected" : ""}>土日も送る</option></select></div></div>
 <div class="small" style="margin:-4px 0 14px;padding:10px 12px;background:var(--honey-50);border:1px solid var(--honey);border-radius:8px;line-height:1.7">
-<b>⚠ メールの上限は少なめに（Gmailのアカウント停止を防ぐため）</b><br>
+<b>${IC_WARN} メールの上限は少なめに（Gmailのアカウント停止を防ぐため）</b><br>
 短時間に大量に送ると、Googleに「普段と違う利用」と判断され、<b>アカウントが一時停止</b>されます（通常1時間〜最大24時間。停止中は送信も返信の確認もできません）。上限の数だけでなく、次の条件が重なると止められやすくなります。<br>
 ・<b>作ったばかりのアカウント</b>：最初の1週間は1日<b>50〜100通</b>、問題なければ2週目に200通…と少しずつ増やしてください（いきなり500通以上は危険）<br>
 ・<b>深夜・早朝の連続送信</b>：送信時間帯は平日の日中（例: 9〜18時）にしてください<br>
@@ -131,7 +131,7 @@ ${editId ? `<div class="card" style="border-color:var(--ng);margin-top:18px"><h2
 /** CSV取込の結果。何件入ったかだけでなく、除外された会社名まで出す */
 export function importReport(r: import("../csv.js").ImportSummary): string {
   const skipped = r.excludedRows;
-  return `<div class="flash" style="margin-top:12px">登録 <b>${r.added}</b>件（フォーム${r.addedForm}・メール${r.addedEmail}） / 送らない <b>${r.excluded + r.suppressed + r.duplicated + r.noUrl}</b>件${r.noEntity && r.noEntity.length ? `<br><span style="color:var(--warn)">⚠ 法人格（株式会社など）が無い社名 ${r.noEntity.length}社。事前チェックでHPから自動補完します。</span>` : ""}</div>
+  return `<div class="flash" style="margin-top:12px">登録 <b>${r.added}</b>件（フォーム${r.addedForm}・メール${r.addedEmail}） / 送らない <b>${r.excluded + r.suppressed + r.duplicated + r.noUrl}</b>件${r.noEntity && r.noEntity.length ? `<br><span style="color:var(--warn)">${IC_WARN} 法人格（株式会社など）が無い社名 ${r.noEntity.length}社。事前チェックでHPから自動補完します。</span>` : ""}</div>
 ${skipped.length ? `<details open style="margin-top:10px"><summary style="cursor:pointer;font-weight:700">送らない会社 ${skipped.length}件の内訳</summary>
 <table style="margin-top:6px"><tr><th>会社名</th><th>理由</th><th>送信先</th></tr>
 ${skipped.map((x) => `<tr><td>${esc(x.company)}</td><td class="small">${esc(x.reason)}</td><td class="small">${esc((x.where || "").slice(0, 60))}</td></tr>`).join("")}
@@ -145,7 +145,7 @@ export function campaignView(c: Campaign & { sender: SenderProfile }, jobs: Job[
     if (!r) return "";
     if (!r.enabled) return `<p class="muted small" style="margin:4px 0 0">反応（返信／アポ／断り）は、送信者プロフィールに送信用メールアカウント（アプリパスワード）を設定すると、受信箱から自動で記録されます。今は会社の詳細画面のボタンで手動記録です。</p>`;
     const when = r.checkedAt ? new Date(r.checkedAt.replace(" ", "T") + "Z").toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだ";
-    return `<form method="post" action="/replies/check" style="margin:4px 0 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input type="hidden" name="back" value="/campaigns/${c.id}"><span class="muted small">✉ 反応は受信箱の返信から自動で記録（15分ごと・キーワードで振り分け。最終確認: ${esc(when)}）。違っていたら会社の詳細画面で直せます</span><button class="btn sub small" ${r.checking ? "disabled" : ""}>${r.checking ? "確認中…" : "今すぐ返信を確認"}</button></form>${r.error ? `<p class="small" style="margin:4px 0 0;color:var(--ng)">${esc(r.error)}</p>` : ""}`;
+    return `<form method="post" action="/replies/check" style="margin:4px 0 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input type="hidden" name="back" value="/campaigns/${c.id}"><span class="muted small">${IC_MAIL} 反応は受信箱の返信から自動で記録（15分ごと・キーワードで振り分け。最終確認: ${esc(when)}）。違っていたら会社の詳細画面で直せます</span><button class="btn sub small" ${r.checking ? "disabled" : ""}>${r.checking ? "確認中…" : "今すぐ返信を確認"}</button></form>${r.error ? `<p class="small" style="margin:4px 0 0;color:var(--ng)">${esc(r.error)}</p>` : ""}`;
   };
   const cnt = (s: string) => counts[s] ?? 0;
   const nRetry = extra.retryTargets?.length ?? 0; // 「失敗した会社を再送信」の対象数（会社単位・最新の結果が失敗のものだけ）
@@ -243,7 +243,7 @@ ${p ? `<div class="card ov"><div class="ovhead"><b>送信ペース</b><a href="/
 ${tabsNav}
 <div data-tab="prep"${show("prep")}>
 
-<div class="card testcard"><h2 style="margin-top:0">🧪 テスト送信（本送信とは別）</h2>
+<div class="card testcard"><h2 style="margin-top:0">テスト送信（本送信とは別）</h2>
 <p class="muted">自社のフォームや自分のメール宛てに動作を試すための機能です。営業リストには送られず、下の送信フローとも無関係です。送信前に一度だけ確認しておくと安心です。</p>
 <a class="btn" href="/campaigns/${c.id}/test">テスト送信ページを開く</a></div>
 
@@ -279,7 +279,7 @@ ${list.map((b) => `<tr><td class="small">${when(b.at)}</td><td class="small">${e
 
 <div class="card"><h2 style="margin-top:0">② 事前チェック（送る前に連絡先を確認）${extra.scanning ? '<span class="tag sending"><span class="spin"></span>チェック中</span>' : extra.unscanned === 0 && extra.scanned > 0 ? '<span class="tag sent">チェック完了</span>' : ""}</h2>
 <p class="muted">送らずに各社のサイトを見て、フォームの有無・営業お断り・画像認証を先に判定し、サイトのメールアドレスを拾います。フォームが無い会社はメールに自動で切り替わります（チャネルが「フォーム優先＋メール」のとき）。1社5〜10秒。</p>
-${extra.emailQueued ? `<p class="small" style="margin:6px 0 10px;padding:8px 10px;background:var(--honey-50);border-radius:8px">✉ <b>メールで送る会社 ${extra.emailQueued}社</b>は事前チェックの対象外です（フォームを探す機能のため、下の件数には含まれません）。メールはそのまま「送信」タブの「開始」で送れます。1日に送る数は「1日の上限（メール）」までです。</p>` : ""}
+${extra.emailQueued ? `<p class="small" style="margin:6px 0 10px;padding:8px 10px;background:var(--honey-50);border-radius:8px">${IC_MAIL} <b>メールで送る会社 ${extra.emailQueued}社</b>は事前チェックの対象外です（フォームを探す機能のため、下の件数には含まれません）。メールはそのまま「送信」タブの「開始」で送れます。1日に送る数は「1日の上限（メール）」までです。</p>` : ""}
 ${scanTotal > 0 ? `<div class="bar"><i id="scanfill" style="width:${scanPct}%"></i></div><div class="small muted" id="scantext">${extra.scanned} / ${scanTotal} 社チェック済み（${scanPct}%）</div>` : ""}
 ${extra.scanning ? `<form method="post" action="/campaigns/${c.id}/stop-scan" class="inline"><button class="btn danger">チェックを止める</button></form>` : `<form method="post" action="/campaigns/${c.id}/scan" class="inline"><button class="btn sub" ${extra.unscanned === 0 || running ? "disabled" : ""}>事前チェックを実行（未チェック ${extra.unscanned}社）</button></form>`}
 ${cnt("skip_no_form") > 0 && !extra.scanning && !running ? `<form method="post" action="/campaigns/${c.id}/rescan-noform" class="inline" onsubmit="return confirm('「フォーム無し」の ${cnt("skip_no_form")} 社を、もう一度チェックし直します（サイトマップ・フッター・外部フォームサービスにも対応した探し方で探します）。このあと「事前チェックを実行」を押してください。よろしいですか？')"><button class="btn sub">フォーム無しの ${cnt("skip_no_form")} 社をもう一度チェックする</button></form>
@@ -399,7 +399,7 @@ ${(() => {
     }
     const acts = (j: Job, hist: Job[]) => `${j.status === "queued" ? `<form method="post" action="/jobs/${j.id}/cancel" class="inline"><button class="btn small">キャンセル</button></form>` : j.status === "failed" || j.status === "skip_no_form" ? `<a class="btn small" href="/jobs/${j.id}#fix">直して送る</a>` : ""} ${j.is_test ? "" : `<form method="post" action="/jobs/${j.id}/delete" class="inline" data-n="${esc(j.company_name)}" onsubmit="return confirm(this.dataset.n + ' の記録${hist.length ? `（履歴${hist.length}件を含む）` : ""}を送信一覧から削除します（30分以内なら元に戻せます）${j.status === "sent" || hist.some((h) => h.status === "sent") ? "。送信済みの記録も消え、この会社への再送防止が効かなくなります" : ""}。よろしいですか？')"><button class="btn small" title="この会社の記録を削除">削除</button></form>`}`;
     // 列は5つに絞る（#110）。送り方・業種・送れそう度は会社名の下に小さく出す
-    const sub = (j: Job) => [j.channel === "email" ? "✉ メール" : "📝 フォーム", j.sub_industry || j.industry, j.domain].filter(Boolean).map((x) => esc(x)).join("・");
+    const sub = (j: Job) => [j.channel === "email" ? IC_MAIL + " メール" : IC_FORM + " フォーム", ...[j.sub_industry || j.industry, j.domain].filter(Boolean).map((x) => esc(x))].join("・");
     const repRow = (j: Job, hist: Job[]) => `<tr data-u="${esc(j.updated_at ?? "")}"><td>${j.is_test ? "" : `<input type="checkbox" name="ids" value="${j.id}" form="bulkdel" onchange="foBulkCount()">`}</td>
 <td><a href="/jobs/${j.id}"><b>${esc(j.company_name)}</b></a>${j.is_test ? " <span class='tag'>テスト</span>" : ""}<div class="muted" data-nohelp>${sub(j)}${scoreTag(j).replace("<br>", "・")}</div></td>
 <td>${statusCell(j)}${hist.length ? `<br><button type="button" class="histbtn" data-t="${j.id}" data-n="${hist.length}" onclick="foHist(this)">▽(${hist.length}件)</button>` : ""}</td>
@@ -475,7 +475,7 @@ export function importPreviewView(c: Campaign & { sender: SenderProfile }, rows:
 <div class="card"><h2 style="margin-top:0">この内容で取り込みますか？</h2>
 <p>読み込んだ行数: <b>${rows.length}</b>件　→　登録予定: <b style="color:var(--ok)">${willSend}</b>件（フォーム${summary.addedForm}・メール${summary.addedEmail}）／ 送らない: <b>${willSkip}</b>件</p>
 <p class="muted small">送らない内訳: 除外/官公庁 ${summary.excluded} ・ 除外リスト ${summary.suppressed} ・ 重複/再送禁止 ${summary.duplicated} ・ 送信先なし ${summary.noUrl}</p>
-${summary.noEntity && summary.noEntity.length ? `<p class="small" style="color:var(--warn)">⚠ 「株式会社」などの法人格が無い社名 <b>${summary.noEntity.length}</b>社：${esc(summary.noEntity.slice(0, 12).join("、"))}${summary.noEntity.length > 12 ? " ほか" : ""}<br><span class="muted">事前チェックのときに各社のHPの表記（フッター・会社概要）から正式名称を自動で補います（AI不要・無料）。HPで確認できなかった社は、取り込み後に社名をご確認ください。</span></p>` : ""}
+${summary.noEntity && summary.noEntity.length ? `<p class="small" style="color:var(--warn)">${IC_WARN} 「株式会社」などの法人格が無い社名 <b>${summary.noEntity.length}</b>社：${esc(summary.noEntity.slice(0, 12).join("、"))}${summary.noEntity.length > 12 ? " ほか" : ""}<br><span class="muted">事前チェックのときに各社のHPの表記（フッター・会社概要）から正式名称を自動で補います（AI不要・無料）。HPで確認できなかった社は、取り込み後に社名をご確認ください。</span></p>` : ""}
 <form method="post" action="/campaigns/${c.id}/import-confirm" class="inline" data-busy><button class="btn primary" data-busytext="取り込み中…">この内容で取り込む（${rows.length}行）</button></form>
 <form method="post" action="/campaigns/${c.id}/import-cancel" class="inline"><button class="btn sub">やめる</button></form>
 </div>
@@ -500,6 +500,6 @@ export function testView(c: Campaign & { sender: SenderProfile }, tests: Job[]) 
 ${channelMode(c.channel) !== "form_only" ? `<form method="post" action="/campaigns/${c.id}/test"><label>メールのテスト（自分のアドレスに1通送る）</label><div class="row"><input type="email" name="email" placeholder="自分のメールアドレス"><button class="btn">テストメールを送る</button></div></form>` : ""}</div>
 <h2>テスト履歴（最新20件）</h2>
 ${tests.length ? `<table><tr><th>ID</th><th>宛先</th><th>送り方</th><th>状態</th><th>結果</th><th>日時</th></tr>
-${tests.map((j) => `<tr><td><a href="/jobs/${j.id}">${j.id}</a></td><td>${esc(j.company_name)}<br><span class="muted small">${esc(j.form_url || j.email)}</span></td><td class="small">${j.channel === "email" ? "✉ メール" : "📝 フォーム"}</td><td>${statusTag(j.status)}</td><td class="small">${esc((j.result_text || "").split("\n")[0].slice(0, 70))}</td><td class="small">${esc(jst(j.updated_at))}</td></tr>`).join("")}
+${tests.map((j) => `<tr><td><a href="/jobs/${j.id}">${j.id}</a></td><td>${esc(j.company_name)}<br><span class="muted small">${esc(j.form_url || j.email)}</span></td><td class="small">${j.channel === "email" ? IC_MAIL + " メール" : IC_FORM + " フォーム"}</td><td>${statusTag(j.status)}</td><td class="small">${esc((j.result_text || "").split("\n")[0].slice(0, 70))}</td><td class="small">${esc(jst(j.updated_at))}</td></tr>`).join("")}
 </table>` : '<p class="muted">まだテストしていません。</p>'}`;
 }

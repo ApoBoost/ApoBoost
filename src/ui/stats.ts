@@ -2,7 +2,7 @@
 import { STATUS_LABEL, OUTCOME_LABEL, CHANNEL_LABEL, channelMode, jst, type Campaign, type Job, type SenderProfile, type JobStatus } from "../db.js";
 import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
-import { esc, layout, n, type NavUser } from "./layout.js";
+import { esc, layout, n, type NavUser, IC_MAIL, IC_FORM } from "./layout.js";
 
 /** 送信数（日別・月別）。棒グラフはCSSだけで描く（ライブラリは増やさない） */
 export function statsView(
@@ -71,7 +71,7 @@ export function analysisSection(a: Analysis): string {
 
 ${a.byChannel.length ? `<div class="card"><h2 style="margin-top:0">フォームとメールの比較</h2>
 <table><tr><th>送り方</th><th>送信</th><th>失敗・送れず</th><th>返信+アポ</th><th>アポ</th><th>反応率</th></tr>
-${a.byChannel.map((r) => `<tr><td>${r.channel === "email" ? "✉ メール" : "📝 フォーム"}</td><td>${n(r.sent)}</td><td>${n(r.failed)}</td><td>${n(r.replied)}</td><td><b>${r.appo}</b></td><td>${r.sent >= 10 ? `${((r.replied / r.sent) * 100).toFixed(1)}%` : "—"}</td></tr>`).join("")}
+${a.byChannel.map((r) => `<tr><td>${r.channel === "email" ? IC_MAIL + " メール" : IC_FORM + " フォーム"}</td><td>${n(r.sent)}</td><td>${n(r.failed)}</td><td>${n(r.replied)}</td><td><b>${r.appo}</b></td><td>${r.sent >= 10 ? `${((r.replied / r.sent) * 100).toFixed(1)}%` : "—"}</td></tr>`).join("")}
 </table></div>` : ""}
 
 ${rateTable("業種別の反応", "送信数の多い順。反応率が高い業種に絞ると、同じ手間でアポが増えます。", a.byIndustry)}

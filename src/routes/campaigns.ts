@@ -129,7 +129,7 @@ app.post("/campaigns", upload.single("material_file"), (req, res) => {
   // 資料ファイル（メール添付用）を保存する
   const warn = req.file ? saveMaterial(cid, req.file) : "";
   applyGroupMembers(req, cid, "", b);
-  redirectWith(res, `/campaigns/${cid}`, `キャンペーンを作成しました。CSVを取り込んでください。${warn ? `／⚠ ${warn}` : ""}`);
+  redirectWith(res, `/campaigns/${cid}`, `キャンペーンを作成しました。CSVを取り込んでください。${warn ? `／${warn}` : ""}`);
 });
 
 // ---- キャンペーン編集 ----
@@ -162,7 +162,7 @@ app.post("/campaigns/:id/edit", upload.single("material_file"), (req, res) => {
     return redirectWith(res, `/campaigns/${id}/edit`, `添付ファイル「${before.attach_name}」を削除しました（メールは添付なしで送られます）`);
   }
   applyGroupMembers(req, id, prevGroupName, b);
-  redirectWith(res, `/campaigns/${id}`, `キャンペーンを保存しました${attachWarn ? `／⚠ ${attachWarn}` : ""}`);
+  redirectWith(res, `/campaigns/${id}`, `キャンペーンを保存しました${attachWarn ? `／${attachWarn}` : ""}`);
 });
 
 app.get("/campaigns/:id", (req, res) => {

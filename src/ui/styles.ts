@@ -3,28 +3,33 @@
 //
 // 色の意味（どの画面でも同じ）:
 //   緑＝送れた・問題なし ／ 赤＝人の手が要る ／ 黄＝待ち ／ 青＝いま進行中 ／ 灰＝対象外
-// ブランド色（ロゴの青）は「その画面でいちばん押してほしいボタン」と、いま選んでいるタブの印だけに使う。
-// 以前はブランド色が黄色で、「待ち」の黄色と同じだった。ロゴを青に変えたので、待ちの黄色（--c-wait*）とは別の色にしてある。
-// 上の帯はロゴの紺（--c-nav）。背景・文字・線も、ロゴに合わせて暖色から寒色へ寄せた。
+// 見た目は Apple の Human Interface Guidelines に寄せている（2026-10）:
+//   ・内容を主役にする。枠線・影・色は控えめにし、白い面と淡い灰色の地だけで区切る
+//   ・上の帯は半透明（すりガラス）。本文が下を流れても、帯は軽いまま
+//   ・ボタンは「塗りの青（その画面でいちばん押してほしい1つ）」と「灰色の塗り（それ以外）」の2種類
+//   ・タブは区切り型（セグメント）。選んだ方が白く浮く
+//   ・文字はシステムの書体（SF / ヒラギノ）。見出しは少し詰め、数字は桁を揃える
+// ブランド色（青）は主ボタンと、選んでいる場所の印だけに使う。「待ち」の黄色（--c-wait*）とは別の色。
 
 export const CSS = `
 :root{
   /* ---- 色 ---- */
-  --c-bg:#F3F6FB; --c-surface:#FFFFFF; --c-surface-2:#F7F9FC;
-  --c-ink:#0B1B3F; --c-ink-2:#3A4763; --c-ink-3:#66728A;
-  --c-line:#DCE3EE; --c-line-strong:#C2CCDB;
-  --c-brand:#0A66E8; --c-brand-ink:#FFFFFF; --c-brand-bg:#EAF2FF; --c-nav:#062256;
-  --c-ok:#1E7B34;   --c-ok-bg:#E6F4EA;
-  --c-ng:#C62828;   --c-ng-bg:#FDECEC;
-  --c-wait:#7A5600; --c-wait-bg:#FFF2CC; --c-wait-dot:#F2B526;
-  --c-info:#1B5FA8; --c-info-bg:#E7F0FA;
-  --c-off:#566074;  --c-off-bg:#E9EDF3;
-  --c-warn:#B45309; --c-warn-bg:#FFF1E0;
-  --c-link:#1A4FB4;
+  --c-bg:#F5F5F7; --c-surface:#FFFFFF; --c-surface-2:#FAFAFC;
+  --c-ink:#1D1D1F; --c-ink-2:#424245; --c-ink-3:#6E6E73;
+  --c-line:#E3E3E8; --c-line-strong:#D2D2D7;
+  --c-brand:#0071E3; --c-brand-hover:#0077ED; --c-brand-ink:#FFFFFF; --c-brand-bg:#EAF3FE; --c-nav:#1D1D1F;
+  --c-fill:rgba(118,118,128,.12); --c-fill-hover:rgba(118,118,128,.2);
+  --c-ok:#1B7F37;   --c-ok-bg:#E4F6E9;
+  --c-ng:#D70015;   --c-ng-bg:#FFEBEC;
+  --c-wait:#8F5A00; --c-wait-bg:#FFF4D6; --c-wait-dot:#FFB800;
+  --c-info:#0058C4; --c-info-bg:#E8F2FF;
+  --c-off:#6E6E73;  --c-off-bg:#EFEFF2;
+  --c-warn:#B54708; --c-warn-bg:#FFF2E2;
+  --c-link:#0066CC;
   /* ---- 文字 ---- */
   --fs-base:14px; --fs-sm:12px; --fs-xs:12px; --fs-h1:20px; --fs-h2:16px; --lh:1.6;
   /* ---- 余白・角 ---- */
-  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --radius:10px; --radius-sm:8px;
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --radius:14px; --radius-sm:9px;
   /* ---- 以前の名前（各画面のHTMLが使っている）。意味を保ったまま新しい色に対応させる ---- */
   --honey:var(--c-brand); --honey-50:var(--c-surface-2); --honey-100:var(--c-wait-bg);
   --hive:var(--c-ink); --hive-600:var(--c-ink-2); --hive-200:var(--c-line);
@@ -33,73 +38,76 @@ export const CSS = `
 *{box-sizing:border-box}
 /* hidden 属性は必ず効かせる（style="display:flex" などを付けた要素でも隠れるように。拡大表示の黒い幕が出っぱなしになる不具合があった） */
 [hidden]{display:none!important}
-body{margin:0;font-family:-apple-system,"Hiragino Sans","Noto Sans JP","Yu Gothic UI",sans-serif;background:var(--c-bg);color:var(--c-ink);font-size:var(--fs-base);line-height:var(--lh)}
-a{color:var(--c-link)}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Yu Gothic UI",sans-serif;background:var(--c-bg);color:var(--c-ink);font-size:var(--fs-base);line-height:var(--lh);-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+a{color:var(--c-link);text-decoration:none}
+a:hover{text-decoration:underline}
+/* 線画のアイコン。文字と同じ色・同じ高さで並べる */
+.ic{display:inline-block;vertical-align:-3px;flex:none}
+.ic.ic-ok{color:var(--c-ok)}
+:focus-visible{outline:3px solid rgba(0,113,227,.45);outline-offset:2px;border-radius:6px}
 
-/* ---- 上の帯（ナビ）---- */
-header.top{background:var(--c-nav);color:#fff;padding:10px 20px;display:flex;align-items:center;gap:6px 6px;flex-wrap:wrap}
-header.top a{color:#fff;text-decoration:none;white-space:nowrap}
-header.top .logo{background:#fff;padding:5px 10px;border-radius:var(--radius-sm);display:inline-flex;align-items:center;margin-right:10px}
+/* ---- 上の帯（ナビ）: 半透明のすりガラス。画面の上に付いてくる ---- */
+header.top{position:sticky;top:0;z-index:60;background:rgba(255,255,255,.76);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-bottom:1px solid rgba(0,0,0,.08);color:var(--c-ink);padding:8px 20px;display:flex;align-items:center;gap:6px 6px;flex-wrap:wrap}
+header.top a{color:var(--c-ink);text-decoration:none;white-space:nowrap}
+header.top .logo{display:inline-flex;align-items:center;margin-right:14px}
 header.top .logo img{display:block;flex:none;height:24px;width:auto}
-/* ロゴにカーソルを載せると、ロゴの形に沿って光が1度横切る（光はロゴの画像で切り抜く） */
-header.top .logo{position:relative;transition:transform .15s}
-header.top .logo:hover{transform:translateY(-1px)}
-header.top .logo::after{content:"";position:absolute;inset:5px 10px;background:linear-gradient(105deg,transparent 40%,rgba(255,255,255,.85) 50%,transparent 60%) no-repeat;background-size:250% 100%;background-position:150% 0;-webkit-mask:url(/assets/logo.png?v=2) center/100% 100% no-repeat;mask:url(/assets/logo.png?v=2) center/100% 100% no-repeat;pointer-events:none}
-header.top .logo:hover::after{animation:logo-sheen .9s ease-in-out 1}
-@keyframes logo-sheen{from{background-position:150% 0}to{background-position:-50% 0}}
 header.top nav{display:flex;gap:2px;flex-wrap:wrap;align-items:center}
-header.top nav a{padding:7px 14px;border-radius:999px;font-weight:600}
-header.top nav a:hover{background:rgba(255,255,255,.12)}
-header.top nav a.on{background:#fff;color:var(--c-ink)}
-header.top nav a .badge{display:inline-block;background:var(--c-ng);color:#fff;font-size:12px;font-weight:700;border-radius:999px;padding:0 7px;margin-left:6px;line-height:1.6}
-header.top .right{margin-left:auto;display:flex;gap:12px;align-items:center;font-size:var(--fs-sm);color:#C5D0E6}
-header.top .right a{color:#C5D0E6}
-header.top a.upd{background:var(--c-brand);color:var(--c-brand-ink);font-weight:700;padding:4px 12px;border-radius:999px}
+header.top nav a{padding:6px 12px;border-radius:8px;font-weight:500;color:var(--c-ink-2);display:inline-flex;align-items:center;transition:background .15s,color .15s}
+header.top nav a:hover{background:var(--c-fill);color:var(--c-ink)}
+header.top nav a.on{background:var(--c-fill);color:var(--c-ink);font-weight:600}
+header.top nav a .badge{display:inline-block;background:var(--c-ng);color:#fff;font-size:11px;font-weight:700;border-radius:999px;padding:0 6px;margin-left:6px;line-height:1.6;min-width:18px;text-align:center}
+header.top .right{margin-left:auto;display:flex;gap:14px;align-items:center;font-size:var(--fs-sm);color:var(--c-ink-3)}
+header.top .right a{color:var(--c-ink-3)}
+header.top .right a:hover{color:var(--c-ink)}
+header.top a.upd{background:var(--c-brand);color:var(--c-brand-ink);font-weight:600;padding:4px 12px;border-radius:999px}
+@media (max-width:760px){header.top{position:static}}
 
-/* ---- 設定の中のタブ ---- */
-.subnav{display:flex;gap:4px;flex-wrap:wrap;border-bottom:2px solid var(--c-line);margin:0 0 20px}
-.subnav a{padding:8px 14px;text-decoration:none;color:var(--c-ink-2);font-weight:600;border-bottom:3px solid transparent;margin-bottom:-2px;border-radius:6px 6px 0 0}
-.subnav a:hover{background:var(--c-surface)}
-.subnav a.on{color:var(--c-ink);border-bottom-color:var(--c-brand);background:var(--c-surface)}
+/* ---- 設定の中のタブ: 区切り型（選んだ方が白く浮く）---- */
+.subnav{display:inline-flex;gap:2px;flex-wrap:wrap;background:var(--c-fill);border-radius:10px;padding:2px;margin:0 0 20px;max-width:100%}
+.subnav a{padding:6px 14px;text-decoration:none;color:var(--c-ink);font-weight:500;font-size:13px;border-radius:8px;white-space:nowrap}
+.subnav a:hover{text-decoration:none;background:rgba(255,255,255,.5)}
+.subnav a.on{background:#fff;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12),0 0 0 .5px rgba(0,0,0,.04)}
 
 /* ---- 本文 ---- */
 main{max-width:1120px;margin:0 auto;padding:24px 20px 80px}
-h1{font-size:var(--fs-h1);margin:0 0 14px;line-height:1.4}
-h2{font-size:var(--fs-h2);margin:22px 0 8px;line-height:1.5}
-.card{background:var(--c-surface);border:1px solid var(--c-line);border-radius:var(--radius);padding:16px;margin-bottom:16px}
-.card.note{background:var(--c-warn-bg);border-color:#F1D3A8}
+h1{font-size:26px;font-weight:700;letter-spacing:-.01em;margin:4px 0 16px;line-height:1.3}
+h2{font-size:17px;font-weight:600;letter-spacing:-.005em;margin:24px 0 8px;line-height:1.45}
+/* 面: 枠線ではなく、淡い灰色の地の上に白い面を置いて区切る */
+.card{background:var(--c-surface);border:1px solid rgba(0,0,0,.04);border-radius:var(--radius);padding:18px 20px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.card.note{background:var(--c-warn-bg);border-color:transparent}
 .card.testcard{background:var(--c-surface-2)}
-label{display:block;font-weight:600;margin:12px 0 4px}
-input[type=text],input[type=number],input[type=url],input[type=email],input[type=password],textarea,select{width:100%;padding:8px;border:1px solid var(--c-line-strong);border-radius:var(--radius-sm);font:inherit;background:#fff;color:var(--c-ink)}
-input:focus,textarea:focus,select:focus{outline:2px solid var(--c-brand);outline-offset:1px}
+label{display:block;font-weight:600;font-size:13px;margin:14px 0 5px}
+input[type=text],input[type=number],input[type=url],input[type=email],input[type=password],textarea,select{width:100%;padding:8px 11px;border:1px solid var(--c-line-strong);border-radius:var(--radius-sm);font:inherit;background:#fff;color:var(--c-ink);transition:border-color .15s,box-shadow .15s}
+input:focus,textarea:focus,select:focus{outline:0;border-color:var(--c-brand);box-shadow:0 0 0 4px rgba(0,113,227,.18)}
+input[type=checkbox],input[type=radio]{accent-color:var(--c-brand);width:16px;height:16px;vertical-align:-3px}
 textarea{min-height:140px}
 .row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
 .row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
 
-/* ---- ボタン：ブランド色（青）は「その画面でいちばん押してほしい1つ」だけ（#112）---- */
-.btn{display:inline-block;background:#fff;color:var(--c-ink);border:1px solid var(--c-line-strong);padding:8px 14px;border-radius:var(--radius-sm);font-weight:700;cursor:pointer;text-decoration:none;font:inherit;font-weight:700;line-height:1.4}
-.btn:hover{border-color:var(--c-ink-3)}
-.btn.primary{background:var(--c-brand);border-color:var(--c-brand);color:var(--c-brand-ink)}
-/* 主ボタンは、載せると少し浮く（押せることが分かるように） */
-.btn{transition:transform .15s,box-shadow .15s,border-color .15s,background .15s}
-.btn.primary:hover:not([disabled]){background:#0858CC;border-color:#0858CC;transform:translateY(-1px);box-shadow:0 5px 14px rgba(10,102,232,.3)}
-.btn.primary:active{transform:none;box-shadow:none}
-@media (prefers-reduced-motion:reduce){.btn,header.top .logo{transition:none}header.top .logo:hover::after{animation:none}}
-.btn.sub{font-weight:600}
-.btn.danger{border-color:var(--c-ng);color:var(--c-ng)}
-.btn.small{padding:5px 10px;font-size:var(--fs-sm)}
-.btn[disabled]{opacity:.5;cursor:not-allowed}
+/* ---- ボタン: 塗りの青は「その画面でいちばん押してほしい1つ」だけ（#112）。それ以外は灰色の塗り ---- */
+.btn{display:inline-block;background:var(--c-fill);color:var(--c-ink);border:0;padding:7px 14px;border-radius:var(--radius-sm);cursor:pointer;text-decoration:none;font:inherit;font-weight:500;line-height:1.4;transition:background .15s,transform .1s}
+.btn:hover{background:var(--c-fill-hover);text-decoration:none}
+.btn:active{transform:scale(.98)}
+.btn.primary{background:var(--c-brand);color:var(--c-brand-ink);font-weight:600}
+.btn.primary:hover{background:var(--c-brand-hover)}
+.btn.sub{font-weight:500}
+.btn.danger{background:var(--c-ng-bg);color:var(--c-ng)}
+.btn.danger:hover{background:#FFDADC}
+.btn.small{padding:4px 11px;font-size:var(--fs-sm);border-radius:7px}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
 
 /* ---- 表 ---- */
 table{width:100%;border-collapse:collapse;background:var(--c-surface)}
-th,td{border-bottom:1px solid var(--c-line);padding:7px 8px;text-align:left;vertical-align:top}
-th{background:var(--c-surface-2);font-size:var(--fs-xs);color:var(--c-ink-2);font-weight:700}
+th,td{border-bottom:1px solid var(--c-line);padding:9px 10px;text-align:left;vertical-align:top}
+th{background:transparent;font-size:var(--fs-xs);color:var(--c-ink-3);font-weight:600}
+main>table,main>form>table{border-radius:var(--radius);overflow:hidden}
+tbody tr:last-child td{border-bottom:0}
 th a{color:inherit}
 tr.hl td{background:var(--c-brand-bg)}tr.hl td:first-child{box-shadow:inset 3px 0 0 var(--c-brand)}
 tr.histrow td{background:var(--c-surface-2);border-bottom:1px dashed var(--c-line)}
 
 /* ---- 状態の札（色の意味は全画面共通：#111）---- */
-.tag{display:inline-block;padding:2px 10px;border-radius:999px;font-size:var(--fs-xs);font-weight:700;background:var(--c-off-bg);color:var(--c-off);white-space:nowrap}
+.tag{display:inline-block;padding:2px 9px;border-radius:6px;font-size:var(--fs-xs);font-weight:600;background:var(--c-off-bg);color:var(--c-off);white-space:nowrap}
 .tag.sent{background:var(--c-ok-bg);color:var(--c-ok)}
 .tag.failed{background:var(--c-ng-bg);color:var(--c-ng)}
 .tag.queued{background:var(--c-wait-bg);color:var(--c-wait)}
@@ -111,20 +119,20 @@ tr.histrow td{background:var(--c-surface-2);border-bottom:1px dashed var(--c-lin
 
 /* ---- 数字のタイル ---- */
 .stats{display:flex;gap:10px;flex-wrap:wrap}
-.stat{background:var(--c-surface);border:1px solid var(--c-line);border-radius:var(--radius);padding:12px 16px;min-width:120px}
+.stat{background:var(--c-surface-2);border:0;border-radius:12px;padding:12px 16px;min-width:120px}
 .stat b{display:block;font-size:22px;line-height:1.3;font-variant-numeric:tabular-nums}
 .stat .unit{font-size:var(--fs-xs);font-weight:400;margin-left:2px}
 
 /* ---- キャンペーンの概要（進み具合・返信・ペース）----
    以前は同じ大きさの枠が10個並び、どれが大事か分からなかった。大きい数字は3つだけにして、内訳は小さく出す */
 .meta{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px;font-size:var(--fs-sm);color:var(--c-ink-2)}
-.meta>span{background:var(--c-surface);border:1px solid var(--c-line);border-radius:999px;padding:2px 10px;white-space:nowrap}
-.meta>span.warn{background:var(--c-warn-bg);border-color:#F1D3A8;color:var(--c-warn);font-weight:700}
+.meta>span{background:var(--c-fill);border:0;border-radius:7px;padding:2px 10px;white-space:nowrap}
+.meta>span.warn{background:var(--c-warn-bg);color:var(--c-warn);font-weight:600}
 .ov{padding:14px 18px;margin-bottom:12px}
 .ovhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .ovhead b{font-size:var(--fs-base)}
 .ovhead a,.ovhead .muted{font-size:var(--fs-sm)}
-.ovbar{display:flex;gap:2px;height:14px;border-radius:999px;overflow:hidden;background:var(--c-off-bg);margin-bottom:12px}
+.ovbar{display:flex;gap:2px;height:8px;border-radius:999px;overflow:hidden;background:var(--c-off-bg);margin-bottom:12px}
 .ovbar i{display:block;min-width:3px}
 .ovbar .ok{background:var(--c-ok)}.ovbar .wait{background:var(--c-wait-dot)}.ovbar .off{background:var(--c-line-strong)}
 .ovnums{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
@@ -139,12 +147,12 @@ tr.histrow td{background:var(--c-surface-2);border-bottom:1px dashed var(--c-lin
 .ovnum .pct{font-size:var(--fs-sm);color:var(--c-ink-3)}
 .ovwhy{display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-top:1px solid var(--c-line);margin-top:12px;padding-top:10px}
 .ovwhy .muted{margin-right:4px}
-.chip{display:inline-block;background:var(--c-off-bg);color:var(--c-ink-2);border-radius:999px;padding:2px 10px;font-size:var(--fs-sm);text-decoration:none;white-space:nowrap}
+.chip{display:inline-block;background:var(--c-off-bg);color:var(--c-ink-2);border-radius:7px;padding:2px 10px;font-size:var(--fs-sm);text-decoration:none;white-space:nowrap}
 .chip:hover{background:var(--c-line)}
 .chip.ng{background:var(--c-ng-bg);color:var(--c-ng)}
 /* 要対応の行: ボタンが4つ同じ重さで並んでいたので、最初の1つ（いちばん効く操作）だけ濃く、残りは控えめにする */
-.todoacts>form:not(:first-child) .btn,.todoacts>a.btn:not(:first-child){border-color:transparent;background:transparent;color:var(--c-ink-2);font-weight:400;padding-left:6px;padding-right:6px;text-decoration:underline}
-.todoacts>form:first-child .btn,.todoacts>a.btn:first-child{border-color:var(--c-ink-2);font-weight:700}
+.todoacts>form:not(:first-child) .btn,.todoacts>a.btn:not(:first-child){background:transparent;color:var(--c-link);font-weight:400;padding-left:6px;padding-right:6px}
+.todoacts>form:first-child .btn,.todoacts>a.btn:first-child{font-weight:600}
 .actrow{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;margin-top:12px}
 .more[open]{flex:1 1 100%}
 .more>summary{display:inline-block;list-style:none;cursor:pointer}
@@ -159,28 +167,29 @@ tr.histrow td{background:var(--c-surface-2);border-bottom:1px dashed var(--c-lin
 .ovmini small{display:block;font-size:var(--fs-sm);color:var(--c-ink-3)}
 
 /* ---- お知らせ・補足 ---- */
-.flash{background:var(--c-info-bg);border:1px solid #C6DAF2;color:#0F3E73;padding:12px 16px;border-radius:var(--radius-sm);margin-bottom:16px}
+.flash{background:var(--c-info-bg);border:0;color:#003E8A;padding:12px 16px;border-radius:12px;margin-bottom:16px}
 .muted{color:var(--c-ink-3);font-size:var(--fs-sm)}
 .small{font-size:var(--fs-sm)}
 pre{white-space:pre-wrap;background:var(--c-surface-2);padding:12px;border-radius:var(--radius-sm);font-size:var(--fs-sm);border:1px solid var(--c-line)}
 .inline{display:inline}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid #90CAF9;border-top-color:#1565C0;border-radius:50%;animation:sp .9s linear infinite;vertical-align:-1px;margin-right:6px}@keyframes sp{to{transform:rotate(360deg)}}
-.bar{height:16px;background:var(--c-off-bg);border-radius:999px;overflow:hidden;margin:8px 0 4px;max-width:620px}
+.bar{height:8px;background:var(--c-off-bg);border-radius:999px;overflow:hidden;margin:8px 0 4px;max-width:620px}
 .bar i{display:block;height:100%;background:var(--c-ok);border-radius:999px;transition:width .6s ease}
-.histbtn{background:none;border:1px solid var(--c-line);border-radius:999px;padding:1px 9px;font-size:12px;color:var(--c-ink-2);cursor:pointer;margin-top:3px}
+.histbtn{background:var(--c-fill);border:0;border-radius:7px;padding:1px 9px;font-size:12px;color:var(--c-ink-2);cursor:pointer;margin-top:3px}
 
 /* ---- 説明文の折りたたみ（#99）。長い説明は「？」を押したときだけ出す ---- */
-.helpbtn{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;border:1px solid var(--c-line-strong);background:#fff;color:var(--c-ink-2);font-size:13px;font-weight:700;cursor:pointer;margin:2px 0 6px;vertical-align:middle;line-height:1;padding:0}
+.helpbtn{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;border:0;background:var(--c-fill);color:var(--c-ink-2);font-size:13px;font-weight:700;cursor:pointer;margin:2px 0 6px;vertical-align:middle;line-height:1;padding:0}
 .helpbtn:hover{border-color:var(--c-ink-3)}
 .helpbtn[aria-expanded="true"]{background:var(--c-ink);color:#fff;border-color:var(--c-ink)}
 .helpbtn + .helplabel{font-size:var(--fs-xs);color:var(--c-ink-3);margin-left:6px;cursor:pointer}
 .helpbody[hidden]{display:none}
 .helpbody{border-left:3px solid var(--c-line);padding:2px 0 2px 12px;margin:4px 0 10px}
 
-/* ---- タブ（キャンペーン画面：#98）---- */
-.tabs{display:flex;gap:4px;border-bottom:2px solid var(--c-line);margin:16px 0 18px;flex-wrap:wrap}
-.tabs a{padding:10px 18px;text-decoration:none;color:var(--c-ink-2);font-weight:700;border-bottom:3px solid transparent;margin-bottom:-2px;border-radius:6px 6px 0 0}
-.tabs a.on{color:var(--c-ink);border-bottom-color:var(--c-brand);background:var(--c-surface)}
+/* ---- タブ（キャンペーン画面：#98）: 区切り型 ---- */
+.tabs{display:inline-flex;gap:2px;background:var(--c-fill);border-radius:10px;padding:2px;margin:16px 0 18px;flex-wrap:wrap;max-width:100%}
+.tabs a{padding:7px 18px;text-decoration:none;color:var(--c-ink);font-weight:500;border-radius:8px;white-space:nowrap}
+.tabs a:hover{text-decoration:none;background:rgba(255,255,255,.5)}
+.tabs a.on{background:#fff;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12),0 0 0 .5px rgba(0,0,0,.04)}
 .tabs a .cnt{font-weight:400;color:var(--c-ink-3);font-size:var(--fs-xs);margin-left:4px}
 
 /* ---- ページ送り（#103）---- */

@@ -1,74 +1,29 @@
-// 見た目の演出（お試し）。Three.js と GSAP ScrollTrigger を使う。
+// 見た目の演出。ログイン画面の地球儀（Three.js）と、開いたときの短い動きだけ。
 //
-// 消し方: このファイルを消し、layout.ts と account.ts の「fx.js」を読んでいる行（import と ${FX_...}）を外すだけ。
+// 消し方: このファイルを消し、layout.ts・account.ts の「fx.js」を読んでいる行（import と ${FX_...}）を外すだけ。
 // すぐ止めたいだけなら、下の FX_ENABLED を false にする。
 //
-// 作るときに守ったこと:
-//  - 道具としての使いやすさを優先する。最初から見えている部分は待たせない（CSSで一瞬ふわっと出すだけ）。
-//    スクロールして出てくる部分だけを ScrollTrigger で動かす。
-//  - ライブラリは CDN から読む（配布物を重くしない・npm install を増やさない）。
-//    読めないとき（オフライン等）は何も起きず、これまでどおりの画面になる。中身を隠すのは読めた後だけ。
-//  - 「動きを減らす」設定のPCでは動かさない。印刷のときは必ず全部見えるようにする。
+// 守っていること:
+//  - 道具としての使いやすさを優先する。内容は最初から全部見えている（スクロールで現れる演出は、一覧が空白に見えたのでやめた）
+//  - ライブラリは CDN から読む。読めないとき（オフライン等）は何も起きず、これまでどおりの画面になる
+//  - 「動きを減らす」設定のPCでは動かさない
 const FX_ENABLED = true;
 
 const THREE_URL = "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js";
-const GSAP_URL = "https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js";
 // 陸と海を塗り分けた世界地図（海＝白・陸＝黒）。ログイン画面の地球儀で、点を置く場所を決めるのに使う
 const EARTH_URL = "https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-water.png";
-const ST_URL = "https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js";
 
-/** ログイン後の全画面に入れるもの（</body> の直前） */
+/** ログイン後の全画面に入れるもの。
+ *  以前はここで、スクロールで現れる動き（GSAP ScrollTrigger）・進み具合の線・紺の帯を足していたが、やめた。
+ *  長い一覧（要対応・送信一覧）の下側が、開いた瞬間は透明で空白に見え、道具としては逆効果だったため。
+ *  いまは、開いたときに上から短くふわっと出す動きだけ（内容は最初から全部見えている） */
 export const FX_APP = !FX_ENABLED ? "" : `<style>
-/* 最初から見えている部分: 上から順に、短くふわっと出す（backwards なので、終わった後は他の指定を邪魔しない） */
 @media (prefers-reduced-motion:no-preference){
-  main>*{animation:fx-rise .42s cubic-bezier(.2,.8,.2,1) backwards}
-  main>*:nth-child(2){animation-delay:.04s}main>*:nth-child(3){animation-delay:.08s}main>*:nth-child(4){animation-delay:.12s}
-  main>*:nth-child(5){animation-delay:.16s}main>*:nth-child(n+6){animation-delay:.2s}
-  main>.fx-sr{animation:none}
+  main>*{animation:fx-rise .32s cubic-bezier(.2,.8,.2,1) backwards}
+  main>*:nth-child(2){animation-delay:.03s}main>*:nth-child(3){animation-delay:.06s}main>*:nth-child(n+4){animation-delay:.09s}
 }
-@keyframes fx-rise{from{opacity:0;transform:translateY(10px)}}
-/* カード: 影をごく薄く付け、載せると少しだけ持ち上がる */
-.card{box-shadow:0 1px 2px rgba(6,34,86,.04),0 8px 24px -16px rgba(6,34,86,.18);transition:box-shadow .25s,border-color .25s}
-.card:hover{box-shadow:0 1px 2px rgba(6,34,86,.05),0 14px 32px -16px rgba(6,34,86,.28)}
-/* 上の帯: 画面に付いてくる。スクロールすると影が出る（奥に粒を流す演出は「宇宙みたい」で合わなかったのでやめた） */
-@media (min-width:761px){header.top{position:sticky;top:0;z-index:60;transition:box-shadow .25s}}
-header.top{background:linear-gradient(100deg,#041A44,#062256 45%,#0A3A8C)}
-header.top.fx-scrolled{box-shadow:0 8px 24px -10px rgba(4,26,68,.55)}
-/* 読み進み具合の細い線 */
-#fx-progress{position:fixed;left:0;top:0;height:2px;width:100%;z-index:70;transform:scaleX(0);transform-origin:0 50%;background:linear-gradient(90deg,#0A66E8,#12C8F0);pointer-events:none}
-@media print{#fx-progress{display:none!important}main *{opacity:1!important;transform:none!important}}
-</style>
-<script>
-// スクロールで出てくる部分だけを動かす（GSAP ScrollTrigger）。読めなければ何もしない。
-(()=>{
-  if(matchMedia("(prefers-reduced-motion:reduce)").matches)return;
-  const load=(src)=>new Promise((ok,ng)=>{const s=document.createElement("script");s.src=src;s.onload=ok;s.onerror=ng;document.head.appendChild(s);});
-  load("${GSAP_URL}").then(()=>load("${ST_URL}")).then(()=>{
-    const gsap=window.gsap,ST=window.ScrollTrigger;if(!gsap||!ST)return;
-    gsap.registerPlugin(ST);
-    const head=document.querySelector("header.top");
-    if(head)ST.create({start:8,end:"max",onToggle:(t)=>head.classList.toggle("fx-scrolled",t.isActive)});
-    // 読み進み具合の線（スクロールできる長さのある画面だけ）
-    if(document.documentElement.scrollHeight>innerHeight+200){
-      const bar=document.createElement("div");bar.id="fx-progress";document.body.appendChild(bar);
-      gsap.to(bar,{scaleX:1,ease:"none",scrollTrigger:{start:0,end:"max",scrub:.3}});
-    }
-    // いま画面の外（下）にあるものだけ、入ってきたときに下からふわっと出す。
-    // カードの中の表やカードは、外側のカードと一緒に動くので対象にしない
-    const all=Array.from(document.querySelectorAll("main .card, main table, main .stats, main .ovgrid, main h2"));
-    const targets=all.filter((el)=>!el.parentElement.closest(".card, table")&&el.getBoundingClientRect().top>innerHeight*.96);
-    if(!targets.length)return;
-    targets.forEach((el)=>el.classList.add("fx-sr"));
-    gsap.set(targets,{opacity:0,y:26});
-    ST.batch(targets,{start:"top 94%",once:true,onEnter:(els)=>gsap.to(els,{opacity:1,y:0,duration:.6,ease:"power3.out",stagger:.07,overwrite:true,clearProps:"opacity,transform"})});
-    // 印刷や、万一の取りこぼしで中身が隠れたままにならないようにする
-    const showAll=()=>gsap.set(targets,{clearProps:"opacity,transform"});
-    addEventListener("beforeprint",showAll);
-    // ページ内リンク（#fix など）で飛んだ先が隠れていないように
-    addEventListener("hashchange",()=>ST.refresh());
-  }).catch(()=>{});
-})();
-</script>`;
+@keyframes fx-rise{from{opacity:0;transform:translateY(6px)}}
+</style>`;
 
 /** ログイン画面に入れるもの（</body> の直前）。
  *  左に紺の面を出し、点々で描いた地球儀の上を、メール（光る点と線の尾）が東京から世界へ弧を描いて飛ぶ。

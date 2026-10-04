@@ -2,7 +2,7 @@
 import { STATUS_LABEL, OUTCOME_LABEL, CHANNEL_LABEL, channelMode, jst, type Campaign, type Job, type SenderProfile, type JobStatus } from "../db.js";
 import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
-import { esc, layout, n, type NavUser } from "./layout.js";
+import { esc, layout, n, type NavUser, IC_WARN } from "./layout.js";
 import { post } from "./parts.js";
 
 export function suppressionsView(
@@ -151,7 +151,7 @@ ${overview}${budgetCard}${licenseCard}
 <li><b>Claude:</b> <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a> でアカウント作成 → 支払い方法を登録 → 左メニュー「API Keys」から発行（<code>sk-ant-</code>で始まる文字列）</li>
 <li><b>Gemini:</b> <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> にGoogleアカウントでログイン →「Get API key」から発行（<code>AIza</code>で始まる文字列）</li>
 </ul>
-<p><b>⚠ 注意。</b></p>
+<p><b>${IC_WARN} 注意</b></p>
 <ul class="small">
 <li>キーは<b>他人・他の拠点と共有しない</b>でください。共有相手の利用分もあなたに課金されます。拠点ごとに各自のキーを発行してください</li>
 <li>各社の管理画面で<b>利用上限（スペンドリミット）</b>を設定できます。使いすぎ防止に、最初に設定しておくのがおすすめです</li>

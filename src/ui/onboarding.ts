@@ -2,7 +2,7 @@
 import { STATUS_LABEL, OUTCOME_LABEL, CHANNEL_LABEL, channelMode, jst, type Campaign, type Job, type SenderProfile, type JobStatus } from "../db.js";
 import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
-import { esc, layout, n, type NavUser } from "./layout.js";
+import { esc, layout, n, type NavUser, IC_CHECK } from "./layout.js";
 import { post } from "./parts.js";
 
 /** ミニゲーム「アポスロット」＝ ネオアイムジャグラーEX 準拠のリール制御シミュレータ。
@@ -54,7 +54,7 @@ ${step("4", "営業リストを取り込む", `<p>キャンペーン画面の「
 <li>間違えて取り込んだら、「取り込み履歴」の「全件削除」でその回の分をまとめて消せます</li>
 <li>フォームで送る場合は「事前チェックを実行」で、フォームの有無・営業お断り・画像認証を送る前に確認できます（任意）</li></ul>
 <div style="margin-top:14px;padding:12px 14px;background:var(--honey-50);border:1px solid var(--honey);border-radius:10px">
-<b>📋 取り込む前に、AIでリストを整える（おすすめ）</b>
+<b>取り込む前に、AIでリストを整える（おすすめ）</b>
 <p class="small" style="margin:6px 0">リストのURLが古い・トップページしか無い・営業お断りの会社が混ざっている、などが原因で「フォーム無し」「失敗」が多くなります。<b>ChatGPT・Claude・Gemini など、Webを閲覧できるAI</b>に、下の文章と営業リスト（ファイル添付か貼り付け）を一緒に入力してください。出てきた表をスプレッドシートに貼り付けて、そのまま取り込めます。</p>
 <textarea id="fo-listprompt" readonly style="min-height:220px;font-size:12px;line-height:1.6">あなたは営業リストの整備担当です。添付（または下に貼り付けた）企業リストを、問い合わせフォーム・メールへの営業送信に使えるように整えてください。
 
@@ -180,7 +180,7 @@ export type SetupState = {
 
 export function setupView(st: SetupState): string {
   const step = (n: number, done: boolean, title: string, body: string) => `<div class="card" style="${done ? "opacity:.75" : "border-color:var(--honey);border-width:2px"}">
-  <h2 style="margin-top:0">${done ? "✅" : `${n}.`} ${esc(title)}</h2>${body}</div>`;
+  <h2 style="margin-top:0">${done ? IC_CHECK : `${n}.`} ${esc(title)}</h2>${body}</div>`;
   const next = !st.senderOk ? 1 : !st.smtpOk ? 2 : !st.lawOk ? 3 : !st.campaignOk ? 4 : !st.listCount ? 5 : 6;
   return `<h1>はじめの設定</h1>
 <div class="card" style="background:var(--honey-50)">

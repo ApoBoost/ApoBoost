@@ -433,14 +433,14 @@ export async function smtpCheckNote(senderId: number): Promise<string> {
   const sd = db.prepare("SELECT * FROM sender_profiles WHERE id=?").get(senderId) as SenderProfile | undefined;
   if (!sd || !sd.smtp_user || !sd.smtp_pass) return "";
   const bad = checkSmtpPassword(sd);
-  if (bad) return `／⚠ メールの設定を確認してください: ${bad}`;
+  if (bad) return `／メールの設定を確認してください: ${bad}`;
   try {
     await Promise.race([testSmtp(sd), new Promise((_, rej) => setTimeout(() => rej(new Error("ETIMEDOUT 接続の確認が10秒で終わりませんでした")), 10_000))]);
     clearEmailPause(sd);
-    return `／✅ メールの接続テストに成功しました（${sd.smtp_user}）`;
+    return `／メールの接続テストに成功しました（${sd.smtp_user}）`;
   } catch (e) {
     logError("sender", `保存時のメール接続テストに失敗: ${explainSmtpError(e, sd)}`);
-    return `／⚠ メールに接続できませんでした: ${explainSmtpError(e, sd)}`;
+    return `／メールに接続できませんでした: ${explainSmtpError(e, sd)}`;
   }
 }
 

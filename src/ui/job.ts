@@ -2,7 +2,7 @@
 import { STATUS_LABEL, OUTCOME_LABEL, CHANNEL_LABEL, channelMode, jst, type Campaign, type Job, type SenderProfile, type JobStatus } from "../db.js";
 import { AI_MODELS, type Lint } from "../message.js";
 import { TEMPLATE_LIBRARY } from "../templates.js";
-import { esc, layout, n, type NavUser } from "./layout.js";
+import { esc, layout, n, type NavUser, IC_MAIL, IC_FORM } from "./layout.js";
 import { statusTag, errKind, post } from "./parts.js";
 
 /** この会社とのやり取りの履歴（#56）。同じ会社に別のキャンペーンから送った分も時系列で見せる。
@@ -15,7 +15,7 @@ export function jobView(j: Job, c: Campaign, history: JobHistory[] = []) {
 <ul style="list-style:none;padding:0;margin:0;border-left:2px solid var(--hive-200)">
 ${history.map((h) => `<li style="padding:6px 0 10px 14px;position:relative">
   <span style="position:absolute;left:-7px;top:12px;width:10px;height:10px;border-radius:50%;background:${h.status === "sent" ? "var(--ok)" : h.status === "failed" ? "var(--ng)" : "var(--honey)"}"></span>
-  <span class="small muted">${esc(jst(h.sent_at || h.updated_at))}</span> ${statusTag(h.status as JobStatus)} <span class="small">${h.channel === "email" ? "✉ メール" : "📝 フォーム"}／${esc(h.campaign_name)}</span>
+  <span class="small muted">${esc(jst(h.sent_at || h.updated_at))}</span> ${statusTag(h.status as JobStatus)} <span class="small">${h.channel === "email" ? IC_MAIL + " メール" : IC_FORM + " フォーム"}／${esc(h.campaign_name)}</span>
   ${h.id === j.id ? '<span class="tag">いま見ている記録</span>' : `<a class="small" href="/jobs/${h.id}">詳細</a>`}
   <div class="small muted">${esc((h.result_text || "").split("\n")[0].slice(0, 90))}</div>
   ${h.outcome ? `<div class="small"><b>反応: ${esc(OUTCOME_LABEL[h.outcome] ?? h.outcome)}</b> ${esc((h.outcome_note || "").slice(0, 80))}</div>` : ""}
@@ -50,7 +50,7 @@ ${(() => {
     try { qs = JSON.parse(j.pending_questions || "[]"); } catch { qs = []; }
     if (!qs.length) return "";
     return `<div style="margin-top:14px;background:var(--honey-50);border:1px solid var(--honey);border-radius:10px;padding:12px">
-<h2 style="margin-top:0">📝 未回答の質問に答えて再送信</h2>
+<h2 style="margin-top:0">未回答の質問に答えて再送信</h2>
 <p class="muted small">フォームにあった質問に自動で回答を決められませんでした。上のスクリーンショットを見ながら選ぶか記入してください。再送信時にこの回答をフォームへ入力します。</p>
 <form method="post" action="/jobs/${j.id}/answer" data-busy>
 ${qs.slice(0, 30).map((q, i) => `<input type="hidden" name="q_label_${i}" value="${esc(q.label)}">
