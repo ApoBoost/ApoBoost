@@ -1,14 +1,14 @@
 {
-  "version": "1.0.6",
-  "notes": "ボタンの色分けを見やすく戻しました。成果の画面を日付ごとの表に戻しました",
+  "version": "1.0.7",
+  "notes": "キャラクターが登場します（ログイン画面と、やることが無いとき・一覧が空のとき）",
   "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-  "published_at": "2026-10-04T07:59:35.888Z",
+  "published_at": "2026-10-04T12:01:27.477Z",
   "channels": {
     "stable": {
-      "version": "1.0.6",
-      "notes": "ボタンの色分けを見やすく戻しました。成果の画面を日付ごとの表に戻しました",
+      "version": "1.0.7",
+      "notes": "キャラクターが登場します（ログイン画面と、やることが無いとき・一覧が空のとき）",
       "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-      "published_at": "2026-10-04T07:59:35.888Z"
+      "published_at": "2026-10-04T12:01:27.477Z"
     }
   }
 }
