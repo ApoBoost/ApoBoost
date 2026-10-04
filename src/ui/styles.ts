@@ -84,16 +84,17 @@ textarea{min-height:140px}
 .row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
 .row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
 
-/* ---- ボタン: 塗りの青は「その画面でいちばん押してほしい1つ」だけ（#112）。それ以外は灰色の塗り ---- */
-.btn{display:inline-block;background:var(--c-fill);color:var(--c-ink);border:0;padding:7px 14px;border-radius:var(--radius-sm);cursor:pointer;text-decoration:none;font:inherit;font-weight:500;line-height:1.4;transition:background .15s,transform .1s}
-.btn:hover{background:var(--c-fill-hover);text-decoration:none}
+/* ---- ボタン: 青い塗りは「その画面でいちばん押してほしい1つ」だけ（#112）。それ以外は白地に枠線。
+   いったん灰色の塗りにしたが、地の灰色と近くて、押せるボタンなのか・どれが大事なのかが分かりにくくなったので戻した ---- */
+.btn{display:inline-block;background:#fff;color:var(--c-ink);border:1px solid var(--c-line-strong);padding:6px 14px;border-radius:var(--radius-sm);cursor:pointer;text-decoration:none;font:inherit;font-weight:600;line-height:1.4;transition:background .15s,border-color .15s,transform .1s}
+.btn:hover{border-color:#A1A1A6;background:#FBFBFD;text-decoration:none}
 .btn:active{transform:scale(.98)}
-.btn.primary{background:var(--c-brand);color:var(--c-brand-ink);font-weight:600}
-.btn.primary:hover{background:var(--c-brand-hover)}
+.btn.primary{background:var(--c-brand);border-color:var(--c-brand);color:var(--c-brand-ink)}
+.btn.primary:hover{background:var(--c-brand-hover);border-color:var(--c-brand-hover)}
 .btn.sub{font-weight:500}
-.btn.danger{background:var(--c-ng-bg);color:var(--c-ng)}
-.btn.danger:hover{background:#FFDADC}
-.btn.small{padding:4px 11px;font-size:var(--fs-sm);border-radius:7px}
+.btn.danger{background:#fff;border-color:var(--c-ng);color:var(--c-ng)}
+.btn.danger:hover{background:var(--c-ng-bg)}
+.btn.small{padding:3px 11px;font-size:var(--fs-sm);border-radius:7px}
 .btn[disabled]{opacity:.45;cursor:not-allowed}
 
 /* ---- 表 ---- */
@@ -138,30 +139,20 @@ tr.sep td{background:var(--c-bg);font-size:var(--fs-xs);color:var(--c-ink-3);fon
 .settoc a:hover{background:var(--c-fill);color:var(--c-ink)}
 .setgrid .card{scroll-margin-top:76px}
 @media (max-width:760px){.setgrid{grid-template-columns:1fr;gap:10px}.settoc{position:static;display:flex;flex-wrap:wrap}}
-/* ---- 成果: 縦の棒グラフ（日別・月別）---- */
-.vbars{display:flex;align-items:flex-end;gap:4px;height:170px;padding:8px 0 0}
-.vbars .col{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;align-items:stretch;height:100%;position:relative}
-.vbars .col i{display:block;border-radius:3px 3px 0 0}
-.vbars .col i.f{background:var(--c-brand)}
-.vbars .col i.e{background:#8E8E93;border-radius:0}
-.vbars .col i.e:first-child{border-radius:3px 3px 0 0}
-.vbars .col:hover::after{content:attr(data-tip);position:absolute;bottom:100%;left:50%;transform:translateX(-50%);background:var(--c-ink);color:#fff;font-size:11px;padding:3px 8px;border-radius:6px;white-space:nowrap;z-index:5}
-.vlabels{display:flex;gap:4px;margin-top:6px;font-size:11px;color:var(--c-ink-3)}
-.vlabels span{flex:1;min-width:0;text-align:center;white-space:nowrap;overflow:visible}
 /* ---- 「…」メニュー: 主な操作だけをボタンで出し、残りはここに畳む ---- */
 .menu{position:relative;display:inline-block;vertical-align:middle}
-.menu>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:28px;padding:0 8px;border-radius:7px;background:var(--c-fill);color:var(--c-ink-2);font-weight:700;letter-spacing:.08em;line-height:1}
+.menu>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:28px;padding:0 8px;border-radius:7px;background:#fff;border:1px solid var(--c-line-strong);color:var(--c-ink-2);font-weight:700;letter-spacing:.08em;line-height:1}
 .menu>summary::-webkit-details-marker{display:none}
 .menu>summary:hover,.menu[open]>summary{background:var(--c-fill-hover)}
 .menu>.pop{position:absolute;right:0;top:calc(100% + 4px);z-index:40;min-width:190px;background:rgba(255,255,255,.96);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);border:1px solid rgba(0,0,0,.08);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.16);padding:5px;display:grid;gap:1px;text-align:left}
 .menu>.pop form{display:block;margin:0}
-.menu>.pop .btn,.menu>.pop a.btn{display:block;width:100%;text-align:left;background:transparent;font-weight:400;padding:7px 10px;border-radius:7px;color:var(--c-ink);font-size:var(--fs-base);text-decoration:none}
+.menu>.pop .btn,.menu>.pop a.btn{display:block;width:100%;text-align:left;background:transparent;border:0;font-weight:400;padding:7px 10px;border-radius:7px;color:var(--c-ink);font-size:var(--fs-base);text-decoration:none}
 .menu>.pop .btn:hover{background:var(--c-fill)}
 .menu>.pop .btn.danger{color:var(--c-ng);background:transparent}
 .menu>.pop hr{border:0;border-top:1px solid var(--c-line);margin:4px 6px}
 /* ---- まとめて操作の帯: 会社を選んだときだけ、画面の下に出す ---- */
 .bulkbar{position:sticky;bottom:14px;z-index:30;display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px auto 0;padding:10px 14px;background:rgba(29,29,31,.92);color:#fff;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.25);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);width:fit-content;max-width:100%}
-.bulkbar .btn{background:rgba(255,255,255,.16);color:#fff}
+.bulkbar .btn{background:rgba(255,255,255,.16);color:#fff;border:0}
 .bulkbar .btn:hover{background:rgba(255,255,255,.26)}
 .bulkbar .btn.danger{background:rgba(255,69,58,.28);color:#fff}
 .bulkbar label{color:#fff;font-weight:400;margin:0;font-size:var(--fs-sm);display:inline-flex;gap:6px;align-items:center}
