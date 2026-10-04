@@ -6,3 +6,6 @@ dist/
 .DS_Store
 license-keys/
 data-dev/
+
+# 手元だけに置くメモ（引き継ぎ・レビュー記録）
+*.local.md
