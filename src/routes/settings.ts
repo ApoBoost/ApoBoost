@@ -25,6 +25,7 @@ import { launchBrowser, openAndFill } from "../engine.js";
 import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmails, learnFromCorrection, loadReplyRules, clearReplyRulesCache } from "../replies.js";
 import { notify, notifyEnabled } from "../notify.js";
 import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel } from "../update.js";
+import { topHelpMisses } from "../support.js";
 import { errorPage } from "../ui/layout.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
@@ -104,7 +105,7 @@ app.get("/health", (req, res) => {
 
 app.get("/logs", (req, res) => {
   const kind = ["error", "warn", "info"].includes(String(req.query.kind)) ? String(req.query.kind) : "";
-  res.send(layout("エラーログ", logsView(recentLogs(200, kind), kind, logCounts()), takeFlash(req), navUser(req), appState.updateReady));
+  res.send(layout("エラーログ", logsView(recentLogs(200, kind), kind, logCounts(), topHelpMisses(20)), takeFlash(req), navUser(req), appState.updateReady));
 });
 
 app.post("/logs/clear", (req, res) => {

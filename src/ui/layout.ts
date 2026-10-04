@@ -94,7 +94,7 @@ document.addEventListener("submit", (e) => {
 <script>
 // 「…」メニュー: 外を押したら閉じる。1つ開いたら他は閉じる
 document.addEventListener("click", (e) => {
-  document.querySelectorAll("details.menu[open]").forEach((d) => { if (!d.contains(e.target) || (e.target.closest && e.target.closest(".pop a"))) d.removeAttribute("open"); });
+  document.querySelectorAll("details.menu[open]").forEach((d) => { if (!d.contains(e.target) || (e.target.closest && e.target.closest(".pop a, .pop button[type=button]"))) d.removeAttribute("open"); });
 });
 addEventListener("keydown", (e) => { if (e.key === "Escape") document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open")); });
 </script>

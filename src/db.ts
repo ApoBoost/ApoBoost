@@ -326,6 +326,22 @@ function migrate(db: Database.Database) {
     seen_at TEXT
   )`);
 
+  // 質問がどの会社（1件の送信）についてのものか。会社名・URL・失敗の種類だけを文章にして持つ（営業リストや文面は入れない）
+  addCol("support_tickets", "context", "TEXT NOT NULL DEFAULT ''");
+  addCol("support_tickets", "parent", "TEXT NOT NULL DEFAULT ''");       // 追加の質問のとき、元の質問の番号
+  // 質問箱の使われ方。この端末の中だけに残す（配布元には送らない。利用者が自分で送る診断ファイルにだけ入る）
+  db.exec(`CREATE TABLE IF NOT EXISTS help_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT DEFAULT (datetime('now')),
+    question TEXT NOT NULL DEFAULT '',
+    solved INTEGER NOT NULL DEFAULT 0
+  )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS help_misses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT DEFAULT (datetime('now')),
+    text TEXT NOT NULL DEFAULT ''
+  )`);
+
   // 画面で見られるエラーログ。これまでは黒い画面（ターミナル）を見るしかなく、閉じると何も分からなかった。
   // 直近500件だけ残す（applog.ts 側で間引く）
   db.exec(`CREATE TABLE IF NOT EXISTS app_logs (

@@ -43,8 +43,10 @@ export function todoActions(j: TodoRow, back: string): string {
   const toEmail = j.email ? post(`/jobs/${j.id}/to-email`, "メールで送る", b) : "";
   const fix = `<a class="btn small" href="/jobs/${j.id}#fix">URLを直す</a>`;
   const detail = `<a class="btn small" href="/jobs/${j.id}">くわしく見る</a>`;
+  // 質問箱を、この会社の状況を付けた状態で開く（「どの会社の、どの失敗か」を聞き返さずに済むように）
+  const askHelp = `<button type="button" class="btn small" onclick="foHelpOpen({jobId:${j.id}})">この会社について質問する</button>`;
   const [main, ...rest] = pick().filter(Boolean);
-  return `<span class="todoacts">${main} ${moreMenu([...rest, "<hr>", detail])}</span>`;
+  return `<span class="todoacts">${main} ${moreMenu([...rest, "<hr>", detail, askHelp])}</span>`;
   function pick(): string[] {
   switch (todoReason(j)) {
     case "captcha": return [open, sent, toEmail, dismiss];

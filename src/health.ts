@@ -6,6 +6,7 @@ import { S } from "./settings.js";
 import os from "node:os";
 import path from "node:path";
 import { DATA_DIR, getDb, getSetting, jst, type SenderProfile } from "./db.js";
+import { topHelpMisses, unsolvedHelp } from "./support.js";
 import { browserExecutablePath } from "./engine.js";
 import { currentVersion, manifestUrl } from "./update.js";
 import { activeProvider, activeAiConfig } from "./message.js";
@@ -170,6 +171,16 @@ export function diagnosticsText(): string {
   push("配信停止", one("SELECT COUNT(*) n FROM email_optouts"));
   const byStatus = db.prepare("SELECT status, COUNT(*) n FROM form_jobs WHERE is_test=0 GROUP BY status ORDER BY n DESC").all() as { status: string; n: number }[];
   for (const r of byStatus) push(`  ${r.status}`, r.n);
+
+  // 質問箱で見つからなかった言葉と、解決しなかった答え（どの答えを足せばよいかを配布元が知るため）
+  try {
+    const misses = topHelpMisses(20), bad = unsolvedHelp(10);
+    if (misses.length || bad.length) {
+      L.push("", "--- 質問箱 ---");
+      for (const m of misses) push(`  見つからなかった言葉「${m.text}」`, `${m.n}回`);
+      for (const b of bad) push(`  解決しなかった答え「${b.question}」`, `${b.n}回`);
+    }
+  } catch { /* 表がまだ無い版 */ }
 
   L.push("", "--- キャンペーンの状態 ---");
   const camps = db.prepare("SELECT id, name, status, channel, send_only, daily_limit, email_daily_limit FROM form_campaigns ORDER BY id").all() as Record<string, unknown>[];

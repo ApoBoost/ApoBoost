@@ -166,6 +166,19 @@ try {
     if (!home.includes("スモーク用キャンペーン") || !home.includes('class="hrow"')) ng("ホームにキャンペーンごとの進み具合がありません");
     if (!home.includes('id="fo-help-btn"')) ng("右下の質問箱がありません");
   }
+  // 質問箱の「この会社について質問する」: その1社の状況だけを返す。失敗の種類に合った答えを選ぶ印（key）が付く
+  {
+    const r = await get("/support/context?job=5"); // 失敗サービス（入力エラー）
+    const j = (await r.json()) as { ok: boolean; company: string; key: string; text: string };
+    if (!j.ok || j.company !== "失敗サービス" || j.key !== "input") ng(`会社の状況が返りません: ${JSON.stringify(j).slice(0, 160)}`);
+    if (/a@example\.test|山田|03-0000/.test(j.text)) ng("会社の状況に、送信者の個人情報が混ざっています");
+    if ((await get("/support/context?job=99999")).status !== 404) ng("存在しない会社の状況が 404 になりません");
+    if ((await get("/support/context?campaign=99999")).status !== 404) ng("存在しないキャンペーンの状況が 404 になりません");
+    const todo = await (await get("/todo")).text();
+    if (!todo.includes("foHelpOpen({jobId:")) ng("要対応に「この会社について質問する」がありません");
+    const th = (await (await get("/support/thread")).json()) as { enabled: boolean };
+    if (th.enabled !== false) ng("送り先が未設定なのに、担当者への質問が有効になっています");
+  }
   // 起動中にエラーが出ていないこと
   if (/TypeError|ReferenceError|SqliteError/.test(out)) ng(`起動ログにエラー:\n${out.slice(-600)}`);
 } catch (e) {

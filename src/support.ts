@@ -17,7 +17,7 @@ import { notify } from "./notify.js";
 import { currentVersion, ROOT } from "./update.js";
 import { logError } from "./applog.js";
 
-export type SupportTicket = { id: number; ticket: string; user_id: number; question: string; page: string; created_at: string; sent_ok: number; reply: string; replied_at: string | null; seen_at: string | null };
+export type SupportTicket = { id: number; ticket: string; user_id: number; question: string; page: string; created_at: string; sent_ok: number; reply: string; replied_at: string | null; seen_at: string | null; context: string; parent: string };
 
 /** 配布元の Apps Script のURL（update.json の support_url）。未設定なら空 */
 export function supportUrl(): string {
@@ -29,6 +29,15 @@ export function supportUrl(): string {
   } catch { return ""; }
 }
 export const supportEnabled = () => supportUrl() !== "";
+
+/** 受付時間・返信の目安（update.json の support_note）。例:「平日10〜18時に、1営業日以内を目安にお返事します」。空なら出さない */
+export function supportNote(): string {
+  if (process.env.SUPPORT_NOTE !== undefined) return process.env.SUPPORT_NOTE; // テスト用
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "update.json"), "utf8")) as { support_note?: string };
+    return String(cfg.support_note ?? "").trim().slice(0, 120);
+  } catch { return ""; }
+}
 
 async function post(body: Record<string, unknown>): Promise<Record<string, unknown>> {
   const ctl = new AbortController();
@@ -42,10 +51,12 @@ async function post(body: Record<string, unknown>): Promise<Record<string, unkno
 }
 
 /** 質問を控えて、配布元へ送る。送れなくても控えは残し、あとで送り直す */
-export async function askSupport(userId: number, who: string, question: string, page: string): Promise<{ ok: boolean; ticket: SupportTicket }> {
+/** context: どの会社（1件の送信）についての質問か。parentId: 追加の質問のとき、元の質問（この利用者のもの）の id */
+export async function askSupport(userId: number, who: string, question: string, page: string, context = "", parentId = 0): Promise<{ ok: boolean; ticket: SupportTicket }> {
   const db = getDb();
   const ticket = crypto.randomBytes(16).toString("hex");
-  const id = db.prepare("INSERT INTO support_tickets(ticket, user_id, who, question, page) VALUES(?,?,?,?,?)").run(ticket, userId, who.slice(0, 120), question.slice(0, 2000), page.slice(0, 200)).lastInsertRowid as number;
+  const parent = parentId ? ((db.prepare("SELECT ticket FROM support_tickets WHERE id=? AND user_id=?").get(parentId, userId) as { ticket: string } | undefined)?.ticket ?? "") : "";
+  const id = db.prepare("INSERT INTO support_tickets(ticket, user_id, who, question, page, context, parent) VALUES(?,?,?,?,?,?,?)").run(ticket, userId, who.slice(0, 120), question.slice(0, 2000), page.slice(0, 200), context.slice(0, 600), parent).lastInsertRowid as number;
   const ok = await sendTicket(id);
   return { ok, ticket: db.prepare("SELECT * FROM support_tickets WHERE id=?").get(id) as SupportTicket };
 }
@@ -55,7 +66,7 @@ async function sendTicket(id: number): Promise<boolean> {
   const t = db.prepare("SELECT * FROM support_tickets WHERE id=?").get(id) as (SupportTicket & { who: string }) | undefined;
   if (!t || !supportEnabled()) return false;
   try {
-    const r = await post({ action: "ask", ticket: t.ticket, who: t.who, version: currentVersion(), page: t.page, question: t.question, at: t.created_at });
+    const r = await post({ action: "ask", ticket: t.ticket, who: t.who, version: currentVersion(), page: t.page, question: t.question, at: t.created_at, context: t.context, parent: t.parent });
     if (r.ok !== true) throw new Error(String(r.error ?? "受け付けられませんでした"));
     db.prepare("UPDATE support_tickets SET sent_ok=1 WHERE id=?").run(id);
     return true;
@@ -100,6 +111,26 @@ export function supportUnread(userId: number): number {
 }
 export function markSupportSeen(userId: number): void {
   getDb().prepare("UPDATE support_tickets SET seen_at=datetime('now') WHERE user_id=? AND reply<>'' AND seen_at IS NULL").run(userId);
+}
+
+// ---- 質問箱の使われ方（この端末の中だけ。配布元には送らない） ----
+/** 答えで解決したか。どの答えが役に立っていないかを、診断ファイルから知るため */
+export function recordHelpFeedback(question: string, solved: boolean): void {
+  const db = getDb();
+  db.prepare("INSERT INTO help_feedback(question, solved) VALUES(?,?)").run(question.slice(0, 120), solved ? 1 : 0);
+  db.prepare("DELETE FROM help_feedback WHERE id <= (SELECT MAX(id) FROM help_feedback) - 500").run();
+}
+/** 用意した答えの中に見つからなかった言葉。どの答えを足せばよいかを知るため（直近200件） */
+export function recordHelpMiss(text: string): void {
+  const db = getDb();
+  db.prepare("INSERT INTO help_misses(text) VALUES(?)").run(text.replace(/\s+/g, " ").trim().slice(0, 80));
+  db.prepare("DELETE FROM help_misses WHERE id <= (SELECT MAX(id) FROM help_misses) - 200").run();
+}
+export function topHelpMisses(limit = 20): { text: string; n: number; last: string }[] {
+  return getDb().prepare("SELECT text, COUNT(*) n, MAX(at) last FROM help_misses GROUP BY text ORDER BY n DESC, last DESC LIMIT ?").all(limit) as { text: string; n: number; last: string }[];
+}
+export function unsolvedHelp(limit = 10): { question: string; n: number }[] {
+  return getDb().prepare("SELECT question, COUNT(*) n FROM help_feedback WHERE solved=0 GROUP BY question ORDER BY n DESC LIMIT ?").all(limit) as { question: string; n: number }[];
 }
 
 // 配布元がスプレッドシートに貼る Apps Script は scripts/support-apps-script.gs にある（手順は CLAUDE.md の「質問箱」）

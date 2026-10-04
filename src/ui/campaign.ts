@@ -194,7 +194,7 @@ ${sorted.map((r) => {
 <span style="display:flex;gap:8px;align-items:center">${running
     ? `<form method="post" action="/campaigns/${c.id}/pause" class="inline"><button class="btn danger">一時停止</button></form>`
     : cnt("queued") > 0 && tab !== "send" ? `<form method="post" action="/campaigns/${c.id}/start" class="inline" data-busy><input type="hidden" name="only" value="${esc(c.send_only ?? "")}"><button class="btn primary" data-busytext="送信を開始しています…" title="送信時間帯の中で、1日の上限を守って送ります。対象や時間帯を変えるときは「② 送信」タブから">開始する（${n(cnt("queued"))}社）</button></form>` : ""}
-${moreMenu([`<a class="btn small" href="/campaigns/${c.id}/edit">設定を変える</a>`, `<a class="btn small" href="/campaigns/${c.id}/test">テスト送信</a>`, `<a class="btn small" href="/stats?campaign=${c.id}">日別・月別の推移</a>`, `<a class="btn small" href="/campaigns/${c.id}/export.json">設定をファイルに書き出す</a>`])}</span></div>
+${moreMenu([`<a class="btn small" href="/campaigns/${c.id}/edit">設定を変える</a>`, `<a class="btn small" href="/campaigns/${c.id}/test">テスト送信</a>`, `<a class="btn small" href="/stats?campaign=${c.id}">日別・月別の推移</a>`, `<a class="btn small" href="/campaigns/${c.id}/export.json">設定をファイルに書き出す</a>`, "<hr>", `<button type="button" class="btn small" onclick="foHelpOpen({campaignId:${c.id}})">このキャンペーンについて質問する</button>`])}</span></div>
 <p class="muted" data-nohelp style="margin:0 0 14px">${[
     `送信者 ${esc(c.sender.person || c.sender.company)}`,
     CHANNEL_LABEL[channelMode(c.channel)],

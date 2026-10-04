@@ -352,7 +352,7 @@ export function healthView(checks: HealthCheck[], st: HealthState): string {
 // これまでは黒い画面を見るしかなく、閉じてしまうと何が起きたか分からなかった
 export type LogRow = { id: number; at: string; kind: string; source: string; company: string; text: string };
 
-export function logsView(rows: LogRow[], kind: string, counts: { errors24h: number; total: number }): string {
+export function logsView(rows: LogRow[], kind: string, counts: { errors24h: number; total: number }, misses: { text: string; n: number; last: string }[] = []): string {
   const tab = (k: string, label: string) => `<a class="btn ${kind === k ? "" : "sub"}" href="/logs${k ? `?kind=${k}` : ""}">${label}</a>`;
   const kindTag = (k: string) => k === "error" ? `<span class="tag failed">エラー</span>` : k === "warn" ? `<span class="tag queued">注意</span>` : `<span class="tag">記録</span>`;
   return `<h1>エラーログ</h1>
@@ -368,5 +368,9 @@ ${rows.length ? `<table>
   ${rows.map((r) => `<tr><td class="small">${esc(jst(r.at))}</td><td>${kindTag(r.kind)}</td><td class="small">${esc(r.source)}</td><td>${r.company ? `<b>${esc(r.company)}</b>: ` : ""}${esc(r.text)}</td></tr>`).join("")}
 </table>
 <form method="post" action="/logs/clear" style="margin-top:12px" onsubmit="return confirm('ログを全部消します。よろしいですか？')"><button class="btn sub small">ログを消す</button></form>`
-  : `<div class="card"><p>まだ記録はありません。問題なく動いています。</p></div>`}`;
+  : `<div class="card"><p>まだ記録はありません。問題なく動いています。</p></div>`}
+${misses.length ? `<div class="card"><h2 style="margin-top:0">質問箱で見つからなかった言葉</h2>
+<p class="muted" data-nohelp>右下の質問箱で、用意した答えの中に見つからなかった言葉です（このパソコンの中だけに残しています）。診断ファイルにも入ります。</p>
+<table style="max-width:560px"><tr><th>言葉</th><th style="width:70px">回数</th><th style="width:150px">最後</th></tr>
+${misses.map((m) => `<tr><td>${esc(m.text)}</td><td>${m.n}</td><td class="small muted">${esc(jst(m.last).slice(5))}</td></tr>`).join("")}</table></div>` : ""}`;
 }
