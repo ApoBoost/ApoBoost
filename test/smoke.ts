@@ -39,7 +39,8 @@ db.close();
 
 // ---- アプリを起動 ----
 const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], {
-  env: { ...process.env, PORT: String(PORT), CLEAN_PORT: "0", GAME: "0", DATA_DIR, FO_OPEN: "0" },
+  // SUPPORT_URL を空にして、テストから本物の質問箱の受け口に届かないようにする
+  env: { ...process.env, PORT: String(PORT), CLEAN_PORT: "0", GAME: "0", DATA_DIR, FO_OPEN: "0", SUPPORT_URL: "" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let out = "";

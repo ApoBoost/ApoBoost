@@ -1,14 +1,14 @@
 {
   "version": "1.0.9",
-  "notes": "質問箱が、答える前に「入力中」を出すようになりました",
+  "notes": "右下の質問箱を強化: よく見られている質問・「この会社について質問する」・担当者への質問と返信・問い合わせの終了と過去の一覧",
   "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-  "published_at": "2026-10-04T12:20:09.173Z",
+  "published_at": "2026-10-04T12:56:42.291Z",
   "channels": {
     "stable": {
       "version": "1.0.9",
-      "notes": "質問箱が、答える前に「入力中」を出すようになりました",
+      "notes": "右下の質問箱を強化: よく見られている質問・「この会社について質問する」・担当者への質問と返信・問い合わせの終了と過去の一覧",
       "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-      "published_at": "2026-10-04T12:20:09.173Z"
+      "published_at": "2026-10-04T12:56:42.291Z"
     }
   }
 }

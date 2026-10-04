@@ -71,8 +71,11 @@ down = false;
 await pollSupportReplies();
 assert.equal(sheet.length, 4, "つながったら自動で送り直す");
 // 送り先が未設定・不正なら、機能ごと止まる
+process.env.SUPPORT_URL = "";
+assert.equal(supportUrl(), "", "送り先が空なら無効");
+// update.json に書いてある値は、Apps Script のウェブアプリの形のときだけ通す
 delete process.env.SUPPORT_URL;
-assert.equal(supportUrl(), "", "update.json の support_url が空なら無効");
+assert.ok(supportUrl() === "" || /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(supportUrl()), "update.json の support_url は決まった形だけ");
 
 server.close();
 console.log("support: ALL OK");
