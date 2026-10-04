@@ -1,14 +1,14 @@
 {
-  "version": "1.0.3",
-  "notes": "キャンペーンと関係のないフォーム（求職者向けの登録・応募フォーム）には入力しないようにしました",
+  "version": "1.0.4",
+  "notes": "画面のデザインを新しくしました（すっきりした配色、半透明のメニュー、絵文字をアイコンに）。一覧が最初から全部表示されるようになりました",
   "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-  "published_at": "2026-10-04T06:39:20.866Z",
+  "published_at": "2026-10-04T07:40:21.852Z",
   "channels": {
     "stable": {
-      "version": "1.0.3",
-      "notes": "キャンペーンと関係のないフォーム（求職者向けの登録・応募フォーム）には入力しないようにしました",
+      "version": "1.0.4",
+      "notes": "画面のデザインを新しくしました（すっきりした配色、半透明のメニュー、絵文字をアイコンに）。一覧が最初から全部表示されるようになりました",
       "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-      "published_at": "2026-10-04T06:39:20.866Z"
+      "published_at": "2026-10-04T07:40:21.852Z"
     }
   }
 }
