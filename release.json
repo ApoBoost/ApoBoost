@@ -1,14 +1,14 @@
 {
-  "version": "1.0.8",
-  "notes": "右下に質問箱を追加しました。困ったときに、よくある質問の答えをその場で確認できます",
+  "version": "1.0.9",
+  "notes": "質問箱が、答える前に「入力中」を出すようになりました",
   "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-  "published_at": "2026-10-04T12:08:24.424Z",
+  "published_at": "2026-10-04T12:20:09.173Z",
   "channels": {
     "stable": {
-      "version": "1.0.8",
-      "notes": "右下に質問箱を追加しました。困ったときに、よくある質問の答えをその場で確認できます",
+      "version": "1.0.9",
+      "notes": "質問箱が、答える前に「入力中」を出すようになりました",
       "zip": "https://github.com/ApoBoost/ApoBoost/archive/refs/heads/main.zip",
-      "published_at": "2026-10-04T12:08:24.424Z"
+      "published_at": "2026-10-04T12:20:09.173Z"
     }
   }
 }
