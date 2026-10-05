@@ -61,8 +61,9 @@ export function register(): void {
 app.get("/support/thread", async (req, res) => {
   res.setHeader("cache-control", "no-store");
   const u = me(req);
-  if (supportEnabled() && Date.now() - lastPoll > 60_000) { lastPoll = Date.now(); await pollSupportReplies().catch(() => 0); }
-  const list = supportThread(u.id).map((t) => ({ id: t.id, question: t.question, at: t.created_at, sent: !!t.sent_ok, reply: t.reply, repliedAt: t.replied_at, context: t.context, followUp: !!t.parent }));
+  // local=1 は「手元の記録だけ見る」（閉じているときの赤い印の確認用。配布元のシートを見に行く回数を増やさない）
+  if (req.query.local !== "1" && supportEnabled() && Date.now() - lastPoll > 60_000) { lastPoll = Date.now(); await pollSupportReplies().catch(() => 0); }
+  const list = supportThread(u.id).map((t) => ({ id: t.id, chatId: t.chat_id ?? 0, question: t.question, at: t.created_at, sent: !!t.sent_ok, reply: t.reply, repliedAt: t.replied_at, context: t.context, followUp: !!t.parent }));
   const unread = supportUnread(u.id);
   if (req.query.seen === "1") markSupportSeen(u.id);
   res.json({ enabled: supportEnabled(), note: supportNote(), unread, list, activeChat: activeChatId(u.id) });

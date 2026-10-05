@@ -101,13 +101,13 @@ export const HELP_TOPICS: HelpTopic[] = [
  *  ・開いたときは「よく見られている質問」と「窓口3つ」を出す。会社の詳細・要対応・キャンペーンの画面からは、
  *    その会社の状況を付けて開ける（window.foHelpOpen({ jobId })）。何の件かが最初から分かるので、聞き返しが要らない */
 export const HELP_WIDGET = `<style>
-#fo-help-btn{position:fixed;right:18px;bottom:18px;z-index:80;width:58px;height:58px;border-radius:50%;border:1px solid rgba(0,0,0,.08);background:#fff url(/assets/mascot.png?v=1) 42% 6%/165% auto no-repeat;box-shadow:0 6px 20px rgba(0,0,0,.18);cursor:pointer;padding:0;transition:transform .15s,box-shadow .15s}
+#fo-help-btn{position:fixed;right:18px;bottom:18px;z-index:80;width:58px;height:58px;border-radius:50%;border:0;background:#0B76D8 url(/assets/chat.png?v=1) center/cover no-repeat;box-shadow:0 6px 20px rgba(0,0,0,.18);cursor:pointer;padding:0;transition:transform .15s,box-shadow .15s}
 #fo-help-btn:hover{transform:translateY(-2px);box-shadow:0 10px 26px rgba(0,0,0,.22)}
 #fo-help-btn.new::after{content:"";position:absolute;right:2px;top:2px;width:14px;height:14px;border-radius:50%;background:var(--c-ng);border:2px solid #fff}
 #fo-help{position:fixed;right:18px;bottom:18px;z-index:81;width:372px;max-width:calc(100vw - 24px);height:min(600px,calc(100vh - 36px));display:flex;flex-direction:column;background:#F5F5F7;border-radius:22px;box-shadow:0 18px 60px rgba(0,0,0,.28),0 0 0 1px rgba(0,0,0,.06);overflow:hidden}
 #fo-help[hidden]{display:none}
 #fo-help .hd{display:flex;align-items:center;gap:10px;padding:14px 14px 12px;background:#fff;border-bottom:1px solid var(--c-line)}
-#fo-help .ava{flex:none;width:38px;height:38px;border-radius:50%;background:#EAF3FE url(/assets/mascot.png?v=1) 42% 6%/165% auto no-repeat}
+#fo-help .ava{flex:none;width:38px;height:38px;border-radius:50%;background:#fff url(/assets/avatar.png?v=1) center/cover no-repeat;box-shadow:0 0 0 1px rgba(0,0,0,.06)}
 #fo-help .hd b{display:block;font-size:15px;line-height:1.3}
 #fo-help .hd span{font-size:12px;color:var(--c-ink-3)}
 #fo-help .x{margin-left:auto;width:30px;height:30px;border-radius:50%;border:0;background:var(--c-fill);color:var(--c-ink-2);font-size:16px;line-height:1;cursor:pointer}
@@ -115,10 +115,13 @@ export const HELP_WIDGET = `<style>
 #fo-help .log{flex:1;overflow-y:auto;padding:14px 14px 6px;display:flex;flex-direction:column;gap:8px}
 #fo-help .msg{max-width:88%;padding:9px 13px;border-radius:16px;font-size:14px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
 #fo-help .bot{align-self:flex-start;background:#fff;border-bottom-left-radius:5px}
+#fo-help .brow{align-self:flex-start;display:flex;gap:8px;align-items:flex-end;max-width:94%}
+#fo-help .brow .msg{max-width:none}
+#fo-help .bav{flex:none;width:30px;height:30px;border-radius:50%;background:#fff url(/assets/avatar.png?v=1) center/cover no-repeat;box-shadow:0 0 0 1px rgba(0,0,0,.06)}
 #fo-help .me{align-self:flex-end;background:var(--c-brand);color:#fff;border-bottom-right-radius:5px}
 #fo-help .staff{border:1px solid var(--c-brand);}
 #fo-help .staff::before{content:"担当者より";display:block;font-size:11px;font-weight:700;color:var(--c-brand);margin-bottom:2px}
-#fo-help .note{align-self:center;font-size:12px;color:var(--c-ink-3);margin:2px 0}
+#fo-help .note{align-self:center;font-size:12px;color:var(--c-ink-3);margin:2px 0;text-align:center}
 #fo-help .bot a{display:inline-block;margin:8px 6px 0 0;padding:4px 11px;border-radius:8px;background:var(--c-brand-bg);color:var(--c-link);font-size:13px;font-weight:600;text-decoration:none}
 #fo-help .bot a:hover{background:#DCEBFD}
 /* 入力中の「・・・」 */
@@ -158,7 +161,7 @@ export const HELP_WIDGET = `<style>
 #fo-help .list h3{font-size:15px;margin:0;padding:14px 16px 8px}
 #fo-help .list button.row{display:flex;gap:11px;width:100%;text-align:left;border:0;border-top:1px solid var(--c-line);background:#fff;padding:12px 16px;cursor:pointer;font:inherit;color:inherit}
 #fo-help .list button.row:hover{background:var(--c-surface-2)}
-#fo-help .list .av{flex:none;width:40px;height:40px;border-radius:12px;background:#EAF3FE url(/assets/mascot.png?v=1) 42% 6%/165% auto no-repeat;position:relative}
+#fo-help .list .av{flex:none;width:40px;height:40px;border-radius:50%;background:#fff url(/assets/avatar.png?v=1) center/cover no-repeat;box-shadow:0 0 0 1px rgba(0,0,0,.06);position:relative}
 #fo-help .list .av.new::after{content:"";position:absolute;right:-3px;top:-3px;width:11px;height:11px;border-radius:50%;background:var(--c-ng);border:2px solid #fff}
 #fo-help .list .tx{flex:1;min-width:0}
 #fo-help .list .tt{display:flex;gap:8px;align-items:baseline}
@@ -201,7 +204,7 @@ export const HELP_WIDGET = `<style>
   var saveTimer = null, saving = Promise.resolve();
   function saveNow(){
     clearTimeout(saveTimer); saveTimer = null;
-    if (viewing || !conv.msgs.length) return saving;
+    if (viewing || !conv.msgs.some(function(m){ return m.r === "me"; })) return saving;
     var last = ""; for (var i = conv.msgs.length - 1; i >= 0 && !last; i--) { var m = conv.msgs[i]; if (m.t && (m.r === "bot" || m.r === "me" || m.r === "staff")) last = m.t; }
     var body = JSON.stringify({ id: conv.id, title: conv.title, last: last.replace(/\\s+/g, " ").slice(0, 120), messages: conv.msgs, ended: conv.ended });
     var target = conv;
@@ -212,11 +215,13 @@ export const HELP_WIDGET = `<style>
   function rec(m){ if (viewing) return; conv.msgs.push(m); if (m.r === "me" && !conv.title && !/^(解決した|解決しなかった|最初に戻る|担当者に質問する)$/.test(m.t)) conv.title = m.t.slice(0, 40); clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 600); }
   addEventListener("pagehide", function(){ if (saveTimer) saveNow(); });
   // ---- 画面に1つ出す（控えから描き直すときにも使う） ----
+  function withAva(bubble){ var row = el("div", "brow"); row.appendChild(el("span", "bav")); row.appendChild(bubble); return row; }
   function render(m){
     var e;
     if (m.r === "bot" || m.r === "staff") {
-      e = el("div", "msg bot" + (m.r === "staff" ? " staff" : ""), m.t);
-      (m.links || []).forEach(function(l){ var a = el("a", "", l[1]); a.href = l[0]; if (l[0].indexOf("http") === 0) { a.target = "_blank"; a.rel = "noopener"; a.textContent = l[1] + " ↗"; } e.appendChild(a); });
+      var b = el("div", "msg bot" + (m.r === "staff" ? " staff" : ""), m.t);
+      (m.links || []).forEach(function(l){ var a = el("a", "", l[1]); a.href = l[0]; if (l[0].indexOf("http") === 0) { a.target = "_blank"; a.rel = "noopener"; a.textContent = l[1] + " ↗"; } b.appendChild(a); });
+      e = withAva(b);
     } else if (m.r === "me") e = el("div", "msg me", m.t);
     else if (m.r === "note") e = el("div", "note", m.t);
     else if (m.r === "st") e = el("div", "st " + (m.cls || "go"), m.t);
@@ -232,8 +237,8 @@ export const HELP_WIDGET = `<style>
     return later(function(){
       clearOpts();
       var t = el("div", "msg bot typing"); t.setAttribute("aria-label", "入力中"); t.appendChild(el("i")); t.appendChild(el("i")); t.appendChild(el("i"));
-      log.appendChild(t); scroll();
-      return wait(TYPE_MS).then(function(){ t.remove(); put({ r: "bot", t: text, links: links || undefined }); });
+      var tr = withAva(t); log.appendChild(tr); scroll();
+      return wait(TYPE_MS).then(function(){ tr.remove(); put({ r: "bot", t: text, links: links || undefined }); });
     });
   }
   function me(text){ return later(function(){ clearOpts(); put({ r: "me", t: text }); }); }
@@ -269,9 +274,12 @@ export const HELP_WIDGET = `<style>
   // 問い合わせを終了する。終了したものは「履歴」から見返せる。次に開くと、新しい問い合わせになる
   function endChat(){
     me("問い合わせを終了する");
-    bot("お問い合わせを終了しました。ご利用ありがとうございました。\\nこのやり取りは、上の「履歴」からいつでも見返せます。");
+    bot("お問い合わせを終了しました。ご利用ありがとうございました。");
     later(function(){ put({ r: "note", t: "終了しました" }); conv.ended = true; setAsk(false); return saveNow(); });
-    opts([{ label: "新しく質問する", run: function(){ newChat(); home(true); } }, { label: "履歴を見る", sub: true, run: function(){ showList(); } }]);
+    // 終わったら、まっさらな画面に戻す。終わったやり取りは「履歴」から見返せる
+    later(function(){ return wait(900); });
+    later(function(){ newChat(); log.appendChild(el("div", "note", "前のお問い合わせは終了しました。上の「履歴」からいつでも見返せます。")); });
+    home(true);
   }
   function newChat(){ conv = { id: 0, msgs: [], title: "", ended: false }; viewing = false; ctx = null; parentId = 0; log.textContent = ""; setAsk(false); form.hidden = false; }
   // 窓口 → 分類（分類が1つだけなら、その段は飛ばす）
@@ -485,6 +493,27 @@ export const HELP_WIDGET = `<style>
     });
   }
   function close(){ saveNow(); box.hidden = true; btn.hidden = false; }
+  // ---- 担当者の返信を待つ ----
+  // 開いているあいだ: いまの問い合わせで返信を待っていれば30秒ごとに確かめ、届いたらその場に出す
+  // （配布元のシートを見に行くのはサーバー側で1分に1回まで）。閉じているあいだ: 手元の記録だけ見て、赤い印を付ける
+  function waitingReply(){ return conv.id && !viewing && !conv.ended && conv.msgs.some(function(m){ return m.r === "st"; }); }
+  function hasStaff(t){ return conv.msgs.some(function(m){ return m.r === "staff" && (m.tk === t.id || String(m.t || "").trim() === String(t.reply || "").trim()); }); }
+  function checkReplies(){
+    if (box.hidden) { getJson("/support/thread?local=1").then(function(j){ if (j && j.unread) btn.classList.add("new"); }); return; }
+    if (!waitingReply()) return;
+    getJson("/support/thread").then(function(j){
+      if (!j || !waitingReply()) return;
+      var fresh = (j.list || []).filter(function(t){ return t.reply && t.chatId === conv.id && !hasStaff(t); });
+      if (!fresh.length) return;
+      later(function(){
+        clearOpts();
+        fresh.forEach(function(t){ put({ r: "staff", t: t.reply, tk: t.id }); });
+        getJson("/support/thread?local=1&seen=1");
+      });
+      resumeOpts(fresh[fresh.length - 1].id);
+    });
+  }
+  setInterval(checkReplies, 30000);
   window.foHelpOpen = function(o){ open(o || null); };
   btn.addEventListener("click", function(){ open(null); });
   box.querySelector(".x").addEventListener("click", close);

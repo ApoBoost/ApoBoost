@@ -17,7 +17,7 @@ import { notify } from "./notify.js";
 import { currentVersion, ROOT } from "./update.js";
 import { logError } from "./applog.js";
 
-export type SupportTicket = { id: number; ticket: string; user_id: number; question: string; page: string; created_at: string; sent_ok: number; reply: string; replied_at: string | null; seen_at: string | null; context: string; parent: string };
+export type SupportTicket = { id: number; ticket: string; user_id: number; chat_id?: number; question: string; page: string; created_at: string; sent_ok: number; reply: string; replied_at: string | null; seen_at: string | null; context: string; parent: string };
 
 /** 配布元の Apps Script のURL（update.json の support_url）。未設定なら空 */
 export function supportUrl(): string {
@@ -96,8 +96,8 @@ export async function pollSupportReplies(): Promise<number> {
       if (n) {
         got++; notify("質問に返信が届きました", text.slice(0, 80), `support-${x.ticket}`);
         // その質問を送った問い合わせ（終了済みでも）に、返信を書き足す。一覧から開くと続きとして読める
-        const t = db.prepare("SELECT chat_id FROM support_tickets WHERE ticket=?").get(String(x.ticket)) as { chat_id: number } | undefined;
-        if (t?.chat_id) appendChatMessage(t.chat_id, { r: "staff", t: text });
+        const t = db.prepare("SELECT id, chat_id FROM support_tickets WHERE ticket=?").get(String(x.ticket)) as { id: number; chat_id: number } | undefined;
+        if (t?.chat_id) appendChatMessage(t.chat_id, { r: "staff", t: text, tk: t.id });
       }
     }
   } catch (e) {
@@ -125,20 +125,44 @@ export type HelpChat = { id: number; user_id: number; title: string; last: strin
 /** 画面のやり取りを保存する。id が 0 なら新しい問い合わせを作る。戻り値は問い合わせの id */
 export function saveChat(userId: number, id: number, title: string, last: string, messages: ChatMessage[], ended: boolean): number {
   const db = getDb();
-  const json = JSON.stringify(messages.slice(-200)).slice(0, 200_000);
   if (id) {
     const own = db.prepare("SELECT id FROM help_chats WHERE id=? AND user_id=?").get(id, userId);
     if (own) {
+      // 画面は、開いたときに読んだやり取りを持ったまま、そこに足して丸ごと保存し直す。開いている間に担当者の返信が
+      // 届くと（サーバーが書き足す）、画面の古い控えで上書きして返信が消えていた。届いている返信は必ず残す
+      const json = JSON.stringify(mergeStaffReplies(id, messages).list.slice(-200)).slice(0, 200_000);
       db.prepare("UPDATE help_chats SET title=?, last=?, messages=?, updated_at=datetime('now'), ended_at=CASE WHEN ? THEN COALESCE(ended_at, datetime('now')) ELSE ended_at END WHERE id=?")
         .run(title.slice(0, 60), last.slice(0, 120), json, ended ? 1 : 0, id);
       return id;
     }
   }
+  const json = JSON.stringify(messages.slice(-200)).slice(0, 200_000);
   const nid = db.prepare("INSERT INTO help_chats(user_id, title, last, messages, ended_at) VALUES(?,?,?,?,CASE WHEN ? THEN datetime('now') ELSE NULL END)")
     .run(userId, title.slice(0, 60), last.slice(0, 120), json, ended ? 1 : 0).lastInsertRowid as number;
   // 古いものは100件まで残す
   db.prepare("DELETE FROM help_chats WHERE user_id=? AND id NOT IN (SELECT id FROM help_chats WHERE user_id=? ORDER BY id DESC LIMIT 100)").run(userId, userId);
   return nid;
+}
+/** この問い合わせに届いている担当者の返信のうち、やり取りに入っていないものを差し込む。
+ *  差し込む場所は、その質問のあとの「受付済み・返信待ち」の直後（見つからなければ最後） */
+export function mergeStaffReplies(chatId: number, messages: ChatMessage[]): { list: ChatMessage[]; added: number } {
+  const tickets = getDb().prepare("SELECT id, question, reply FROM support_tickets WHERE chat_id=? AND reply<>'' ORDER BY id").all(chatId) as { id: number; question: string; reply: string }[];
+  const list = messages.slice();
+  let added = 0;
+  for (const tk of tickets) {
+    const has = list.some((m) => m.r === "staff" && (m.tk === tk.id || String(m.t ?? "").trim() === tk.reply.trim()));
+    if (has) continue;
+    let at = list.length;
+    let q = -1;
+    for (let i = list.length - 1; i >= 0; i--) if (list[i].r === "me" && String(list[i].t ?? "").trim() === tk.question.trim()) { q = i; break; }
+    if (q >= 0) {
+      at = q + 1;
+      for (let i = q + 1; i < Math.min(list.length, q + 5); i++) { if (list[i].r === "me") break; at = i + 1; if (list[i].r === "st") break; }
+    }
+    list.splice(at, 0, { r: "staff", t: tk.reply, tk: tk.id });
+    added++;
+  }
+  return { list, added };
 }
 export function appendChatMessage(chatId: number, m: ChatMessage): void {
   const db = getDb();
@@ -165,6 +189,11 @@ export function getChat(userId: number, id: number): { id: number; title: string
   db.prepare("UPDATE support_tickets SET seen_at=datetime('now') WHERE chat_id=? AND user_id=? AND reply<>'' AND seen_at IS NULL").run(id, userId);
   let messages: ChatMessage[] = [];
   try { messages = JSON.parse(c.messages) as ChatMessage[]; } catch { /* 空として返す */ }
+  const merged = mergeStaffReplies(id, messages);
+  if (merged.added) {
+    messages = merged.list;
+    db.prepare("UPDATE help_chats SET messages=? WHERE id=?").run(JSON.stringify(messages.slice(-200)).slice(0, 200_000), id);
+  }
   const t = db.prepare("SELECT id FROM support_tickets WHERE chat_id=? AND user_id=? AND reply<>'' ORDER BY id DESC LIMIT 1").get(id, userId) as { id: number } | undefined;
   return { id: c.id, title: c.title, ended: !!c.ended_at, messages, replyTicketId: t?.id ?? 0 };
 }

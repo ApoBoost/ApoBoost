@@ -27,7 +27,7 @@ await new Promise<void>((r) => server.listen(0, r));
 process.env.SUPPORT_URL = `http://127.0.0.1:${(server.address() as { port: number }).port}/exec`;
 
 const { getDb } = await import("../src/db.js");
-const { askSupport, pollSupportReplies, supportThread, supportUnread, markSupportSeen, supportUrl, recordHelpMiss, recordHelpFeedback, topHelpMisses, unsolvedHelp } = await import("../src/support.js");
+const { askSupport, pollSupportReplies, supportThread, supportUnread, markSupportSeen, supportUrl, recordHelpMiss, recordHelpFeedback, topHelpMisses, unsolvedHelp, saveChat, getChat } = await import("../src/support.js");
 getDb();
 
 // 送る
@@ -62,14 +62,33 @@ assert.deepEqual(topHelpMisses(5).map((m) => [m.text, m.n]), [["文字化け", 2
 recordHelpFeedback("「入力エラー」で失敗します", false);
 assert.equal(unsolvedHelp(5)[0].question, "「入力エラー」で失敗します");
 
+// チャットを開いたまま返信が届いても、画面からの保存で返信が消えない（実際に消えていた）
+{
+  const q = "返信が消えないかの確認です。届きますか？";
+  const before = [{ r: "me", t: q }, { r: "bot", t: "担当者に送りました。" }, { r: "st", cls: "go", t: "受付済み・返信待ち" }];
+  const chatId = saveChat(3, 0, q, q, before, false);
+  const t = await askSupport(3, "z", q, "/", "", 0, chatId);
+  sheet.find((r) => r.ticket === t.ticket.ticket)!.reply = "はい、届いています。";
+  await pollSupportReplies();
+  // 画面は返信を知らないまま、手元の控えに1つ足して丸ごと保存し直す
+  saveChat(3, chatId, q, q, [...before, { r: "me", t: "ほかにも聞きたいことがあります" }], false);
+  const got = getChat(3, chatId)!.messages;
+  assert.equal(got.filter((m) => m.r === "staff").length, 1, "届いた返信は、画面からの保存で消えない");
+  assert.equal(got.findIndex((m) => m.r === "staff"), 3, "返信は「受付済み・返信待ち」の直後に入る");
+  // すでに消えてしまった過去のやり取りも、開いたときに返信を差し込んで直す
+  getDb().prepare("UPDATE help_chats SET messages=? WHERE id=?").run(JSON.stringify(before), chatId);
+  assert.equal(getChat(3, chatId)!.messages.filter((m) => m.r === "staff").length, 1, "消えていた返信を、開いたときに戻す");
+  assert.equal(getChat(3, chatId)!.messages.filter((m) => m.r === "staff").length, 1, "2回開いても二重にならない");
+}
+
 // 受け口につながらないときは控えだけ残し、つながったら送り直す
 down = true;
 const b = await askSupport(1, "x", "つながらないときの質問です。あとで送られますか？", "/");
 assert.equal(b.ok, false);
-assert.equal(sheet.length, 3);
+assert.equal(sheet.length, 4);
 down = false;
 await pollSupportReplies();
-assert.equal(sheet.length, 4, "つながったら自動で送り直す");
+assert.equal(sheet.length, 5, "つながったら自動で送り直す");
 // 送り先が未設定・不正なら、機能ごと止まる
 process.env.SUPPORT_URL = "";
 assert.equal(supportUrl(), "", "送り先が空なら無効");
