@@ -26,7 +26,8 @@ import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmai
 import { notify, notifyEnabled } from "../notify.js";
 import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel } from "../update.js";
 import { errorPage } from "../ui/layout.js";
-import { resultNote, templateProblems, normalizeTemplateBraces } from "../ui/parts.js";
+import { resultNote, templateProblems, templateCheck, normalizeTemplateBraces } from "../ui/parts.js";
+import { llm, aiErrorKind, aiOverBudget } from "../message.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
 import { app, upload, db, setFlash, safeAsync, needsBrowser, redirectWith, takeFlash, me, appState, navUser, scope, ownedCampaign, ownedSender, notFound, forbidden, groupCandidates, applyGroupMembers, groupNames, retryTargetJobs, campaignRows, extraSenderIds, saveMaterial, removeMaterialFileIfUnused, loadCampaignFull, lastImports, pendingImports, previews, fetchGoogleSheetCsv, ReactionRow, jobFilter, CAMPAIGN_EXPORT_COLS, importHistory, recentUndo, deleteJobsWhere, setupState, setupProgress, todoCounts, lawKey, TODO_ANY, todoActive, campaignNumbers, CAMPAIGN_NUM_DEFAULTS, uploadSingle, campaignStall, AUTO_PAUSE_MARK } from "../app/context.js";
@@ -51,13 +52,41 @@ function tidyTemplates(b: Record<string, unknown>): boolean {
   return changed;
 }
 
-/** 保存したときに出す、文面の注意（保存はできる。開始のときに同じ検査で止める） */
+/** 保存したときに出す、文面の注意（保存はできる。開始のときに同じ検査で止める）。
+ *  警告（飾りの波括弧など）は開始を止めないが、意図せず相手に届くことがあるので保存のときに一度だけ知らせる */
 function templateNote(b: Record<string, unknown>, fixed: boolean): string {
-  const probs = templateProblems({ ...b, ab_enabled: b.ab_enabled === "1" || b.ab_enabled === 1 ? 1 : 0 } as Parameters<typeof templateProblems>[0]);
+  const { errors, warnings } = templateCheck({ ...b, ab_enabled: b.ab_enabled === "1" || b.ab_enabled === 1 ? 1 : 0 } as Parameters<typeof templateCheck>[0]);
+  const few = (list: string[]) => `${list.slice(0, 3).join("／")}${list.length > 3 ? `（ほか ${list.length - 3}件）` : ""}`;
   return [
     fixed ? "全角の ｛｛ ｝｝ を半角の {{ }} に直しました" : "",
-    probs.length ? `このままでは開始できません。文面を直してください: ${probs.slice(0, 3).join("／")}${probs.length > 3 ? `（ほか ${probs.length - 3}件）` : ""}` : "",
+    errors.length ? `このままでは開始できません。文面を直してください: ${few(errors)}` : "",
+    warnings.length ? `文面の確認（このままでも開始できます）: ${few(warnings)}` : "",
   ].filter(Boolean).map((x) => `／${x}`).join("");
+}
+
+/** 全文AIのキャンペーンを開始する前に、AIで文面を作れるか1回だけ確かめる。作れない理由（利用者向けの文）か null を返す。
+ *  文面の間違いは開始前に止まるが、AIの設定（キー・残高・モデル）は確かめておらず、自動の一時停止のあと「開始」を押すと
+ *  ブラウザを起動して1社目でまた止まっていた。
+ *  止めるのは設定の問題（aiErrorKind が config）だけ。混雑・回線断は送信側が数分待って自動で続けるので、開始は止めない */
+export async function aiStartProblem(timeoutMs = 20_000): Promise<string | null> {
+  if (activeProvider() === "none" || aiOverBudget()) return null; // AIを使わずテンプレートで送る（message.ts の composeMessage）
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      llm("テスト接続です。", "「OK」とだけ返してください。", 16),
+      new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("ETIMEDOUT AIの確認が終わりませんでした")), timeoutMs); }),
+    ]);
+    return null;
+  } catch (e) {
+    if (aiErrorKind(e)?.kind !== "config") return null;
+    const msg = String((e as Error)?.message ?? e);
+    if (/credit balance|billing|insufficient[_ ]quota/i.test(msg)) return "AIの残高か支払い設定に問題があるようです。AIの提供元の管理画面で残高・上限を確認してください";
+    // aiErrorKind と同じ見分け方（404、または 400 でモデルのことを言っている）
+    if (/^(?:anthropic|gemini) 404\b/.test(msg) || (/^(?:anthropic|gemini) 400\b/.test(msg) && /model/i.test(msg))) return "選んだAIのモデルが使えないようです。設定画面で別のモデルを選んでください";
+    return "AIのAPIキーが正しくないか、使えなくなっています。設定画面でAPIキーを確認してください";
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** この画面の経路を登録する。server.ts から、ログイン確認などの共通処理のあとに呼ばれる */
@@ -122,7 +151,7 @@ app.get("/", (req, res) => {
     const usesForm = r.send_only !== "email" && channelMode(r.channel) !== "email_only";
     const sd = senderById.get(r.sender_id);
     const p = sd ? emailPause(sd) : null;
-    const stall = campaignStall(r);
+    const stall = campaignStall(r, { admin: me(req).role === "admin" });
     return {
       id: r.id, name: r.name, status: r.status, running: Boolean(r.is_running),
       todayForm: v.todayForm ?? 0, todayEmail: v.todayEmail ?? 0, monthForm: v.monthForm ?? 0, monthEmail: v.monthEmail ?? 0,
@@ -133,7 +162,7 @@ app.get("/", (req, res) => {
       capEmail: usesEmail ? effectiveEmailLimit(r, r.sender_id).limit : 0,
       windowOk: inSendWindow(r), nextStart: nextWindowText(r),
       // 進まない理由（キャンペーンの経路と同じ関数）。メールの一時停止もこちらで出す（追加の送信アカウントも含めて判断するため）
-      stall: stall ? { text: stall.text, blocking: stall.blocking, kind: stall.kind, href: stall.href ?? "", action: stall.action ?? "" } : null,
+      stall: stall ? { text: stall.text, blocking: stall.blocking, kind: stall.kind, href: stall.href ?? "", action: stall.action ?? "", reason: stall.reason ?? "" } : null,
       paused: usesEmail && p && stall?.kind !== "email" ? `${p.reason.slice(0, 70)}（${new Date(p.until).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}に再開）` : "",
     };
   });
@@ -293,7 +322,7 @@ app.get("/campaigns/:id", (req, res) => {
       ? `今日の上限に達しています。残り ${queuedNow}社は、次の送信時間帯に続きます`
       : `残り ${queuedNow}社${reliable ? `。${span}で送り終わる見込みです（${end.slice(11, 16)}ごろ）` : ""}${doable < queuedNow ? `。きょう送れるのは ${doable}社で、残りの ${queuedNow - doable}社は翌営業日に続きます` : ""}`;
   }
-  res.send(layout(c.name, campaignView(c, jobs, counts, isRunning(id), aiStatusLabel(), { preview, windowOk: inSendWindow(c), sentToday: sentTodayForm, emailSentToday: sentTodayEmail, stall: campaignStall(c), templateProblems: templateProblems(c), scanning: isScanning(id), unscanned, scanned, statusFilter, qFilter, outcomeFilter, impFilter, sortKey, eta, ab, tab, page, pageSize, total: rowTotal, companyTotal, companyAll: (db.prepare("SELECT COUNT(DISTINCT COALESCE(NULLIF(domain,''), CAST(id AS TEXT))) n FROM form_jobs WHERE campaign_id=? AND is_test=0").get(id) as { n: number }).n, warmup: channelMode(c.channel) !== "form_only" ? { sent: sentTodayBySender(c.sender_id), ...effectiveEmailLimit(c, c.sender_id) } : null, undo: recentUndo(id, me(req).id), matched, attempts, companyCounts, outcomes, lastImport: consumedImport, retryTargets, emailQueued, period, emailPaused: emailPause(c.sender), imports: importHistory(id), reactions: db.prepare("SELECT id, company_name, domain, email, channel, outcome, outcome_note, updated_at FROM form_jobs WHERE campaign_id=? AND is_test=0 AND outcome<>'' ORDER BY updated_at DESC").all(id) as ReactionRow[], replyScan: { ...replyScanStatus(db.prepare("SELECT * FROM sender_profiles WHERE id=?").get(c.sender_id) as SenderProfile | undefined), checking: isCheckingReplies() } }), takeFlash(req), navUser(req), appState.updateReady));
+  res.send(layout(c.name, campaignView(c, jobs, counts, isRunning(id), aiStatusLabel(), { preview, windowOk: inSendWindow(c), sentToday: sentTodayForm, emailSentToday: sentTodayEmail, stall: campaignStall(c, { admin: me(req).role === "admin" }), templateCheck: templateCheck(c), scanning: isScanning(id), unscanned, scanned, statusFilter, qFilter, outcomeFilter, impFilter, sortKey, eta, ab, tab, page, pageSize, total: rowTotal, companyTotal, companyAll: (db.prepare("SELECT COUNT(DISTINCT COALESCE(NULLIF(domain,''), CAST(id AS TEXT))) n FROM form_jobs WHERE campaign_id=? AND is_test=0").get(id) as { n: number }).n, warmup: channelMode(c.channel) !== "form_only" ? { sent: sentTodayBySender(c.sender_id), ...effectiveEmailLimit(c, c.sender_id) } : null, undo: recentUndo(id, me(req).id), matched, attempts, companyCounts, outcomes, lastImport: consumedImport, retryTargets, emailQueued, period, emailPaused: emailPause(c.sender), imports: importHistory(id), reactions: db.prepare("SELECT id, company_name, domain, email, channel, outcome, outcome_note, updated_at FROM form_jobs WHERE campaign_id=? AND is_test=0 AND outcome<>'' ORDER BY updated_at DESC").all(id) as ReactionRow[], replyScan: { ...replyScanStatus(db.prepare("SELECT * FROM sender_profiles WHERE id=?").get(c.sender_id) as SenderProfile | undefined), checking: isCheckingReplies() } }), takeFlash(req), navUser(req), appState.updateReady));
 });
 
 // 実行中の画面が2.5秒ごとに見る進捗API。バーの更新と「終わったら自動でページ更新」に使う
@@ -435,6 +464,19 @@ app.post("/campaigns/:id/start", safeAsync(async (req, res) => {
   if (probs.length) {
     logInfo("start", `文面の未記入・差し込みの間違いのため開始しませんでした（${probs.length}件）`);
     return redirectWith(res, `/campaigns/${id}`, `文面に直すところがあるため開始していません: ${probs.slice(0, 3).join("／")}${probs.length > 3 ? `（ほか ${probs.length - 3}件）` : ""}。画面上の「文面を直す」から直してください`);
+  }
+
+  // 全文AIなら、AIで文面を作れるかも先に確かめる（キー・残高・モデルの問題は、何社送っても同じく止まる）。
+  // 送る会社が無いときは確かめない（AIの利用料がかかるため）
+  const queuedNow = (db.prepare("SELECT COUNT(*) n FROM form_jobs WHERE campaign_id=? AND is_test=0 AND status='queued'").get(id) as { n: number }).n;
+  if (camp.mode === "ai" && queuedNow > 0) {
+    const aiWhy = await aiStartProblem();
+    if (aiWhy) {
+      logError("start", `開始前のAIの確認で中止: ${aiWhy}`);
+      // AIの設定（/settings）は管理者しか開けない。一般の人には誰に頼めばよいかを言う
+      const who = me(req).role === "admin" ? "" : "（AIの設定は管理者だけが変えられます。管理者に確認を依頼してください）";
+      return redirectWith(res, `/campaigns/${id}`, `AIで文面を作れない状態のため開始していません: ${aiWhy}${who}`);
+    }
   }
 
   // 開始前に、送信用メールの設定を1回だけ確かめる。

@@ -1,6 +1,6 @@
 {
   "name": "apoboost",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "private": true,
   "description": "【フォーム＆メール】ApoBoost — 問い合わせフォーム／メール営業の自動送信ツール（単体版）",
   "type": "module",

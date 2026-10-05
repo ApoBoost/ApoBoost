@@ -737,7 +737,12 @@ export function decideInterrupted(sentDates: Date[], claimAt: Date, keepsSentCop
   return keepsSentCopy ? { verdict: "not_sent" } : { verdict: "unknown" };
 }
 
-type InterruptedRow = { id: number; email: string; updated_at: string; sender_id: number };
+type InterruptedRow = { id: number; email: string; started: string; legacy: number; outcome: string; sender_id: number };
+// 送り始めた時刻。send_started_at（送信用アカウントに送り始めた直前に worker が書く）を使う。
+// 以前は updated_at を流用していたが、「見送る → 要対応に戻す」や反応の手入力で今の時刻に変わり、届いていたメールより後を
+// 探して「控えが無い＝未送信」と判断し、自動で待機に戻して同じ相手にもう一度送り得た。
+// この列ができる前の行（NULL）だけ updated_at で代用する（そうした行は自動で待機には戻さない）
+const STARTED_SQL = "COALESCE(j.send_started_at, j.updated_at)";
 
 // 確認の期限。以前は期限が無く、Gmail 以外（控えが残らないことがあり「不明」のまま）は15分ごとの IMAP ログインが永久に続き、
 // Gmail は何日前の行でも「控えが無い＝未送信」で待機に戻して、忘れた頃に送っていた
@@ -745,6 +750,8 @@ const VERIFY_DAYS = 3;          // これより古い行は確かめない（「
 const AUTO_REQUEUE_HOURS = 24;  // 「未送信」と分かっても、自動で待機に戻すのは送り始めてからこの時間以内だけ
 export const UNVERIFIED_TEXT = "送信済みか確認できませんでした（送信済みか不明・手動で確認）: 送信の途中で止まったメールです。送信用メールの「送信済み」フォルダに届いているか見て、無ければ再送信してください";
 export const NOT_SENT_MANUAL_TEXT = "未送信と確認（送信済みフォルダに控えが無い）。送り始めてから時間がたっているため自動では送りません。再送信ボタンで送れます";
+// 頭に中断の印（INTERRUPTED_PREFIX / CUT_PREFIX）を付けないので、以後の確認の対象からは外れる。「送信済みか不明」を含めて、要対応では「届いたか不明」に入れる
+export const NOT_SENT_LEGACY_TEXT = "送信済みか不明（手動で確認）: 送り始めた時刻の記録が無い古い送信のため、送信済みフォルダの控えを確かめきれませんでした。送信用メールの「送信済み」フォルダに届いているか見て、無ければ再送信してください";
 
 /** 「未送信」と分かったときに、自動で待機に戻してよいか（送り始めてから24時間以内だけ） */
 export function autoRequeueAllowed(claimAt: Date, now = Date.now()): boolean {
@@ -754,7 +761,7 @@ export function autoRequeueAllowed(claimAt: Date, now = Date.now()): boolean {
 /** 起動時: 前回アプリが止まったときに「送信中」のまま残った会社を片付ける。
  *  メールで送信を始めた印（sent_by_sender）が無い会社は、SMTP にまだつないでいない＝送っていないので、確認なしで待機に戻す。
  *  それ以外は送ったか分からないので「失敗（要確認）」にし、メールは送信済みフォルダで確かめる（verifyInterruptedEmails）。
- *  updated_at は送信を始めた時刻のまま残す（送信済みフォルダの照合に使う）。戻り値は [待機に戻した数, 要確認にした数] */
+ *  送信済みフォルダの照合は send_started_at（送り始めた時刻）で行う。戻り値は [待機に戻した数, 要確認にした数] */
 export function recoverStuckSending(): { requeued: number; failed: number } {
   const db = getDb();
   const requeued = db.prepare(`UPDATE form_jobs SET status='queued', result_text='送信の前にアプリが止まったため待機に戻しました（メールはまだ送っていません）', retry_after=NULL
@@ -781,12 +788,13 @@ export async function verifyInterruptedEmails(): Promise<{ sent: number; requeue
 async function verifyInterruptedInner(out: { sent: number; requeued: number; unknown: number }): Promise<{ sent: number; requeued: number; unknown: number }> {
   const db = getDb();
   // 期限を過ぎたものは1回だけ「確認できませんでした（手動で確認）」に替えて、以後の確認の対象から外す（文の頭が変わるので2回目は当たらない）
-  db.prepare(`UPDATE form_jobs SET result_text=? WHERE status='failed' AND channel='email' AND (result_text LIKE ? OR result_text LIKE ?)
-    AND updated_at < datetime('now', ?)`).run(UNVERIFIED_TEXT, `${INTERRUPTED_PREFIX}%`, `${CUT_PREFIX}%`, `-${VERIFY_DAYS} days`);
+  db.prepare(`UPDATE form_jobs AS j SET result_text=? WHERE j.status='failed' AND j.channel='email' AND (j.result_text LIKE ? OR j.result_text LIKE ?)
+    AND ${STARTED_SQL} < datetime('now', ?)`).run(UNVERIFIED_TEXT, `${INTERRUPTED_PREFIX}%`, `${CUT_PREFIX}%`, `-${VERIFY_DAYS} days`);
   // 照合するのは「実際に送ったアカウント」。送る直前に sent_by_sender を書いているので、切り替え先で送った分も正しい送信済みフォルダを見る
-  const rows = db.prepare(`SELECT j.id, j.email, j.updated_at, ${SENT_BY} sender_id FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id
+  const rows = db.prepare(`SELECT j.id, j.email, ${STARTED_SQL} started, (j.send_started_at IS NULL) legacy, COALESCE(j.outcome,'') outcome, ${SENT_BY} sender_id
+    FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id
     WHERE j.status='failed' AND j.channel='email' AND j.email<>'' AND (j.result_text LIKE ? OR j.result_text LIKE ?)
-      AND j.updated_at >= datetime('now', ?)`).all(`${INTERRUPTED_PREFIX}%`, `${CUT_PREFIX}%`, `-${VERIFY_DAYS} days`) as InterruptedRow[];
+      AND ${STARTED_SQL} >= datetime('now', ?)`).all(`${INTERRUPTED_PREFIX}%`, `${CUT_PREFIX}%`, `-${VERIFY_DAYS} days`) as InterruptedRow[];
   if (!rows.length) return out;
   const bySender = new Map<number, InterruptedRow[]>();
   for (const r of rows) bySender.set(r.sender_id, [...(bySender.get(r.sender_id) ?? []), r]);
@@ -807,7 +815,7 @@ async function verifyInterruptedInner(out: { sent: number; requeued: number; unk
       const lock = await client.getMailboxLock(sentBox.path);
       try {
         for (const j of jobs) {
-          const claimAt = new Date(j.updated_at.replace(" ", "T") + "Z");
+          const claimAt = new Date(j.started.replace(" ", "T") + "Z");
           const uids = (await client.search({ to: normalizeEmail(j.email) || j.email, since: new Date(claimAt.getTime() - 86400_000) }, { uid: true })) || [];
           const dates: Date[] = [];
           for (const uid of uids) {
@@ -819,14 +827,17 @@ async function verifyInterruptedInner(out: { sent: number; requeued: number; unk
             db.prepare("UPDATE form_jobs SET status='sent', sent_at=?, result_text=?, updated_at=datetime('now') WHERE id=? AND status='failed'")
               .run(d.at.toISOString().replace("T", " ").slice(0, 19), `メール送信（${j.email}）※送信の途中で止まったが、送信済みフォルダで送信を確認`, j.id);
             out.sent++;
-          } else if (d.verdict === "not_sent" && autoRequeueAllowed(claimAt)) {
+          } else if (d.verdict === "not_sent" && autoRequeueAllowed(claimAt) && !j.legacy && !j.outcome) {
+            // 自動で待機に戻すのは、送り始めた時刻が確かな行（send_started_at がある）で、反応（返信など）が付いていないものだけ。
+            // 反応がある＝相手に届いている。時刻が確かでない行は、控えを探す範囲がずれて「未送信」と誤る恐れがあるので人に任せる
             // 送れていなかったので待機に戻す（実行中のキャンペーンなら続きで自動送信される）
             db.prepare("UPDATE form_jobs SET status='queued', result_text=?, updated_at=datetime('now') WHERE id=? AND status='failed'")
               .run("再送信待ち: 送信の途中で止まったが、送信済みフォルダに無く未送信と確認", j.id);
             out.requeued++;
-          } else if (d.verdict === "not_sent") {
-            // 送り始めてから時間がたっている。忘れた頃に届くと相手を驚かせるので、自動では送らず、人に任せる（確認の対象からも外れる）
-            db.prepare("UPDATE form_jobs SET result_text=? WHERE id=? AND status='failed'").run(NOT_SENT_MANUAL_TEXT, j.id);
+          } else if (d.verdict === "not_sent" && !j.outcome) {
+            // 送り始めてから時間がたっている（または送り始めた時刻が確かでない）。忘れた頃に届くと相手を驚かせるので、
+            // 自動では送らず、人に任せる（確認の対象からも外れる）
+            db.prepare("UPDATE form_jobs SET result_text=? WHERE id=? AND status='failed'").run(j.legacy && autoRequeueAllowed(claimAt) ? NOT_SENT_LEGACY_TEXT : NOT_SENT_MANUAL_TEXT, j.id);
             out.unknown++;
           } else out.unknown++;
         }

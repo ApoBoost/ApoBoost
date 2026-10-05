@@ -18,17 +18,30 @@ export type TodoGroup = { key: string; label: string; n: number; advice: string;
 export type TodoKind = "" | "captcha" | "check" | "failed" | "noform" | "dismissed";
 
 /** その会社が「何で止まっているか」。出すボタンを決めるのに使う（#116） */
-export function todoReason(j: Pick<Job, "status" | "result_text" | "channel">): "captcha" | "check" | "mailconfig" | "input" | "blocked" | "unreachable" | "noform" | "network" | "unsure" | "other" {
+/** 届いたか分からない（送信ボタンを押した後・メールを送り始めた後に止まった）結果の文。
+ *  送り直すと二重送信になり得るので、主ボタンは「送信済みにする」にし、まとめて送り直す対象にも入れない。
+ *  「送信の最後で通信が切れた」「送信中にアプリが止まった」「送信済みか確認できませんでした」は文中に「送信用メール」を含むため、
+ *  以前は「メールの設定」に入って「送信者の設定を直す」「もう一度送る」が出ていた（設定の問題ではなく、送り直すと2通届き得る） */
+export const UNSURE_RE = /送信後の判定不能|送信済みか不明|送信済みか確認できませんでした/;
+/** 宛先の側の理由でメールが送れなかった（アドレスが無い・形が正しくない・存在しない・受信箱がいっぱい・一時エラーが続いた・受け取り拒否）。
+ *  送信用アカウントの設定を直しても変わらないので「メールの設定」とは分け、アドレスを直すか見送ってもらう */
+export const RECIPIENT_RE = /^メールアドレスが無い|^メールアドレスの形が正しくない|宛先のメールアドレスが存在しません|受信箱がいっぱい|回試しても一時エラー|相手のメールサーバーに受け取りを拒否/;
+
+export function todoReason(j: Pick<Job, "status" | "result_text" | "channel">): "captcha" | "check" | "mailconfig" | "recipient" | "input" | "blocked" | "unreachable" | "noform" | "network" | "unsure" | "other" {
   const t = j.result_text || "";
+  // 種類を決めるのは結果の1行目。2行目以降は操作の記録で、「click失敗: Timeout」のような行があるだけで通信エラー扱いになっていた
+  const first = t.split("\n")[0];
   if (j.status === "skip_captcha") return "captcha";
   if (j.status === "skip_no_form") return /アクセスできない|接続を拒否|見つかりません（ドメイン|応答がありません/.test(t) ? "unreachable" : "noform";
   if (/^要確認/.test(t)) return "check";
-  if (/メール送信エラー|ログインを拒否|2段階認証|アプリパスワード|送信用メール/.test(t)) return "mailconfig";
-  if (/送信後の判定不能/.test(t)) return "unsure";
+  // 「メールの設定」より先に見る（文中の「送信用メール」に当たらないように）
+  if (UNSURE_RE.test(t)) return "unsure"; // 二重送信に関わるので、ここだけは全文で見る（迷ったら「届いたか不明」に倒す）
+  if (RECIPIENT_RE.test(first)) return "recipient";
+  if (/メール送信エラー|ログインを拒否|2段階認証|アプリパスワード|送信用メール/.test(first)) return "mailconfig";
   // サイトの側で断られた（スパム判定・403 など）。入力を直しても通らないので、入力エラーとは別にする
   if (/^サイト側で受け付けられません/.test(t)) return "blocked";
   if (/入力エラー|必須|送信ボタンが有効になりません|本文欄/.test(t)) return "input";
-  if (/時間切れ|タイムアウト|timeout|net::|通信|接続/i.test(t)) return "network";
+  if (/時間切れ|タイムアウト|timeout|net::|通信|接続/i.test(first)) return "network";
   return "other";
 }
 
@@ -42,6 +55,7 @@ export function todoActions(j: TodoRow, back: string): string {
   const dismiss = post(`/jobs/${j.id}/dismiss`, "見送る", b);
   const toEmail = j.email ? post(`/jobs/${j.id}/to-email`, "メールで送る", b) : "";
   const fix = `<a class="btn small" href="/jobs/${j.id}#fix">URLを直す</a>`;
+  const fixAddr = `<a class="btn small" href="/jobs/${j.id}#fix">アドレスを直す</a>`;
   const detail = `<a class="btn small" href="/jobs/${j.id}">くわしく見る</a>`;
   // 質問箱を、この会社の状況を付けた状態で開く（「どの会社の、どの失敗か」を聞き返さずに済むように）
   const askHelp = `<button type="button" class="btn small" onclick="foHelpOpen({jobId:${j.id}})">この会社について質問する</button>`;
@@ -52,6 +66,8 @@ export function todoActions(j: TodoRow, back: string): string {
     case "captcha": return [open, sent, toEmail, dismiss];
     case "check": return [`<a class="btn small" href="/jobs/${j.id}#answer">質問に答える</a>`, dismiss];
     case "mailconfig": return [`<a class="btn small" href="/senders">送信者の設定を直す</a>`, requeue];
+    // 宛先の問題。存在しないアドレスへ送り直すと送信元の評価が下がるので、「もう一度送る」は時間を置けば通り得るもの（受信箱がいっぱい・一時エラー）だけに出す
+    case "recipient": return [fixAddr, dismiss, /受信箱がいっぱい|一時エラー/.test(j.result_text || "") ? requeue : ""];
     case "input": return [requeue, open, toEmail, dismiss];
     case "blocked": return [toEmail || open, toEmail ? open : "", sent, dismiss];
     case "unsure": return [sent, requeue, dismiss];
@@ -63,7 +79,7 @@ export function todoActions(j: TodoRow, back: string): string {
   }
 }
 
-export const REASON_LABEL: Record<string, string> = { captcha: "画像認証", check: "質問への回答待ち", mailconfig: "メールの設定", input: "入力エラー", blocked: "サイト側の拒否", unreachable: "サイトを開けない", noform: "フォームが無い", network: "通信エラー", unsure: "届いたか不明", other: "その他" };
+export const REASON_LABEL: Record<string, string> = { captcha: "画像認証", check: "質問への回答待ち", mailconfig: "メールの設定", recipient: "宛先のエラー", input: "入力エラー", blocked: "サイト側の拒否", unreachable: "サイトを開けない", noform: "フォームが無い", network: "通信エラー", unsure: "届いたか不明", other: "その他" };
 
 export function todoView(rows: TodoRow[], kind: TodoKind, counts: Record<string, number>, opts: { today: TodoRow[]; groups: TodoGroup[]; hideDays: number; page: number; pageSize: number; total: number }): string {
   const KINDS: [TodoKind, string][] = [["", "すべて"], ["failed", "失敗"], ["check", "回答待ち"], ["captcha", "画像認証"], ["noform", "フォーム無し"], ["dismissed", "見送り"]];

@@ -216,10 +216,20 @@ export const isScanning = (campaignId: number) => running.has(-campaignId);
 // 多くが送信用アカウント側の制限や文面の問題。1周目は1社ずつ「宛先の一時エラー」にしたため、アカウントが制限されると
 // 待機の全社が再送待ち → 約2.5時間で全社失敗、になっていた。別の宛先で3件続いたら、アカウントごと止めて待機に戻す
 const ACCOUNT_STREAK = 3;
-type Streak = { emails: string[]; jobs: number[] };
+// 数えるのは直近2時間のものだけ。以前は時刻を持っていなかったため、何日も前の2件と今日の1件で「続けて起きた」とみなし、アカウントごと止めていた
+const STREAK_WINDOW_MS = 2 * 3600_000;
+type Streak = { emails: string[]; jobs: number[]; at?: number[] };
 const streakKey = (s: SenderProfile) => `email_streak:${(s.smtp_user || `sender-${s.id}`).trim().toLowerCase()}`;
 function loadStreak(s: SenderProfile): Streak {
-  try { const v = JSON.parse(getSetting(streakKey(s), "null")) as Streak | null; return v && Array.isArray(v.emails) && Array.isArray(v.jobs) ? v : { emails: [], jobs: [] }; } catch { return { emails: [], jobs: [] }; }
+  const empty = { emails: [], jobs: [], at: [] };
+  try {
+    const v = JSON.parse(getSetting(streakKey(s), "null")) as Streak | null;
+    if (!v || !Array.isArray(v.emails) || !Array.isArray(v.jobs)) return empty;
+    // 時刻の無い古い記録（前の版で書いたもの）は、いつのものか分からないので数えない
+    const at = Array.isArray(v.at) ? v.at : [];
+    const keep = v.emails.map((_, i) => i).filter((i) => Number(at[i]) > Date.now() - STREAK_WINDOW_MS);
+    return { emails: keep.map((i) => v.emails[i]), jobs: keep.map((i) => v.jobs[i]), at: keep.map((i) => Number(at[i])) };
+  } catch { return empty; }
 }
 /** 送れたら数え直す（「続けて」起きたときだけアカウントのせいとみなす） */
 function resetStreak(s: SenderProfile) {
@@ -229,7 +239,7 @@ function resetStreak(s: SenderProfile) {
 function bumpStreak(s: SenderProfile, email: string, jobId: number): number[] | null {
   const st = loadStreak(s);
   // 同じ宛先への送り直しで続いたのは、その宛先の都合かもしれないので数えない
-  if (!st.emails.includes(email)) { st.emails.push(email); st.jobs.push(jobId); }
+  if (!st.emails.includes(email)) { st.emails.push(email); st.jobs.push(jobId); (st.at ??= []).push(Date.now()); }
   if (st.emails.length >= ACCOUNT_STREAK) { resetStreak(s); return st.jobs; }
   setSetting(streakKey(s), JSON.stringify(st));
   return null;
@@ -370,7 +380,13 @@ async function processJobInner(browser: Browser, jobId: number, opts: { dryRun?:
   if (!job.is_test && failLike.includes(job.status)) {
     db.prepare("UPDATE form_jobs SET prev_status=?, prev_result=? WHERE id=?").run(job.status, (job.result_text || "").split("\n")[0].slice(0, 80), jobId);
   }
-  db.prepare("UPDATE form_jobs SET status='sending', attempts=attempts+1, updated_at=datetime('now') WHERE id=?").run(jobId);
+  // 前回の試みで書いた「送り始めた印」（sent_by_sender・send_started_at）は、まだ一度も送れていない行（sent_at が空）に限って消す。
+  // 残っていると、今回 SMTP より前で止まったときに起動時の片付け（replies.ts の recoverStuckSending）が「送ったかもしれない」と扱い、
+  // 送っていない会社を要確認にしていた。送れた記録のある行（戻りメールで失敗になった行など）は消さない
+  // （今日の送信数・ウォームアップ・返信の照合が sent_by_sender を見ているため）
+  db.prepare(`UPDATE form_jobs SET status='sending', attempts=attempts+1, updated_at=datetime('now'),
+      sent_by_sender=CASE WHEN sent_at IS NULL THEN NULL ELSE sent_by_sender END,
+      send_started_at=CASE WHEN sent_at IS NULL THEN NULL ELSE send_started_at END WHERE id=?`).run(jobId);
 
   const finish = (status: JobStatus, result: string, extra: Partial<Job> = {}) => {
     db.prepare(
@@ -393,9 +409,9 @@ async function processJobInner(browser: Browser, jobId: number, opts: { dryRun?:
     const dup = sameAddressSent(job.email, job.id, campaign.resend_days);
     if (dup) return finish("skip_duplicate", dup);
   }
-  // チームの誰かがすでに送っている会社には送らない（#78）
-  if (!job.is_test && job.domain) {
-    const by = sharedSentBy(job.domain);
+  // チームの誰かがすでに送っている会社には送らない（#78）。フリーメールの会社はドメインではなくアドレスで照合する（share.ts）
+  if (!job.is_test && (job.domain || job.email)) {
+    const by = sharedSentBy(job.domain, job.email);
     if (by) return finish("skip_duplicate", `チームの ${by.member || "他のメンバー"} が送信済み（共有リスト${by.sent_at ? `・${by.sent_at.slice(0, 10)}` : ""}）`);
   }
   // 設定で指定した「送りたくない業種・キーワード」（#87）。取り込み後に設定を変えた場合もここで止まる
@@ -439,7 +455,7 @@ async function processJobInner(browser: Browser, jobId: number, opts: { dryRun?:
       }
       return finish("queued", `AIで文面を作れなかったため待機に戻しました${ai.minutes > 0 ? `（${ai.minutes}分後に自動で再開）` : ""}: ${jpError(why, 120)}`);
     }
-    return finish("failed", `文面生成エラー: ${why}`);
+    return finish("failed", `文面生成エラー: ${jpError(why, 150)}`);
   }
   const ng = findNgWords(message);
   if (ng.length) return finish("failed", `NGワード検出: ${ng.join(", ")}`, { message_used: message });
@@ -482,10 +498,10 @@ async function processJobInner(browser: Browser, jobId: number, opts: { dryRun?:
         : undefined;
       await oneMailAtATime(async () => {
         // どのアカウントで送るかと、送り始めた時刻を「送る前に」書いておく。
-        // 送信中にアプリが止まった・通信が切れたとき、どのアカウントの送信済みフォルダを見て確かめるかに使う
+        // 送信中にアプリが止まった・通信が切れたとき、どのアカウントの送信済みフォルダを見て、いつ以降の控えを探すかに使う
         // （以前は送れた後に書いていたため、途中で止まると本来の送信者の送信済みフォルダを見て「未送信」と判断し、二重送信になり得た）。
         // 順番待ちの後に書くのは、待っている間に止まった会社を「送ったかもしれない」と扱わないため（起動時に確認なしで待機に戻せる）
-        db.prepare("UPDATE form_jobs SET sent_by_sender=?, updated_at=datetime('now') WHERE id=?").run(sender.id, jobId);
+        db.prepare("UPDATE form_jobs SET sent_by_sender=?, send_started_at=datetime('now'), updated_at=datetime('now') WHERE id=?").run(sender.id, jobId);
         await sendEmail(sender, { from: chk.from, to: job.email, subject, ...body, attachments });
       });
       resetStreak(sender);

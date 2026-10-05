@@ -1,7 +1,7 @@
 // ログイン・パスワード・ユーザー管理
 // 管理画面（localhost）。
 import express from "express";
-import { S, setting, settingOn, settingNum, saveSettingValue } from "../settings.js";
+import { S, setting, settingOn, settingNum, saveSettingValue, saveSetupEmailSkipped } from "../settings.js";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
@@ -106,8 +106,9 @@ app.post("/welcome", (req, res) => {
 
 // はじめの設定:「フォームだけで使う（メールの設定は飛ばす）」。フォームにだけ送る人は、送信用メールの手順が
 // 永久に「未完了」のまま残り、次の手順に進めないように見えていたため、済み扱いにできるようにする（取り消しもできる）
+// 選んだ人の分だけ変える（ユーザー別。一般ユーザーが押しても、ほかの人の手順は変わらない）
 app.post("/setup/skip-email", (req, res) => {
-  saveSettingValue(S.setupEmailSkipped, req.body.skip !== "0");
+  saveSetupEmailSkipped(me(req).id, req.body.skip !== "0");
   redirectWith(res, "/setup", req.body.skip !== "0" ? "メールの設定を飛ばしました。フォームだけで送ります（あとからメールも使えます）" : "メールの設定を、はじめの設定の手順に戻しました");
 });
 

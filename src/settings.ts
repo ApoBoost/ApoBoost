@@ -19,7 +19,7 @@ export const S = {
   notifyReply: "notify_reply",               // 1=アポ・返信が来たらすぐ通知
   listPageSize: "list_page_size",            // 送信一覧の1ページの件数
   sendPace: "send_pace",                     // フォーム送信の間隔: slow(8〜15秒・既定) | normal(5〜9秒) | fast(3〜5秒)
-  setupEmailSkipped: "setup_email_skipped",  // 1=はじめの設定で「フォームだけで使う」を選んだ（送信用メールの手順を済み扱いにする）
+  setupEmailSkipped: "setup_email_skipped",  // 1.0.14 だけが使った全員共通の「フォームだけで使う」。いまはユーザー別（setupEmailSkipKey）。管理者にだけ引き継ぐ
 } as const;
 
 export type SettingKey = (typeof S)[keyof typeof S];
@@ -52,4 +52,22 @@ export function settingNum(key: SettingKey, min = 0, max = Number.MAX_SAFE_INTEG
 }
 export function saveSettingValue(key: SettingKey, value: string | number | boolean): void {
   setSetting(key, typeof value === "boolean" ? (value ? "1" : "0") : String(value));
+}
+
+// ---- はじめの設定の「フォームだけで使う（メールの設定は飛ばす）」----
+// ユーザーごとに持つ（法令確認の law_ack:<ID> と同じ作り）。全員共通だと、一般ユーザーが押しただけで
+// 管理者や他のメンバーの「送信用メール」の手順まで済み扱いになっていた
+export const setupEmailSkipKey = (userId: number) => `setup_email_skipped:${userId}`;
+
+/** この人が「フォームだけで使う」を選んでいるか。
+ *  まだ自分で選んでいない人は、1.0.14 で保存された全員共通の値を、管理者についてだけ引き継ぐ
+ *  （1.0.14 で押したのは、ほとんどが初回設定をした管理者のため。一般ユーザーには引き継がない） */
+export function setupEmailSkippedFor(user: { id: number; role: string }): boolean {
+  const own = getSetting(setupEmailSkipKey(user.id), "");
+  if (own) return own === "1";
+  return user.role === "admin" && getSetting(S.setupEmailSkipped, "") === "1";
+}
+
+export function saveSetupEmailSkipped(userId: number, on: boolean): void {
+  setSetting(setupEmailSkipKey(userId), on ? "1" : "0");
 }

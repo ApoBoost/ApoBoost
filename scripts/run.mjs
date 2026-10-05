@@ -54,7 +54,6 @@ function checkNativeModule() {
     else console.log("→ 入れ直せませんでした。インターネットにつながっているか確かめて、もう一度起動してください\n");
   } catch { /* 確かめられなくても、起動は今までどおり続ける */ }
 }
-checkNativeModule();
 
 // ---- フォーム操作用のブラウザ（Playwright の Chromium）----
 // 起動を待たせないため、パソコンに Google Chrome / Microsoft Edge があれば、Chromium は裏で入れて先に起動する
@@ -72,6 +71,25 @@ function systemBrowser() {
       ? ["C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe", path.join(local, "Google\\Chrome\\Application\\chrome.exe"), "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"]
       : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
   return candidates.find((c) => { try { return fs.existsSync(c); } catch { return false; } }) ?? "";
+}
+
+// 裏でブラウザを用意している子の PID と始めた時刻。src/update.ts（browserInstallBusy）がこれを見て、
+// 用意の途中にアップデートの npm install を重ねない（Windows では、使用中の node_modules/playwright を入れ替えられず失敗し得るため）
+const BROWSER_PID = path.join(root, "node_modules", ".apoboost-browser.pid");
+const BROWSER_PID_STALE_MS = 45 * 60_000; // これより古い記録は、PID が別のプロセスに使い回されている恐れがあるので無視する（update.ts と同じ値）
+
+/** 裏でブラウザを用意している途中か（src/update.ts の browserInstallBusy と同じ判定。変えるときは両方直す） */
+function browserInstallBusy() {
+  try {
+    const { pid, at } = JSON.parse(fs.readFileSync(BROWSER_PID, "utf8"));
+    if (!Number.isInteger(pid) || pid <= 0 || !(Date.now() - Number(at) < BROWSER_PID_STALE_MS)) return false;
+    try { process.kill(pid, 0); return true; } catch (e) { return e?.code === "EPERM"; }
+  } catch { return false; }
+}
+
+/** 同期で待つ（起動役は起動の前に順番に確かめるだけなので、イベントループを止めてよい） */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /** Playwright の Chromium が最後まで入っているか。展開の途中で止まった場合も「無い」とみなすため、
@@ -99,6 +117,18 @@ function ensureBrowser() {
   if (!fs.existsSync(cli)) return;          // 部品がまだ無い（起動ファイルの準備が終わっていない）。本体の起動側のエラーに任せる
   if (playwrightChromiumReady()) return;
   const sys = systemBrowser();
+  // 前の起動（アップデート前など）が裏で用意している途中なら、2つ目は始めない
+  if (browserInstallBusy()) {
+    if (sys) {
+      process.env.FO_FORCE_SYSTEM_CHROME = "1";
+      console.log(`フォーム操作用のブラウザを裏で用意している途中です。終わるまでは ${path.basename(sys).replace(/\.exe$/i, "")} を使って送ります。`);
+      return;
+    }
+    console.log("\nフォーム操作用のブラウザを用意している途中です。終わるのを待っています（最大15分）");
+    const until = Date.now() + 15 * 60_000;
+    while (browserInstallBusy() && Date.now() < until) sleepSync(2000);
+    if (playwrightChromiumReady()) { console.log("→ 用意できました\n"); return; }
+  }
   if (sys) {
     // 入れ終わるまで（数分）は、パソコンの Chrome / Edge を使ってもらう。
     // 入れている途中の Chromium を本体が見つけて使い、送信が失敗しないよう、この回の起動では Chrome / Edge に決め打ちする
@@ -108,6 +138,12 @@ function ensureBrowser() {
       const p = spawn(process.execPath, [cli, "install", "chromium"], { cwd: root, env: process.env, detached: true, windowsHide: true, stdio: ["ignore", log, log] });
       p.unref();
       fs.closeSync(log);
+      if (p.pid) {
+        const mine = JSON.stringify({ pid: p.pid, at: Date.now() });
+        try { fs.writeFileSync(BROWSER_PID, mine); } catch { /* 書けなくても用意は続く（アップデートが待たないだけ） */ }
+        // 終わったら記録を消す（この起動役が先に終わった場合は、update.ts が PID の生死と時刻で判断する）
+        p.on("exit", () => { try { if (fs.readFileSync(BROWSER_PID, "utf8") === mine) fs.rmSync(BROWSER_PID); } catch { /* 消せなくても害は無い */ } });
+      }
       console.log(`フォーム操作用のブラウザを裏で用意しています。終わるまでは ${path.basename(sys).replace(/\.exe$/i, "")} を使って送ります。`);
     } catch { /* 入れられなくても Chrome / Edge で送れる */ }
     return;
@@ -117,7 +153,14 @@ function ensureBrowser() {
   if (r.status === 0) console.log("→ 用意できました\n");
   else console.log("→ 用意できませんでした。インターネットにつながっているか確かめてください。Google Chrome を入れると、そちらを使って送れます\n");
 }
-try { ensureBrowser(); } catch { /* 確かめられなくても起動は続ける（送信時に engine.ts が Chrome / Edge を探す） */ }
+
+/** 本体を起動する前の確認（部品が今の Node.js に合っているか・ブラウザが用意できているか）。
+ *  どれが失敗しても起動は続ける（今までどおりの動きに戻るだけ） */
+function prepare() {
+  try { checkNativeModule(); } catch { /* 確かめられなくても起動は続ける */ }
+  try { ensureBrowser(); } catch { /* 確かめられなくても起動は続ける（送信時に engine.ts が Chrome / Edge を探す） */ }
+}
+prepare();
 
 let current = null;
 function start() {
@@ -132,6 +175,12 @@ function start() {
   p.on("close", (code) => {
     if (code === RESTART) {
       console.log("\n--- アップデートを適用して再起動します ---\n");
+      // アップデートで Playwright や better-sqlite3 の版が上がると、必要な Chromium・部品も変わる。最初の起動と同じ確認をやり直す。
+      // 前の回で「Chrome / Edge に決め打ち」にしていても、Chromium が入り終わっていれば使えるように、いったん外してから確かめる
+      // （外したままでよいかは ensureBrowser が決め直す）。
+      // ※ アップデート直後に動いているのは、更新前の版のこのファイル（読み込み済みのもの）。ここの変更が効くのは、この版が動いている状態からの次の更新から
+      delete process.env.FO_FORCE_SYSTEM_CHROME;
+      prepare();
       start();
     } else {
       process.exit(code ?? 0);

@@ -311,3 +311,25 @@ console.log("replies: ALL OK");
   assert.deepEqual(res, { requeued: 1, failed: 2 });
   console.log("interrupted expiry: ALL OK");
 }
+
+// ---- メール3周目: 中断メールの確認は「送り始めた時刻」（send_started_at）で見る ----
+// 「要対応に戻す」や反応の手入力で updated_at が今になっても、確認の期限・控えを探す起点がずれないこと。受信箱にはつながない
+{
+  const { verifyInterruptedEmails, UNVERIFIED_TEXT, CUT_PREFIX } = await import("../src/replies.js");
+  const np = db.prepare(`INSERT INTO sender_profiles(label,company,person,email,smtp_user,smtp_pass) VALUES(?,?,?,?,?,'')`)
+    .run("3周目", "株式会社サンプル商事", "田中", "np3@sender.example", "np3@sender.example").lastInsertRowid as number;
+  const c3 = db.prepare(`INSERT INTO form_campaigns(name,sender_id,mode,subject_text,template_text) VALUES(?,?,?,?,?)`).run("送り始めた時刻", np, "template", "件名", "本文").lastInsertRowid as number;
+  const cut3 = (name: string, started: string | null, updated: string) => db.prepare(`INSERT INTO form_jobs(campaign_id,company_name,email,domain,channel,status,result_text,send_started_at,updated_at)
+    VALUES(?,?,?,?,'email','failed',?,${started ? "datetime('now',?)" : "?"},datetime('now',?))`)
+    .run(c3, name, `info@${name}.example`, `${name}.example`, `${CUT_PREFIX}（送信済みか不明・要確認）: テスト`, started, updated).lastInsertRowid as number;
+  const text = (id: number) => (db.prepare("SELECT result_text FROM form_jobs WHERE id=?").get(id) as { result_text: string }).result_text;
+  // 4日前に送り始め、今日「要対応に戻す」で updated_at だけ新しくなった行 → 送り始めた時刻で期限切れ
+  const undismissed = cut3("undismissed", "-4 days", "-0 minutes");
+  // 今送り始めたが、updated_at が古く見える行 → まだ確認の対象
+  const recent = cut3("recent-start", "-0 minutes", "-5 days");
+  const before = await verifyInterruptedEmails();
+  assert.equal(text(undismissed), UNVERIFIED_TEXT, "updated_at が新しくても、送り始めて3日を過ぎたら確認をやめる");
+  assert.ok(text(recent).startsWith(CUT_PREFIX), "送り始めて間もない行は、updated_at が古くても確認を続ける");
+  assert.ok(before.unknown >= 1, "送り始めて間もない行は確認の対象に入る");
+  console.log("send_started_at: ALL OK");
+}

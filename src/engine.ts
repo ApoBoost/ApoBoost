@@ -48,6 +48,9 @@ async function captchaIn(page: Page, target: Page | Frame): Promise<string | nul
   } finally { if (timer) clearTimeout(timer); }
 }
 
+// 押したあとのエラー文が画像認証・ロボット確認を求めているか
+const CAPTCHA_ERR_RE = /(画像(内)?の(文字|数字|英数字)|画像認証|認証(コード|文字|用の文字|番号)|表示(されている|された)(文字|数字|英数字)|上記の(文字|数字|英数字)|人間であることを確認|ロボットではない|reCAPTCHA|captcha|キャプチャ)/i;
+
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
 /** フォーム操作に使うブラウザの実体。
@@ -245,7 +248,9 @@ async function submitOnce(browser: Browser, input: SubmitInput, w: Watch): Promi
       if (!(await hasHiddenTextarea(target))) break;
       const pre = await fillFields(target, fields, { sender: input.sender, subject: input.subject, message: input.message }, { requireMessage: false });
       log.push(`step${step + 1} filled: ${pre.filled.join(",")}`);
-      const k = await clickNextButton(target, page, log);
+      if (pre.refusal) return done("skip_refused", `営業でないことの申告を求めるチェック欄: 「${pre.refusal}」`);
+      // この段では「次へ」だけを押す（「送信」を押すと、本文欄の無いフォームを送ってしまう）
+      const k = await clickNextButton(target, page, log, { nextOnly: true });
       if (k === "none") break;
       fields = await collectFields(target);
     }
@@ -260,6 +265,9 @@ async function submitOnce(browser: Browser, input: SubmitInput, w: Watch): Promi
     log.push(`filled: ${report.filled.join(",")}`);
     if (report.unfilled.length) log.push(`unfilled: ${report.unfilled.join(",")}`);
     log.push(...report.log);
+    // 「営業・売り込みを目的としたお問い合わせではないことを確認しました」のようなチェック欄。
+    // チェックすると事実と違う申告になるので送らない（キャンペーンで「お断り文言があっても送る」にしていても同じ）
+    if (report.refusal) return done("skip_refused", `営業でないことの申告を求めるチェック欄: 「${report.refusal}」`);
     if (!report.hasMessage && !(service && report.filled.length >= 3)) return done("failed", "本文欄への入力に失敗");
     // Googleフォームなどの「見た目だけの選択肢」のうち、必須の設問に回答しておく（#119）
     await fillAriaChoices(target, log, { requiredOnly: true });
@@ -332,7 +340,9 @@ async function submitOnce(browser: Browser, input: SubmitInput, w: Watch): Promi
       if (more.length && !more.some((f) => classify(f) === "message")) await checkConfirmAgreements(target, more, log);
     };
     // エラー文に合わせた電話・郵便番号の書き方（「ハイフンなしで」「半角数字のみ」／「ハイフンを入れて」）
-    const numFormatOf = (detail: string) => /(ハイフン(なし|無し|不要|を?(入れ|含め|付け)(ず|ない))|ハイフン抜き|半角数字のみ|半角数字で|数字のみ|数字以外)/.test(detail) ? "digits" as const
+    // 「数字とハイフンで」はハイフンあり。「半角数値で」「数字でご入力」「数値を入力」「半角数字を入力」は数字だけ
+    const numFormatOf = (detail: string) => /数字(と|及び|および|・)ハイフン/.test(detail) ? "hyphen" as const
+      : /(ハイフン(なし|無し|不要|を?(入れ|含め|付け)(ず|ない))|ハイフン抜き|半角数字のみ|半角数字で|数字のみ|数字以外|半角数値で|数値で|数字でご?入力|数値を(ご)?入力|半角数字を(ご)?入力)/.test(detail) ? "digits" as const
       : /ハイフン(\s*[（(]?[-－ー]?[）)]?\s*)?(を|も)?(入れ|含め|付け|区切)|ハイフン(あり|付き)/.test(detail) ? "hyphen" as const : undefined;
     let refilled = false; // 入力エラー後の埋め直しは1回だけ
     let advanced = false; // 確認ボタンを押して、確認画面へ進めたか（進めたあとは「送信」を優先して押す）
@@ -367,6 +377,7 @@ async function submitOnce(browser: Browser, input: SubmitInput, w: Watch): Promi
         // 確認ボタンを押した先が、エラーや拒否のページだった（入力欄も送信ボタンも無い）場合は、その内容を理由にする
         const why = await judge(false);
         log.push(`judge[${round}]: ${why.status} ${why.detail}（ボタンなし）`);
+        if (why.status === "failed" && CAPTCHA_ERR_RE.test(why.detail)) return done("skip_captcha", `画像認証の入力を求められ未送信: ${why.detail.slice(0, 80)}`);
         // 入力エラーのページなら、前の画面に戻って（電話番号なども入れて）1回だけやり直す
         if (why.status === "failed" && why.detail.startsWith("入力エラー") && !refilled && round < 3) {
           refilled = true; advanced = false;
@@ -398,6 +409,8 @@ async function submitOnce(browser: Browser, input: SubmitInput, w: Watch): Promi
       if (outcome.status === "unsure" && warned) outcome = { status: "failed", detail: `入力エラー: ${warned}` };
       log.push(`judge[${round}]: ${outcome.status} ${outcome.detail}`);
       if (outcome.status === "sent") return done("sent", outcome.detail);
+      // 押したあとのエラーが画像認証（「上記画像内の文字を入力してください」等）。入力エラーとして入れ直しても通らないので、CAPTCHA として飛ばす
+      if (outcome.status === "failed" && CAPTCHA_ERR_RE.test(outcome.detail)) return done("skip_captcha", `画像認証の入力を求められ未送信: ${outcome.detail.slice(0, 80)}`);
       // 押す前に入れた文字欄・本文欄が、ページが移らないまま全部空になった（Ajax 送信のあとの form.reset()）。
       // 欄に required があると「必須なのに空＝入力エラー」と読んで埋め直し、もう一度送っていた（二重送信）。
       // ページの読み込み直しがあったとき（サーバーが入力エラーの画面を返した）は従来どおり入れ直す
@@ -473,6 +486,7 @@ async function submitOnce(browser: Browser, input: SubmitInput, w: Watch): Promi
         if (urlOf() !== urlAtRound || more.length < fieldCountBefore) advanced = true;
         if (more.length) {
           const r2 = await fillFields(target, more, { sender: input.sender, subject: input.subject, message: input.message });
+          if (r2.refusal) return done("skip_refused", `営業でないことの申告を求めるチェック欄: 「${r2.refusal}」`);
           if (r2.filled.length) log.push(`confirm-page filled: ${r2.filled.join(",")}`);
           else if (!more.some((f) => classify(f) === "message")) await checkConfirmAgreements(target, more, log);
         }

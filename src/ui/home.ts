@@ -30,8 +30,11 @@ export type CampaignHome = {
   windowOk: boolean; nextStart: string;
   paused: string;                      // メール送信が一時停止中なら、その理由
   /** いま送りが進まない理由（経路の campaignStall で1つに決めたもの）。無ければ null */
-  stall?: { kind: string; text: string; blocking: boolean; href: string; action: string } | null;
+  stall?: { kind: string; text: string; blocking: boolean; href: string; action: string; reason?: string } | null;
 };
+
+/** campaignStall が自動の一時停止の文の頭に付ける言葉 */
+const AUTO_STOP_HEAD = "自動で一時停止しました。";
 
 export function homeCard(h: HomeSummary): string {
   // いま一番やるべきことを1つだけ出す（最初の人が迷わないように）
@@ -44,7 +47,8 @@ export function homeCard(h: HomeSummary): string {
   const next = !h.senders ? { t: "はじめの設定（6ステップ）から始めましょう", b: "はじめの設定を開く", href: "/setup" }
     : !h.campaigns ? { t: "キャンペーンを作って、会社リストを取り込みましょう", b: "はじめの設定を開く", href: "/setup" }
     : h.newAppointments.length ? { t: `アポ・前向きな返信が ${h.newAppointments.length}件あります: ${h.newAppointments.map((a) => a.company).join("、")}`, b: "内容を見る", href: `/jobs/${h.newAppointments[0].id}` }
-    : autoStopped ? { t: `「${autoStopped.name}」が止まっています。${autoStopped.stall!.text}`, b: autoStopped.stall!.action || "キャンペーンを開く", href: autoStopped.stall!.href || `/campaigns/${autoStopped.id}` }
+    // 「止まっています。自動で一時停止しました。…」と二重に聞こえていたので、「「X」を自動で止めました。理由…」の1文にする
+    : autoStopped ? { t: `「${autoStopped.name}」を自動で止めました。${autoStopped.stall!.text.startsWith(AUTO_STOP_HEAD) ? autoStopped.stall!.text.slice(AUTO_STOP_HEAD.length) : autoStopped.stall!.reason || autoStopped.stall!.text}`, b: autoStopped.stall!.action || "キャンペーンを開く", href: autoStopped.stall!.href || `/campaigns/${autoStopped.id}` }
     : idleQueued > 0 ? { t: `まだ開始していない待機中の会社が ${n(idleQueued)}社あります。開始すると送信時間帯に自動で送ります`, b: "キャンペーンを開く", href: idle.length === 1 ? `/campaigns/${idle[0].id}?tab=send` : "/campaigns" }
     : h.todo > 0 ? { t: `自動で送れなかった会社が ${n(h.todo)}社あります。まず「今日やる10件」から`, b: "要対応を見る", href: "/todo" }
     : h.runningNames.length ? { t: `送信中: ${h.runningNames.join("、")}`, b: "", href: "" }
@@ -85,7 +89,7 @@ function campaignHomeCard(c: CampaignHome): string {
   // 1キャンペーン＝1行。左に名前といまの状態、右に今日の進み具合と数字。内訳はキャンペーンを開いた先で見る
   return `<div class="hrow">
   <div>
-    <h2><a href="${url}" style="color:inherit;text-decoration:none">${esc(c.name)}</a> ${campaignStatusTag(c.status, c.running)}</h2>
+    <h2><a href="${url}" style="color:inherit;text-decoration:none">${esc(c.name)}</a> ${campaignStatusTag(c.status, c.running, c.stall)}</h2>
     <div class="${st?.kind === "auto" ? "small" : "muted"} state" data-nohelp${st?.kind === "auto" ? ' style="color:var(--c-ng)"' : ""}>${st?.kind === "auto" ? `${IC_WARN} ` : ""}${esc(stateText)}${!st && goal && cap < sentToday + c.queued ? `（1日の上限 ${n(cap)}社）` : ""}${st?.href && st.action ? ` <a class="btn small" href="${esc(st.href)}">${esc(st.action)}</a>` : ""}</div>
     ${c.paused ? `<div class="small" style="margin-top:4px;color:var(--ng)">${IC_WARN} メール送信を一時停止中: ${esc(c.paused)}</div>` : ""}
   </div>

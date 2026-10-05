@@ -1,6 +1,7 @@
 // フォームの項目を見つけて入力し、確認画面を経て送信し、結果を判定する。
 import type { Page, Frame, Request, Response } from "playwright";
 import type { SenderProfile } from "./db.js";
+import { detectDeclaration } from "./detect.js";
 
 export type FieldInfo = {
   idx: number;
@@ -125,7 +126,9 @@ const COLLECT_SCRIPT = `
     if (el.id) document.querySelectorAll('label[for="' + CSS.escape(el.id) + '"]').forEach(l => parts.push(l.innerText));
     const wrap = el.closest('label'); if (wrap) parts.push(wrap.innerText);
     if (el.getAttribute('aria-label')) parts.push(el.getAttribute('aria-label'));
-    if (el.getAttribute('aria-labelledby')) { const l = document.getElementById(el.getAttribute('aria-labelledby')); if (l) parts.push(l.innerText); }
+    // aria-labelledby は空白区切りで複数の id を持てる（Googleフォームは "i1 i4"）。1つの id として探すと null になり、
+    // 名前・メール欄がラベルなし（ignore）になって Googleフォームに1件も送れていなかった
+    if (el.getAttribute('aria-labelledby')) { el.getAttribute('aria-labelledby').split(/\\s+/).forEach((lid) => { const l = lid ? document.getElementById(lid) : null; if (l && (l.innerText || '').trim()) parts.push(l.innerText); }); }
     let prev = el.previousSibling; let hops = 0;
     while (prev && hops < 3) { const t = (prev.textContent || '').trim(); if (t) { if (t.length <= 12) parts.push(t); break; } prev = prev.previousSibling; hops++; }
     // labelに包まれていないカスタム選択肢（Jicoo等）: 選択肢の文字が親コンテナ側にあるので、短いテキストなら拾う
@@ -245,7 +248,9 @@ const COLLECT_SCRIPT = `
 
 /** 見えていない textarea（段階式フォームの2ページ目など）があるか */
 export async function hasHiddenTextarea(target: Page | Frame): Promise<boolean> {
-  return timed(target.evaluate(() => Array.from(document.querySelectorAll("form textarea")).some((t) => { const r = t.getBoundingClientRect(); return r.width === 0 || r.height === 0; }))).catch(() => false);
+  // reCAPTCHA / hCaptcha の隠し textarea（g-recaptcha-response / h-captcha-response）は本文欄ではない。
+  // これを数えると本文欄の無いフォームを「段階式」と読み、埋めて「送信」を押していた
+  return timed(target.evaluate(() => Array.from(document.querySelectorAll("form textarea")).some((t) => { if (/(g-recaptcha-response|h-captcha-response)/i.test(`${t.getAttribute("name") || ""} ${t.id || ""} ${t.className || ""}`)) return false; const r = t.getBoundingClientRect(); return r.width === 0 || r.height === 0; }))).catch(() => false);
 }
 
 /** ページ内の処理（evaluate）に時間制限をつける。時間切れは例外（"timeout: …"）にする。
@@ -357,10 +362,19 @@ export function splitAddress(address: string): { pref: string; city: string; tow
   return { pref, city, town, building };
 }
 
-export type FillReport = { filled: string[]; unfilled: string[]; hasMessage: boolean; log: string[] };
+export type FillReport = { filled: string[]; unfilled: string[]; hasMessage: boolean; log: string[]; refusal?: string };
+
+/** チェック欄・ラジオのラベルが「営業目的ではないことを確認しました」のような営業でないことの申告か。
+ *  当たったものには自動でチェックしない（事実と違う申告になる）。呼び出し側は送らずに skip_refused にする */
+export function refusalChoice(f: FieldInfo): string | null {
+  if (f.type !== "checkbox" && f.type !== "radio") return null;
+  return detectDeclaration(`${f.sig.split(" || ")[0]} ${f.glabel}`);
+}
 
 /** 電話・郵便番号を「ハイフン無しの数字だけ」で入れるべき欄か（maxlength / pattern / inputmode / placeholder / ラベルから判断） */
 function wantsDigitsOnly(f: FieldInfo, hyphenLen: number): boolean {
+  // type=number にはハイフン入りの文字を入れられない（「Cannot type text into input[type=number]」で空のままになっていた）
+  if (f.type === "number") return true;
   if (f.placeholder.includes("-") || f.placeholder.includes("－")) return false;
   if (f.maxlength > 0 && f.maxlength < hyphenLen) return true;
   if (f.inputmode === "numeric" || f.inputmode === "tel" && f.maxlength > 0 && f.maxlength < hyphenLen) return true;
@@ -487,7 +501,7 @@ export async function fillFields(target: Page | Frame, fields: FieldInfo[], v: F
   })();
   // 送信後のエラー文で「ハイフンなしで」「ハイフンを入れて」と言われたときは、電話・郵便番号の書き方を合わせる
   const numFmt = (value: string, f: FieldInfo, hyphenLen: number, hyphened: string) =>
-    opts.numFormat === "digits" ? value.replace(/[^\d]/g, "")
+    opts.numFormat === "digits" || f.type === "number" ? value.replace(/[^\d]/g, "")
       : opts.numFormat === "hyphen" ? hyphened
       : wantsDigitsOnly(f, hyphenLen) ? value.replace(/[^\d]/g, "") : value;
   // 必須の見出しを共有するチェックボックス群（「ご興味のあるサービス（必須）」等）は、1つ選べば足りる。全部にチェックしない
@@ -532,6 +546,8 @@ export async function fillFields(target: Page | Frame, fields: FieldInfo[], v: F
   for (const f of scoped) {
     const cat = catOf(f);
     if (cat === "ignore") continue;
+    const refused = refusalChoice(f);
+    if (refused) { report.refusal = refused; report.log.push(`営業でないことの申告のチェック欄は押さない: 「${refused}」`); continue; }
     const nth = (counters[cat] = (counters[cat] ?? 0) + 1);
     let ok = false;
 
@@ -646,8 +662,14 @@ export async function fillRequiredLeftovers(target: Page | Frame, log: string[])
   for (const f of fields) {
     if (!f.required) continue;
     if (NEVER_AI_RE.test(f.sig)) continue;
+    if (refusalChoice(f)) continue; // 営業でないことの申告にはチェックしない
     const cat = classify(f);
-    if (cat === "ignore") continue;
+    // 種類を判定できなかった必須の文字欄（従業員数・何でお知りになりましたか・text-92 等）も埋める。
+    // 飛ばしていたため「押しても先へ進めない」で止まっていた。ハニーポット（隠し欄）は collectFields の時点で除いてある。
+    // 生年月日・年齢・番号類のように「特になし」では済まない欄には入れない
+    // 数字しか入らない欄（type=number・inputmode=numeric）は埋めない。「1」を入れると、従業員数・ご予算・台数などで事実と違う数字を送ることになる
+    const unknownText = cat === "ignore" && f.tag === "input" && f.type === "text" && f.inputmode !== "numeric" && !LEFTOVER_SKIP_RE.test(f.sig);
+    if (cat === "ignore" && !unknownText) continue;
     try {
       if (f.type === "radio") {
         const key = f.name || `r${f.idx}`;
@@ -673,16 +695,21 @@ export async function fillRequiredLeftovers(target: Page | Frame, log: string[])
         continue;
       }
       // 値があるはずの欄（メール・電話など）が空なのは別の原因なので、ここでは触らない
-      if (["email", "email_confirm", "tel", "postal", "url", "message"].includes(cat)) continue;
-      await el.fill("特になし", { timeout: 3000 });
+      // 氏名・フリガナ・会社名も同じ（氏名欄 contact[name] に「特になし」が入っていた実例）
+      if (["email", "email_confirm", "tel", "postal", "url", "message", "name", "name_last", "name_first", "kana", "kana_last", "kana_first", "company"].includes(cat)) continue;
+      const val = "特になし";
+      await el.fill(val, { timeout: 3000 });
       filled++;
-      log.push(`必須の自由記述を補完: 「${label(f)}」→「特になし」`);
+      log.push(`必須の${cat === "ignore" ? "種類不明の欄" : "自由記述"}を補完: 「${label(f)}」→「${val}」`);
     } catch {
       /* 1項目入れられなくても、他の項目は続ける */
     }
   }
   return filled;
 }
+
+// 種類不明の必須欄でも「特になし」「1」を入れない欄（生年月日・年齢・番号類など、値を作ると事実と違うもの）
+const LEFTOVER_SKIP_RE = /(生年月日|誕生日|年齢|birth|性別|gender|会員番号|顧客番号|お客様番号|口座|カード|card|紹介コード|招待コード|注文番号|受付番号|マイナンバー|個人番号|暗証|セキュリティコード|cvv|cvc|有効期限|契約番号|証券番号|法人番号|社員番号|(会員|お客様|顧客|ログイン|ユーザー)\s*(ID|ＩＤ))/i;
 
 /** 確認画面にだけある同意・必須のチェックボックスにチェックを入れる。
  *  確認画面には本文欄が無いので fillFields は何もせず、同意のチェックが入らないまま送信を押して止まっていた。
@@ -693,7 +720,7 @@ export async function checkConfirmAgreements(target: Page | Frame, fields: Field
     if (f.type !== "checkbox" || f.checked) continue;
     const cat = classify(f);
     if (cat !== "agree" && !f.required) continue;
-    if (cat === "ignore" || NEVER_AI_RE.test(f.sig)) continue;
+    if (cat === "ignore" || NEVER_AI_RE.test(f.sig) || refusalChoice(f)) continue;
     if (await ensureChecked(target, f)) {
       n++;
       log.push(`確認画面の${cat === "agree" ? "同意" : "必須の"}チェックを自動でチェック: 「${(f.sig.split(" || ")[0] || f.name || "同意").slice(0, 40)}」`);
@@ -746,6 +773,8 @@ export async function fillAriaChoices(target: Page | Frame, log: string[], opts:
   } catch { return 0; }
   let filled = 0;
   for (const g of groups) {
+    // 「営業目的ではないことを確認」のような申告の設問には答えない
+    if (detectDeclaration(`${g.label} ${g.options.map((o) => o.text).join(" ")}`)) { log.push(`営業でないことの申告の設問には答えない: 「${g.label.slice(0, 30)}」`); continue; }
     const pick = pickOption(g.options.map((o) => ({ f: o, text: o.text })), "type");
     if (!pick) continue;
     try {
@@ -1011,10 +1040,18 @@ ${list}
 // ---- ボタン ----
 const SUBMIT_RE = /(送信|送る|申し?込|送付|submit|send|soushin|sousin|完了する|確定|この内容で)/i;
 const CONFIRM_RE = /(確認|次へ|進む|すすむ|confirm|kakunin|next|preview|入力内容)/i;
-const BACK_RE = /(戻る|もどる|修正|back|modoru|return|edit|訂正|キャンセル|cancel|リセット|reset|clear|クリア|やり直)/i;
+// 「入力内容変更」「入力内容を編集」は確認画面の戻るボタン（「入力内容」を含むので確認ボタンとして押していた）
+const BACK_RE = /(戻る|もどる|修正|back|modoru|return|edit|訂正|キャンセル|cancel|リセット|reset|clear|クリア|やり直|変更|編集|書き直)/i;
 // 送信・確認の言葉を含んでいても、押してはいけないボタン。
 // 「入力内容保存／読込」（formzu）を確認ボタンとして押し続けた例、検索ボタン（class名 sb-search-submit）を送信ボタンとして押した例があった
-const NOT_SUBMIT_RE = /(保存|読込|読み込|印刷|print|検索|search|ログイン|login|住所(を)?(自動)?(入力|取得)|郵便番号から|添付|ファイル(を)?選択|upload|アップロード|メルマガ|newsletter|subscribe|翻訳|translate)/i;
+// フォームの中にある「確認」を含むボタン・リンクも押さない: SSLシール（「クリックして証明書の内容をご確認ください」）・
+// 「個人情報の取り扱いに関する確認事項」・「…資料で確認する」・「お問い合わせの前に…ご確認ください。」・日付ピッカーの「Next month」
+// （「資料」だけにすると「資料を請求する」の送信ボタンまで外れるので「資料で確認」に絞る。「prev」は「preview」に当たらないよう単語で見る）
+const NOT_SUBMIT_RE = /(保存|読込|読み込|印刷|print|検索|search|ログイン|login|住所(を)?(自動)?(入力|取得)|郵便番号から|添付|ファイル(を)?選択|upload|アップロード|メルマガ|newsletter|subscribe|翻訳|translate|証明書|確認事項|ご確認(ください|下さい)|資料で(ご)?確認|month|year|\bprev\b|previous|カレンダー|calendar)/i;
+// 確認ボタンらしい文末（「入力内容を確認する」「確認画面へ進む」「次へ」）。<a> や div の「…をご確認」より先に選ぶ
+const CONFIRM_TAIL_RE = /(確認(する|します|画面へ|画面に進む|画面へ進む|へ進む|へ|画面)?|次へ(進む)?|進む|すすむ|confirm|next|preview)[\s>＞»→▶]*$/i;
+// 段階式フォームの1ページ目で押してよいボタン（「次へ」だけ。送信は押さない）
+const NEXT_ONLY_RE = /(次へ|進む|すすむ|next)/i;
 // 「送信内容を確認する」「確認画面へ」のように文末が確認で終わるボタンは、「送信」を含んでも確認ボタン
 // （b-coach.jp の実例: 送信ボタン扱いで押し、確認画面を「フォームが消えた＝送信済み」と誤判定していた）。
 // 「内容を確認して送信」のように文末が送信のものは送信ボタンのまま
@@ -1145,7 +1182,7 @@ export async function allSubmitButtonsDisabled(target: Page | Frame): Promise<bo
  *  postOk: 押したあと、同じサイトへの POST がエラーでない応答を返した（Ajax で送ってから JS で完了ページへ移る、等） */
 export type ClickNet = { navigated?: boolean; httpStatus?: number; httpUrl?: string; redirected?: boolean; postOk?: boolean };
 
-export async function clickNextButton(target: Page | Frame, page: Page, log: string[], opts: { preferSubmit?: boolean; net?: ClickNet } = {}): Promise<"confirm" | "submit" | "none"> {
+export async function clickNextButton(target: Page | Frame, page: Page, log: string[], opts: { preferSubmit?: boolean; net?: ClickNet; nextOnly?: boolean } = {}): Promise<"confirm" | "submit" | "none"> {
   // 押した直後でページが切り替わっている途中だと evaluate が落ちる（Execution context was destroyed）。読み込みを待って1回だけやり直す
   const btns = (await timed(target.evaluate(BUTTONS_SCRIPT), 8000, "ボタンの収集").catch(async () => {
     await page.waitForLoadState("domcontentloaded", { timeout: 8000 }).catch(() => {});
@@ -1164,7 +1201,9 @@ export async function clickNextButton(target: Page | Frame, page: Page, log: str
   // 別のページへ移るだけのリンク（追従する「お申し込み」ボタン等）は、ほかに送信・確認のボタンがあれば使わない
   const stay = usable.filter((b) => !b.leaves && (SUBMIT_RE.test(b.text) || CONFIRM_RE.test(b.text) || ((b.type === "submit" || b.type === "image") && b.inForm)));
   if (stay.length) usable = usable.filter((b) => !b.leaves);
-  const confirm = usable.find((b) => CONFIRM_RE.test(b.text) && (!SUBMIT_RE.test(b.text) || CONFIRM_END_RE.test(b.text.trim())));
+  // 確認ボタンは、文末が「確認する」「確認画面へ」「次へ」などのものか、button / submit 型のものを先に選ぶ（<a> や div は後回し）
+  const confirmCands = usable.filter((b) => CONFIRM_RE.test(b.text) && (!SUBMIT_RE.test(b.text) || CONFIRM_END_RE.test(b.text.trim())));
+  const confirm = confirmCands.find((b) => CONFIRM_TAIL_RE.test(b.text.trim()) || ["submit", "button", "image"].includes(b.type)) ?? confirmCands[0];
   // 画像ボタン（input type=image）も、フォームの中にあれば送信ボタンの候補にする（alt が無い画像ボタンを見つけられなかった）
   const submitNamed = usable.find((b) => SUBMIT_RE.test(b.text) && !(CONFIRM_RE.test(b.text) && CONFIRM_END_RE.test(b.text.trim())))
     ?? usable.find((b) => SUBMIT_RE.test(b.text) && b !== confirm);
@@ -1173,7 +1212,11 @@ export async function clickNextButton(target: Page | Frame, page: Page, log: str
   const submitAny = usable.filter((b) => (b.type === "submit" || b.type === "image") && b.inForm && b !== confirm).pop();
   // 確認画面へ進んだあとは、名前で送信と分かるボタンを先に選ぶ。名前で分からないボタンは最後の手段
   // （確認ボタンを「送信」として押すと、確認画面を「フォームが消えた＝送信済み」と誤判定するため）
-  const target_ = opts.preferSubmit ? (submitNamed ?? confirm ?? submitAny) : (confirm ?? submitNamed ?? submitAny);
+  // nextOnly: 段階式フォームの1ページ目。「次へ」だけを押し、送信ボタンや JS の直接送信には進まない
+  // （本文欄の無いフォームで「送信」を押してしまっていた）
+  const nextBtn = opts.nextOnly ? usable.find((b) => NEXT_ONLY_RE.test(b.text) && !SUBMIT_RE.test(b.text)) : undefined;
+  if (opts.nextOnly && !nextBtn) return "none";
+  const target_ = nextBtn ?? (opts.preferSubmit ? (submitNamed ?? confirm ?? submitAny) : (confirm ?? submitNamed ?? submitAny));
   if (!target_) {
     // ボタンが見つからないとき: 入力済みフォームを JS で直接 submit する（SPA やアイコンだけのボタンへの最後の手段）。
     // 確認画面には入力欄が無い（値は hidden で持っている）ので、そのときは hidden をいちばん多く持つフォームを送る
@@ -1203,7 +1246,7 @@ export async function clickNextButton(target: Page | Frame, page: Page, log: str
     }
     return "none";
   }
-  const kind = target_ === confirm ? "confirm" : "submit";
+  const kind = target_ === confirm || target_ === nextBtn ? "confirm" : "submit";
   log.push(`click[${kind}] "${target_.text}"`);
   const before = page.url();
   // 押したあとの通信を見張る。画面が変わらない Ajax 送信は POST の完了を待ち（以前は実質5.5秒しか待たず、完了表示の前に判定していた）、

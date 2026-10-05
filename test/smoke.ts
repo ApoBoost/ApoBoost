@@ -257,6 +257,12 @@ try {
       const skip = await form("/setup/skip-email", "skip=1", { cookie: ck });
       const skipped = await (await fetch(`${base}/setup`, { headers: { cookie: ck } })).text();
       if (skip.status !== 302 || !skipped.includes("飛ばすのをやめる")) ng("「フォームだけで使う（飛ばす）」を押しても、メールの手順が済みになりません");
+      // 動作チェック: テスト用の起動では、自動起動を登録・解除できない理由を出し、解除の送信も断る（本物の登録に触らない）
+      const health = await (await fetch(`${base}/health`, { headers: { cookie: ck } })).text();
+      if ((process.platform === "darwin" || process.platform === "win32") && !health.includes("この起動からは登録できません")) ng("動作チェックに、この起動から自動起動を登録できない理由が出ていません");
+      const off = await form("/settings/autostart", "confirm=1", { cookie: ck });
+      const offLoc = decodeURIComponent(off.headers.get("location") ?? "");
+      if ((process.platform === "darwin" || process.platform === "win32") && (off.status !== 302 || !offLoc.includes("/health"))) ng(`テスト用の起動からの自動起動の解除が、断られずに進みました（HTTP ${off.status} ${offLoc}）`);
       const top = await fetch(`${base}/`, { headers: { cookie: ck }, redirect: "manual" });
       if (top.status !== 200 || !(await top.text()).includes("ホーム")) ng(`初回設定のあと、ログインした状態でホームが開きません（HTTP ${top.status}）`);
       const again = await fetch(`${base}/welcome`, { redirect: "manual" });

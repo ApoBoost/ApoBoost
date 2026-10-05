@@ -7,6 +7,7 @@
 import { getDb, getSetting, setSetting, domainOf } from "./db.js";
 import { logError, logInfo } from "./applog.js";
 import { jpError } from "./jp.js";
+import { normalizeEmail, isFreeMailDomain } from "./email.js";
 
 export type ShareKind = "sent" | "suppression";
 
@@ -14,7 +15,7 @@ export const KEY = {
   sentPullUrl: "share_sent_pull_url",     // 送信済みの共有シート（CSVで読む）
   pushUrl: "share_push_url",              // Apps Script のWebアプリURL（書き込み）
   member: "share_member_name",            // 誰が送ったか分かるように入れる名前
-  lastSentPush: "share_last_sent_push",   // ここまで送信済みを書き出した form_jobs.id
+  lastSentPush: "share_last_sent_push",   // 旧版の書き出し位置（form_jobs.id）。いまは form_jobs.shared_at で管理するので読まない
   lastSuppPush: "share_last_supp_push",   // ここまで除外を書き出した form_suppressions.id
   lastPull: "share_last_pull",            // 最後に取り込んだ時刻
   lastResult: "share_last_result",        // 画面に出す結果
@@ -74,8 +75,8 @@ export async function pullSharedSent(): Promise<{ added: number; total: number }
   let added = 0;
   db.transaction(() => {
     for (const r of rows) {
-      const d = domainOf(r[0] ?? "") || (r[0] ?? "").toLowerCase().trim();
-      if (!d || !d.includes(".")) continue;
+      const d = sharedKeyOf(r[0] ?? "");
+      if (!d) continue;
       added += ins.run(d, r[1] ?? "", r[2] ?? "", r[3] ?? "").changes;
     }
   })();
@@ -98,17 +99,55 @@ async function push(kind: ShareKind, rows: (string | number)[][]): Promise<numbe
   return j.added ?? rows.length;
 }
 
-/** 自分が送信済みにした会社を共有シートへ書き出す（#78） */
+// ---- 共有シートの1列目（キー）----
+// 1列目は「ドメイン」。ただしフリーメール（gmail.com など）の会社は、ドメインが同じでも別の会社なので、アドレスで書く。
+// 以前はURLの無い会社のドメイン（＝メールのドメイン）をそのまま書いていたため「gmail.com」が載り、取り込んだ全員
+// （自分も）の Gmail の会社が、翌日から全部「チームの◯◯が送信済み」で送られなくなっていた。
+// アドレスは <taro@gmail.com> のように <> で囲んで書く。古い版のアプリは1列目をURLとして読むので、
+// 素の「taro@gmail.com」だと「gmail.com」と読んでしまい、古い版を使っているメンバーの Gmail の会社が全部止まる。
+// <> 付きなら古い版はドメインとして読めず、そのままの文字列（どの会社のドメインとも一致しない）で保存するだけで済む。
+// シートの列の意味・Apps Script は変えない（各自がデプロイ済みのものをそのまま使える）
+
+/** 送信済みの会社を、共有シートの1列目に書く形にする。書けなければ "" */
+export function sharedKeyFor(domain: string, email: string): string {
+  const d = String(domain ?? "").trim().toLowerCase();
+  if (d && !isFreeMailDomain(d)) return d;
+  const addr = normalizeEmail(email);
+  return addr ? `<${addr}>` : "";
+}
+
+/** 共有シートの1列目を、shared_sent に入れる形（ドメイン、またはそろえたアドレス）にする。使えなければ "" */
+export function sharedKeyOf(cell: string): string {
+  const raw = String(cell ?? "").trim();
+  if (!raw) return "";
+  // アドレスの行は URL として読まない（domainOf に通すと「gmail.com」になる）
+  if (raw.includes("@")) return normalizeEmail(raw);
+  const d = domainOf(raw) || raw.toLowerCase();
+  return d.includes(".") ? d : "";
+}
+
+/** 自分が送信済みにした会社を共有シートへ書き出す（#78）。
+ *  まだ書き出していない送信済み（shared_at が空）を古い順に出す。以前は「前回の id より大きいもの」で進めていたため、
+ *  id の小さいキャンペーンが後から送った分が永久に書き出されなかった。
+ *  この版に上がった直後は、これまでの送信済みをもう一度すべて出す（シートの側で同じ1列目は追加しないので重ならない） */
 export async function pushSent(): Promise<number> {
   const db = getDb();
-  const last = Number(getSetting(KEY.lastSentPush, "0")) || 0;
   const member = getSetting(KEY.member, "") || "（名前未設定）";
-  const rows = db.prepare(`SELECT id, domain, company_name, sent_at FROM form_jobs
-    WHERE id > ? AND is_test=0 AND status='sent' AND domain<>'' ORDER BY id LIMIT 500`).all(last) as { id: number; domain: string; company_name: string; sent_at: string }[];
-  if (!rows.length) return 0;
-  const n = await push("sent", rows.map((r) => [r.domain, r.company_name, member, r.sent_at ?? ""]));
-  setSetting(KEY.lastSentPush, String(rows[rows.length - 1].id));
-  return n;
+  const pick = db.prepare(`SELECT id, domain, email, company_name, sent_at FROM form_jobs
+    WHERE shared_at IS NULL AND is_test=0 AND status='sent' AND (domain<>'' OR email<>'') ORDER BY sent_at, id LIMIT 500`);
+  const mark = db.prepare("UPDATE form_jobs SET shared_at=datetime('now') WHERE id=?");
+  let total = 0;
+  // 1回の同期で出すのは最大 5,000件（Apps Script の1回の処理時間に収まるよう 500件ずつ）
+  for (let round = 0; round < 10; round++) {
+    const rows = pick.all() as { id: number; domain: string; email: string; company_name: string; sent_at: string }[];
+    if (!rows.length) break;
+    const out = rows.map((r) => [sharedKeyFor(r.domain, r.email), r.company_name, member, r.sent_at ?? ""] as (string | number)[]).filter((r) => r[0]);
+    if (out.length) total += await push("sent", out);
+    // 書き出せた（push が失敗すれば例外で抜けるので、ここには来ない）ものだけ印を付ける
+    db.transaction(() => { for (const r of rows) mark.run(r.id); })();
+    if (rows.length < 500) break;
+  }
+  return total;
 }
 
 /** 自分が追加した除外（断り・営業お断り）を共有シートへ書き出す（#79） */
@@ -125,11 +164,27 @@ export async function pushSuppressions(): Promise<number> {
   return n;
 }
 
-/** この会社は、ほかのメンバーがすでに送っているか（#78） */
-export function sharedSentBy(domain: string): { member: string; sent_at: string } | null {
-  if (!domain) return null;
+/** この会社は、ほかのメンバーがすでに送っているか（#78）。
+ *  ・ドメインで引く。ただしフリーメールのドメイン（gmail.com 等）では引かない（旧版が書いた「gmail.com」の行で、
+ *    Gmail の会社が全部止まっていた）。
+ *  ・アドレスでも引く（フリーメールの会社はアドレスで書き出しているため。会社のドメインと違うアドレスに送った行も当たる）
+ *  ・自分の名前の行は見ない。自分の送信は手元の記録（再送禁止の期間・同じアドレス）で判断しているので、共有シートから
+ *    戻ってきた自分の行で、再送禁止の設定より強く止めない（名前が未設定のときは見分けられないので、従来どおりすべて見る） */
+export function sharedSentBy(domain: string, email = ""): { member: string; sent_at: string } | null {
+  const d = String(domain ?? "").trim().toLowerCase();
+  const keys = [normalizeEmail(email), d && !isFreeMailDomain(d) ? d : ""].filter(Boolean);
+  if (!keys.length) return null;
+  const me = getSetting(KEY.member, "").trim();
   try {
-    return (getDb().prepare("SELECT member, sent_at FROM shared_sent WHERE domain=?").get(domain) as { member: string; sent_at: string } | undefined) ?? null;
+    const rows = getDb().prepare(`SELECT member, sent_at FROM shared_sent WHERE domain IN (${keys.map(() => "?").join(",")})`).all(...keys) as { member: string; sent_at: string }[];
+    // 「自分の名前の行」を見逃すのは、このPCに実際に送った記録があるときだけ。
+    // 名前だけで見逃すと、同じ共有名を使う別のPC（1人で2台・チームで同じ部署名）が送った会社に、こちらからも送ってしまう
+    const addr = keys.find((k) => k.includes("@")) ?? "", dk = keys.find((k) => !k.includes("@")) ?? "";
+    let sentHere: boolean | null = null;
+    const here = () => (sentHere ??= Boolean(getDb().prepare(
+      `SELECT 1 FROM form_jobs WHERE is_test=0 AND sent_at IS NOT NULL
+        AND ((?<>'' AND domain=?) OR (?<>'' AND instr(lower(email), ?)>0)) LIMIT 1`).get(dk, dk, addr, addr)));
+    return rows.find((r) => !me || r.member.trim() !== me || !here()) ?? null;
   } catch { return null; }
 }
 

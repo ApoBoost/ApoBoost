@@ -12,6 +12,11 @@ export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 NODE_DIST_VER="v22.23.3"
 NODE_SHA_ARM64="23b25245dcfb9af7262f8ff142e9e2e0af025368117329e7a7458a51e5922f53"  # node-v22.23.3-darwin-arm64.tar.gz
 NODE_SHA_X64="8a677b0219178efd6eb0e475457c4afb452b521a92f6e67845a73bd85727f2a8"    # node-v22.23.3-darwin-x64.tar.gz
+# 初回の準備で、パソコンに入っている Node.js をそのまま使ってよいメジャー版（これ以外は上の版を runtime/ に用意する）。
+# better-sqlite3（package-lock.json の版 12.11.1）にビルド済みがあるもの。無い版だと部品の組み立て（コンパイル）になり、開発ツールの無いMacで失敗する。
+# 出どころ: https://api.github.com/repos/WiseLibs/better-sqlite3/releases/tags/v12.11.1 の node-v127(22)・v137(24)・v141(25)・v147(26)（2026-10-05 確認）。
+# 25 は奇数版で、サポートが終わっているので入れない。better-sqlite3 の版を上げたら確かめ直し、3つのファイルをそろえること
+PREBUILT_MAJORS="22 24 26"
 
 # Apple シリコンかどうか（Rosetta の下で動いていても 1 が返る）
 if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then NODE_ARCH=arm64; NODE_SHA="$NODE_SHA_ARM64"; else NODE_ARCH=x64; NODE_SHA="$NODE_SHA_X64"; fi
@@ -59,10 +64,15 @@ READY=node_modules/.apoboost-ready
 if [ ! -f "$READY" ] && [ -f node_modules/.package-lock.json ] && [ -d node_modules/tsx ]; then date > "$READY"; fi
 
 # ---- 使う Node.js を決める ----
-# 1. このフォルダの中に用意した Node.js（runtime/）があれば、それを使う（部品はその Node.js に合わせて用意してあるため）
-# 2. 無ければ、パソコンに入っている Node.js（20 以上。初回の準備では、部品のビルド済みがある 22 以上の偶数版）
+# 1. このフォルダの中に用意した Node.js（runtime/）が上の版なら、それを使う（部品はその Node.js に合わせて用意してあるため）
+#    前の版（上の版を上げる前に用意したもの）しか無ければ、上の版を取りに行き、できたら前の版を消す。取れなければ前の版のまま起動する
+# 2. 無ければ、パソコンに入っている Node.js（20 以上。初回の準備では、部品のビルド済みがある版 = PREBUILT_MAJORS）
 # 3. どちらも使えないときは、nodejs.org の公式の配布物を runtime/ に落として使う。失敗したら、これまでどおり nodejs.org を案内する
 rt_ok() { [ -x "$1/bin/node" ] && "$1/bin/node" -v >/dev/null 2>&1; }
+prebuilt_ok() { case " $PREBUILT_MAJORS " in *" $1 "*) return 0 ;; esac; return 1; }
+# 既定の 3210 番で ApoBoost が動いているか（動いている方が使っている Node.js を消さないため）。
+# /healthz の無い古い版でも、返ってくる画面に ApoBoost の名前が入るので、大文字・小文字を問わずに名前で見る
+ab_running() { curl -s --max-time 3 "http://127.0.0.1:3210/healthz" 2>/dev/null | grep -qi 'apoboost'; }
 
 fetch_fail() {
   echo "→ Node.js を自動で用意できませんでした（$1）。"
@@ -71,12 +81,15 @@ fetch_fail() {
   return 1
 }
 
+# 引数 quick: 前の版の Node.js があって、取れなくても起動できるとき。つながらない回線で毎回長く待たせないよう、試し直さない
 fetch_node() {
-  local url="https://nodejs.org/dist/$NODE_DIST_VER/$NODE_NAME.tar.gz" part="runtime/$NODE_NAME.tar.gz.part" got
+  local url="https://nodejs.org/dist/$NODE_DIST_VER/$NODE_NAME.tar.gz" part="runtime/$NODE_NAME.tar.gz.part" got retry=2 ct=20
+  [ "$1" = quick ] && { retry=0; ct=10; }
   echo "Node.js（$NODE_DIST_VER）をこのフォルダの中に用意します（約40MB。数分かかることがあります）"
   mkdir -p runtime || { fetch_fail "フォルダを作れませんでした"; return 1; }
   rm -rf runtime/.extract "$part"
-  curl -fL --retry 2 --connect-timeout 20 --progress-bar -o "$part" "$url" || { fetch_fail "ダウンロードできませんでした"; return 1; }
+  # 途中で止まる回線で永久に待たないよう、1分間ほとんど進まなければ・全体で10分かかったら、あきらめる
+  curl -fL --retry "$retry" --connect-timeout "$ct" --speed-limit 1024 --speed-time 60 --max-time 600 --progress-bar -o "$part" "$url" || { fetch_fail "ダウンロードできませんでした。インターネットにつながっているか確かめてください"; return 1; }
   got="$(shasum -a 256 "$part" 2>/dev/null | awk '{print $1}')"
   [ "$got" = "$NODE_SHA" ] || { fetch_fail "ダウンロードしたファイルが壊れていました"; return 1; }
   mkdir -p runtime/.extract && tar -xzf "$part" -C runtime/.extract || { fetch_fail "展開できませんでした"; return 1; }
@@ -88,15 +101,33 @@ fetch_node() {
     return 1
   fi
   rm -rf runtime/.extract "$part"
+  # 前の版の Node.js は消す（約100MB）。自動起動の登録が前の版を指していても、このあと起動したときに ApoBoost が書き直す
+  for d in runtime/node-v*-darwin-*; do [ -d "$d" ] && [ "$d" != "runtime/$NODE_NAME" ] && rm -rf "$d"; done
   echo "→ 用意できました（Node.js $NODE_DIST_VER）"
   echo ""
   return 0
 }
 
 RT=""
+RT_OLD=""
 if rt_ok "runtime/$NODE_NAME"; then RT="runtime/$NODE_NAME"
 else
-  for d in runtime/node-v*-darwin-"$NODE_ARCH"; do rt_ok "$d" && RT="$d"; done
+  for d in runtime/node-v*-darwin-"$NODE_ARCH"; do [ "$d" != "runtime/$NODE_NAME" ] && rt_ok "$d" && RT_OLD="$d"; done
+fi
+if [ -n "$RT_OLD" ]; then
+  OLD_VER="$("$RT_OLD/bin/node" -v 2>/dev/null)"
+  if ab_running; then
+    # 動いている ApoBoost がこの Node.js を使っているので、入れ替えは止まっているときの起動に回す
+    RT="$RT_OLD"
+  else
+    echo "このフォルダの中の Node.js（$OLD_VER）を、新しい版に入れ替えます。"
+    if fetch_node quick; then RT="runtime/$NODE_NAME"
+    else
+      echo "→ これまでの Node.js（$OLD_VER）で、このまま起動します（次の起動のときに、もう一度試します）。"
+      echo ""
+      RT="$RT_OLD"
+    fi
+  fi
 fi
 
 SYS_VER=""
@@ -108,7 +139,7 @@ case "$SYS_MAJOR" in ''|*[!0-9]*) SYS_MAJOR=0 ;; esac
 if [ -z "$RT" ]; then
   NEED=0
   if [ "$SYS_MAJOR" -lt 20 ]; then NEED=1
-  elif [ ! -f "$READY" ] && { [ "$SYS_MAJOR" -lt 22 ] || [ $((SYS_MAJOR % 2)) -eq 1 ]; }; then NEED=1
+  elif [ ! -f "$READY" ] && ! prebuilt_ok "$SYS_MAJOR"; then NEED=1
   fi
   if [ "$NEED" = 1 ]; then
     if fetch_node; then

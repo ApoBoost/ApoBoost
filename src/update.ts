@@ -136,11 +136,30 @@ function run(cmd: string, args: string[], cwd: string): Promise<string> {
 
 export type ApplyResult = { ok: boolean; log: string[]; version?: string; error?: string };
 
+/** 起動役（scripts/run.mjs）が裏でフォーム操作用のブラウザ（Chromium）を用意している途中か。
+ *  その最中に npm install が node_modules/playwright を入れ替えると、Windows ではファイルを掴まれていて失敗し得る。
+ *  run.mjs が node_modules/.apoboost-browser.pid に書いた PID が生きているかで見る（run.mjs の browserInstallBusy と同じ判定。変えるときは両方直す）。
+ *  45分より古い記録は、PID が別のプロセスに使い回されている恐れがあるので無視する */
+export function browserInstallBusy(root = ROOT): boolean {
+  try {
+    const { pid, at } = JSON.parse(fs.readFileSync(path.join(root, "node_modules", ".apoboost-browser.pid"), "utf8")) as { pid?: unknown; at?: unknown };
+    if (!Number.isInteger(pid) || (pid as number) <= 0 || !(Date.now() - Number(at) < 45 * 60_000)) return false;
+    try { process.kill(pid as number, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+  } catch { return false; }
+}
+
 /** 新しい版をダウンロードして入れ替える。失敗したら backup から戻す */
 export async function applyUpdate(): Promise<ApplyResult> {
   const log: string[] = [];
   const url = manifestUrl();
   if (!url) return { ok: false, log, error: "更新先が設定されていません（update.json の manifest_url）" };
+  // 裏のブラウザの用意と npm install を重ねない。数分なら待ち、それでも終わらなければ何も変えずに断る
+  if (browserInstallBusy()) {
+    log.push("フォーム操作用のブラウザの用意が終わるのを待っています（最大3分）");
+    const until = Date.now() + 3 * 60_000;
+    while (browserInstallBusy() && Date.now() < until) await new Promise((r) => setTimeout(r, 3000));
+    if (browserInstallBusy()) return { ok: false, log, error: "フォーム操作用のブラウザを裏で用意しているところです。用意が終わってから（数分後に）もう一度お試しください" };
+  }
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "apoboost-"));
   const backup = path.join(tmp, "backup");

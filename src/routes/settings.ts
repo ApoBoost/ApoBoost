@@ -16,7 +16,7 @@ import { logError, logInfo, recentLogs, clearLogs, logCounts } from "../applog.j
 import { jpError } from "../jp.js";
 import { healthChecks, diagnosticsText } from "../health.js";
 import { createBackup, listBackups, requestRestore, autoBackupIfDue, backupLabel, BACKUP_DIR } from "../backup.js";
-import { autostartEnabled, autostartSupported, enableAutostart, disableAutostart, autostartPath } from "../autostart.js";
+import { autostartEnabled, autostartSupported, enableAutostart, disableAutostart, autostartPath, autostartBlockedReason, autostartHardBlock, autostartOtherInstance } from "../autostart.js";
 import { releaseAwakeAll, AWAKE_NOTE } from "../awake.js";
 import { licenseStatus, setLicenseKey, licenseEnforced } from "../license.js";
 import { syncShare, shareConfigured, APPS_SCRIPT, KEY as SHARE_KEY } from "../share.js";
@@ -93,7 +93,8 @@ app.get("/health", (req, res) => {
   const checks = healthChecks();
   const backups = listBackups();
   const state = {
-    autostart: { supported: autostartSupported(), enabled: autostartEnabled(), path: autostartPath() },
+    // 別ポート・別データ・テスト用の起動では、画面のチェックは「このパソコンの本物の登録」を指す。登録できない理由も一緒に出す
+    autostart: { supported: autostartSupported(), enabled: autostartEnabled(), path: autostartPath(), blocked: autostartBlockedReason(), locked: Boolean(autostartHardBlock()) },
     autoUpdate: getSetting(S.autoUpdate, "0") === "1",
     awakeNote: AWAKE_NOTE,
     logs: logCounts(),
@@ -163,8 +164,18 @@ app.post("/backup/restore", requireAdmin, safeAsync(async (req, res) => {
 
 app.post("/settings/autostart", requireAdmin, (req, res) => {
   const on = req.body.autostart === "1";
-  const r = on ? enableAutostart() : disableAutostart();
-  redirectWith(res, "/health", r.message);
+  if (on) return redirectWith(res, "/health", enableAutostart().message);
+  // 別ポート・別データで起動しているときは、登録が既定の ApoBoost のものなので、すぐ消さずに1回確かめる（2回目の送信で解除）
+  const r = disableAutostart({ confirmed: req.body.confirm === "1" });
+  if (!r.needConfirm) return redirectWith(res, "/health", r.message);
+  res.send(layout("自動起動の解除", `<h1>自動起動の解除</h1>
+<div class="card">
+  <p><b>${esc(r.message)}</b></p>
+  <p class="muted">いま開いている ApoBoost は、${esc(autostartOtherInstance())}、この登録の持ち主ではありません。解除すると、このパソコンに次にログインしたときから、既定の ApoBoost も自動では立ち上がらなくなります（いま動いているものは止まりません）。</p>
+  <p class="muted">登録ファイル: <code>${esc(autostartPath())}</code></p>
+  <form method="post" action="/settings/autostart" class="inline" data-busy><input type="hidden" name="confirm" value="1"><button class="btn danger">それでも解除する</button></form>
+  <a class="btn sub" href="/health">解除しない</a>
+</div>`, "", navUser(req), appState.updateReady));
 });
 
 app.post("/settings/auto-update", requireAdmin, (req, res) => {

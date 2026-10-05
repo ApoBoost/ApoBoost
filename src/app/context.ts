@@ -2,7 +2,7 @@
 // もともと server.ts の先頭や途中に散らばっていたものを1か所に集めた（#139）。
 // 管理画面（localhost）。
 import express from "express";
-import { S, setting, settingOn, settingNum, saveSettingValue } from "../settings.js";
+import { S, setting, settingOn, settingNum, saveSettingValue, setupEmailSkippedFor } from "../settings.js";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
@@ -27,6 +27,7 @@ import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmai
 import { notify, notifyEnabled } from "../notify.js";
 import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel } from "../update.js";
 import { errorPage, n as fmtN } from "../ui/layout.js";
+import { templateProblems } from "../ui/parts.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
 
@@ -313,7 +314,11 @@ export function retryTargetJobs(campaignId: number): { id: number; company_name:
 // 以前はどの理由でも「時間待ち」としか出ず、自動の一時停止の理由は、待機に戻した1社の結果欄と通知にしか無かった
 
 /** 進まない理由。blocking=false は「片方だけ止まっていて、もう片方は送っている」もの */
-export type CampaignStall = { kind: "auto" | "email" | "ai" | "retry" | "limit" | "window"; text: string; blocking: boolean; href?: string; action?: string };
+export type CampaignStall = {
+  kind: "auto" | "email" | "ai" | "retry" | "limit" | "window"; text: string; blocking: boolean; href?: string; action?: string;
+  /** 自動の一時停止の理由だけ（「自動で一時停止しました。」を付けない形）。ホームで「「X」を自動で止めました。理由」と言うため */
+  reason?: string;
+};
 
 /** 日時（ミリ秒、または DB の世界標準時の文字列）を「10/5 14:30」の形にする（今日なら時刻だけ） */
 function whenJst(t: number | string | null | undefined): string {
@@ -332,19 +337,37 @@ export function autoPauseReason(c: Pick<Campaign, "id" | "status"> & { pause_rea
   if (String(c.pause_reason ?? "").trim()) return String(c.pause_reason).trim();
   const r = db.prepare(`SELECT result_text FROM form_jobs WHERE campaign_id=? AND is_test=0 AND status='queued' AND result_text LIKE ? ORDER BY updated_at DESC LIMIT 1`)
     .get(c.id, `%${AUTO_PAUSE_MARK}%`) as { result_text: string } | undefined;
-  return r ? r.result_text.split("\n")[0].replace(`待機に戻しました${AUTO_PAUSE_MARK}`, "自動で一時停止しました").slice(0, 200) : "";
+  // 「文面に直す所があるため待機に戻しました（キャンペーンを一時停止）: …」→「文面に直す所があるため: …」。
+  // worker が pause_reason に書く形とそろえる（以前は「自動で一時停止しました」に置き換えていて、
+  // 画面で「自動で一時停止しました。文面に直す所があるため自動で一時停止しました: …」と二重になっていた）
+  return r ? r.result_text.split("\n")[0].replace(`待機に戻しました${AUTO_PAUSE_MARK}`, "").slice(0, 200) : "";
 }
 /** worker が自動の一時停止のとき結果の文に入れる印 */
 export const AUTO_PAUSE_MARK = "（キャンペーンを一時停止）";
 
+/** メールの一時停止の理由が「送信者の設定を直せば解ける」ものか（住所・会社名の未登録、アカウント未設定、ログイン拒否、差出人の拒否）。
+ *  これらは時間が経っても直らないので、「詳しく見る」ではなく送信者の画面へ案内する */
+export const SENDER_FIX_RE = /未登録|未設定|ログインを拒否|差出人/;
+
 /** いま送りが進まない理由を1つ決める。優先順: 自動の一時停止 → メールの一時停止 → AIの一時停止 → 再送待ち → 上限 → 時間帯の外。
- *  理由が無い（送っている・送る会社が無い・準備中や手動の一時停止）ときは null */
-export function campaignStall(c: Campaign): CampaignStall | null {
+ *  理由が無い（送っている・送る会社が無い・準備中や手動の一時停止）ときは null。
+ *  admin は見ている人が管理者か。AIの設定（/settings）は管理者しか開けないので、一般の人には開けないボタンを出さない */
+export function campaignStall(c: Campaign, opts: { admin?: boolean } = {}): CampaignStall | null {
   const auto = autoPauseReason(c);
   if (auto) {
+    const reason = auto.replace(/^自動で一時停止しました[:：。]?\s*/, "");
+    const text = `自動で一時停止しました。${reason.replace(/[。.]$/, "")}`;
     // AIの設定の問題か（文頭で見る。文面の間違いの説明に「{{AI冒頭}}」のように AI の文字が入っていても、AIの設定へ案内しない）
-    const ai = /^AIで/.test(auto);
-    return { kind: "auto", blocking: true, text: `自動で一時停止しました。${auto.replace(/^自動で一時停止しました[:：]?\s*/, "")}`, href: ai ? "/settings#s-ai" : `/campaigns/${c.id}/edit`, action: ai ? "AIの設定を確認する" : "文面を直す" };
+    if (/^AIで/.test(reason)) {
+      return opts.admin
+        ? { kind: "auto", blocking: true, reason, text, href: "/settings#s-ai", action: "AIの設定を確認する" }
+        : { kind: "auto", blocking: true, reason, text: `${text}。管理者に AI の設定（APIキー・残高・モデル）の確認を依頼してください` };
+    }
+    // 文面の問題。直したあとも「文面を直す」と出し続けると、どこが悪いのか分からなくなるので、直っていれば開始を促す
+    if (!templateProblems(c).length) {
+      return { kind: "auto", blocking: true, reason, text: `${text}。文面は直っています。「開始する」を押すと続きから送ります` };
+    }
+    return { kind: "auto", blocking: true, reason, text, href: `/campaigns/${c.id}/edit#tpl`, action: "文面を直す" };
   }
   if (c.status !== "running") return null;
   const only = String(c.send_only ?? "");
@@ -362,7 +385,9 @@ export function campaignStall(c: Campaign): CampaignStall | null {
     const pauses = senders.map((s) => emailPause(s)).filter(Boolean) as { until: number; reason: string }[];
     if (senders.length && pauses.length === senders.length) {
       const p = pauses.reduce((a, b) => (b.until < a.until ? b : a));
-      return { kind: "email", blocking: !readyForm, text: `メール送信を一時停止中です（${whenJst(p.until)}に自動で再開）: ${p.reason.slice(0, 80)}${readyForm ? "。フォームの会社は続けて送ります" : ""}`, href: `/campaigns/${c.id}?tab=send`, action: "詳しく見る" };
+      // 送信者の設定不備は、時間が経っても直らない（自動で再開しても同じ理由でまた止まる）。直す先へ案内する
+      const fix = SENDER_FIX_RE.test(p.reason);
+      return { kind: "email", blocking: !readyForm, text: `メール送信を一時停止中です（${whenJst(p.until)}に自動で再開${fix ? "しますが、送信者の設定を直さないとまた止まります" : ""}）: ${p.reason.slice(0, 80)}${readyForm ? "。フォームの会社は続けて送ります" : ""}`, href: fix ? "/senders" : `/campaigns/${c.id}?tab=send`, action: fix ? "送信者の設定を直す" : "詳しく見る" };
     }
   }
   if (c.mode === "ai") {
@@ -741,13 +766,14 @@ export function setupState(req: express.Request): import("../views.js").SetupSta
     listCount: cnt(`SELECT COUNT(*) n ${jobsWhere}`),
     scannedOk: cnt(`SELECT COUNT(*) n ${jobsWhere} AND j.scanned_at IS NOT NULL`) > 0,
     sentCount: cnt(`SELECT COUNT(*) n ${jobsWhere} AND j.status='sent'`),
+    emailSkipped: setupEmailSkippedFor(me(req)),
   };
 }
 
 /** はじめの設定が何ステップ終わっているか（#137） */
 export function setupProgress(st: import("../views.js").SetupState): { done: number; total: number } {
   // 「フォームだけで使う」を選んだ人は、送信用メールの手順を済みとして数える（選んでいないと、ホームの帯がずっと「2番」で止まる）
-  const steps = [st.senderOk && st.addressOk, st.smtpOk || settingOn(S.setupEmailSkipped), st.lawOk, st.campaignOk, st.listCount > 0, st.sentCount > 0];
+  const steps = [st.senderOk && st.addressOk, st.smtpOk || st.emailSkipped, st.lawOk, st.campaignOk, st.listCount > 0, st.sentCount > 0];
   return { done: steps.filter(Boolean).length, total: steps.length };
 }
 
@@ -771,10 +797,18 @@ export function todoWhere(kind: string): string {
   return `(${TODO_WHERE[kind] ?? TODO_ANY}) AND ${todoActive()}`;
 }
 
+/** 結果の1行目（SQL）。2行目以降は操作の記録なので、原因の判定には使わない */
+const TODO_FIRST_LINE = "substr(j.result_text, 1, instr(j.result_text || char(10), char(10)) - 1)";
+/** 届いたか分からない会社を除く条件（SQL）。ui/todo.ts の UNSURE_RE と同じ言葉。まとめて送り直すと二重送信になり得る */
+const TODO_NOT_UNSURE = "j.result_text NOT LIKE '%送信後の判定不能%' AND j.result_text NOT LIKE '%送信済みか不明%' AND j.result_text NOT LIKE '%送信済みか確認できませんでした%'";
+
 /** 同じ原因をまとめる（#117）。原因1つ＝操作1回にする。key は一括操作のときの絞り込み条件に対応する */
 export const TODO_GROUPS: { key: string; label: string; where: string; advice: string; action: "requeue" | "dismiss" | "to_email"; actionLabel: string; link?: string; linkLabel?: string }[] = [
   { key: "mailconfig", label: "メールの設定が原因で送れなかった", where: "j.status='failed' AND (j.result_text LIKE 'メール送信エラー:%2段階認証%' OR j.result_text LIKE 'メール送信エラー:%ログインを拒否%' OR j.result_text LIKE 'メール送信エラー:%アプリパスワード%')", advice: "送信者のアプリパスワードを直してから、まとめて送り直します。1社ずつ対応する必要はありません。", action: "requeue", actionLabel: "まとめて送り直す", link: "/senders", linkLabel: "送信者の設定を直す" },
-  { key: "network", label: "通信が切れて送れなかった", where: "j.status='failed' AND (j.result_text LIKE '%EPIPE%' OR j.result_text LIKE '%ECONN%' OR j.result_text LIKE '%時間切れ%' OR j.result_text LIKE '%timeout%' OR j.result_text LIKE '%通信が途中で切れ%')", advice: "回線が不安定だったときの失敗です。そのまま送り直せます。", action: "requeue", actionLabel: "まとめて送り直す" },
+  // 見るのは結果の1行目だけ（TODO_FIRST_LINE）。以前は全文で引いていたため、1行目が「送信後の判定不能」（送信ボタンは押し済み）でも
+  // 2行目以降の操作の記録に timeout があるだけでここに入り、「まとめて送り直す」で同じ会社に2通届き得た。
+  // 届いたか分からないもの（判定不能・送信済みか不明・確認できませんでした）は、1行目に何があっても除く
+  { key: "network", label: "通信が切れて送れなかった", where: `j.status='failed' AND (${TODO_FIRST_LINE} LIKE '%EPIPE%' OR ${TODO_FIRST_LINE} LIKE '%ECONN%' OR ${TODO_FIRST_LINE} LIKE '%時間切れ%' OR ${TODO_FIRST_LINE} LIKE '%timeout%' OR ${TODO_FIRST_LINE} LIKE '%通信が途中で切れ%') AND ${TODO_NOT_UNSURE}`, advice: "回線が不安定だったときの失敗です。そのまま送り直せます。", action: "requeue", actionLabel: "まとめて送り直す" },
   // 送信ボタンを押す前に止まっていたもの（確認画面を抜けられない・入力エラーなど）。まだ送っていないので、まとめて送り直してよい。
   // 「送信後の判定不能」は届いている可能性があるので、ここには入れない（二重送信を防ぐ）
   { key: "notsent", label: "入力の不備などで、送る前に止まった", where: "j.status='failed' AND j.channel='form' AND (j.result_text LIKE '確認画面を抜けられない%' OR j.result_text LIKE '送信ボタンが見つからない%' OR j.result_text LIKE '入力エラー%' OR j.result_text LIKE '例外: page.evaluate%')", advice: "電話番号が必須なのに空だった、エラーの表示を読み取れなかった、などで止まった会社です。まだ送信していないので、そのまま送り直せます（必須の欄の読み取りを強化しました）。", action: "requeue", actionLabel: "まとめて送り直す" },

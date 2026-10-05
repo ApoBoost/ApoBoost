@@ -28,6 +28,31 @@ export function detectRefusal(text: string): string | null {
   return null;
 }
 
+/** 「営業・売り込みを目的としたお問い合わせではないことを確認しました」のような、営業でないことの申告（チェック欄に多い）。
+ *  自動でチェックすると事実と違う申告をして送ることになる（実例あり）。
+ *  チェック欄・設問のラベルにだけ使う。ページ全文にかけると「24時間営業ではありません」「しつこい営業ではありません」
+ *  のような普通の文に当たり、送れる会社を営業お断り扱いにして除外リストに入れてしまう */
+export const DECLARATION_PATTERNS: RegExp[] = [
+  // 「営業・売り込みを目的としたお問い合わせではないことを確認しました」のような、営業でないことの申告（チェック欄に多い）。
+  // 自動でチェックすると事実と違う申告をして送ることになる（実例あり）。
+  // 「営業日ではありません」「営業活動に利用するものではありません」（個人情報の注意書き）に当たらないよう、
+  // 問い合わせ・目的などの言葉の直後に否定が来る形か、「営業・勧誘ではない」のように直接続く形だけにする
+  /(営業|セールス|勧誘|売り込み)[^。\n]{0,16}(お問い?合わ?せ|ご連絡|ご案内|メール|送信|目的)(では(ない|ありません)|でないこと)/,
+  /(営業|セールス|勧誘|売り込み)(・|や|等|、|及び|および)?(営業|セールス|勧誘|売り込み)?(目的)?(では(ない|ありません)|でないこと)/,
+];
+
+/** チェック欄・設問のラベルが、営業お断り、または「営業ではない」ことの申告か */
+export function detectDeclaration(label: string): string | null {
+  const r = detectRefusal(label);
+  if (r) return r;
+  const t = label.replace(/\s+/g, "");
+  for (const re of DECLARATION_PATTERNS) {
+    const m = t.match(re);
+    if (m) return m[0].slice(0, 60);
+  }
+  return null;
+}
+
 /** Cloudflare 等の「ブラウザ確認」ページ（自動アクセスの遮断）。CAPTCHA 扱いでスキップ */
 export const CHALLENGE_RE = /(Checking your browser|Verify you are human|Just a moment|ブラウザを確認しています|あなたが人間であることを確認|Attention Required|Access denied|アクセスが拒否)/i;
 

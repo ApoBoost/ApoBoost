@@ -34,6 +34,20 @@ const fi = (sig: string, type = "text") => ({ idx: 0, tag: "input", type, name: 
 eq("classify: type=tel の郵便番号は郵便番号", classify(fi("例）1234567 | 郵便番号 | zip || 郵便番号 住所", "tel")), "postal");
 eq("classify: type=tel のFAXは入れない", classify(fi("FAX | fax || FAX番号", "tel")), "ignore");
 eq("classify: type=tel の電話は電話", classify(fi("例) 042-643-6261 | telephone-number || 電話番号", "tel")), "tel");
+// 営業でないことの申告（チェック欄）はお断り扱い。営業日・個人情報の注意書きには当てない
+{
+  const { detectRefusal, detectDeclaration } = await import("../src/detect.js");
+  // 営業でないことの申告は、チェック欄・設問のラベルだけで見る（ページ全文にかけると普通の文に当たる）
+  ok("detect: 営業目的ではないことを確認しました は申告（チェックしない）", detectDeclaration("営業・売り込みを目的としたお問い合わせではないことを確認しました"));
+  ok("detect: セールスではないことを確認 は申告", detectDeclaration("セールス・勧誘ではないことを確認しました"));
+  ok("detect: 普通のお断りの文もラベルで拾う", detectDeclaration("営業目的のお問い合わせはお断りします"));
+  eq("detect: ページ全文では「24時間営業ではありません」をお断りにしない", detectRefusal("当店は24時間営業ではありません。お問い合わせはこちら。"), null);
+  eq("detect: ページ全文では「しつこい営業ではありません」をお断りにしない", detectRefusal("しつこい営業ではありませんのでご安心ください。"), null);
+  eq("detect: ページ全文では申告の文そのものもお断りにしない（チェック欄の側で止める）", detectRefusal("営業・売り込みを目的としたお問い合わせではないことを確認しました"), null);
+  eq("detect: 普通の同意チェックは申告ではない", detectDeclaration("個人情報の取扱いに同意する"), null);
+  eq("detect: 営業日ではありません は対象外", detectRefusal("土日祝日は営業日ではありませんので、翌営業日にご返信します。"), null);
+  eq("detect: 個人情報の注意書きは対象外", detectRefusal("ご入力いただいた個人情報は営業活動に利用するものではありません。"), null);
+}
 // 送信直後のポップアップ（alert）が完了の知らせか。確認・警告・打ち消しは完了にしない
 eq("dialog: 送信しました は完了", dialogSaysSent("送信しました"), true);
 eq("dialog: Thanks for contacting us! は完了", dialogSaysSent("Thanks for contacting us!"), true);
@@ -376,15 +390,149 @@ saveSettingValue(S.excludedIndustries, "");
     const cid = mk({ status: "paused" });
     job(cid, { result_text: `文面の差し込みに間違いがあるため待機に戻しました${ctx.AUTO_PAUSE_MARK}: 差し込みが置き換わっていません: {{企業}}` });
     const st = ctx.campaignStall(camp(cid));
-    ok("進まない理由: 自動の一時停止の理由と直す先", st?.kind === "auto" && st.text.includes("{{企業}}") && st.href === `/campaigns/${cid}/edit`, JSON.stringify(st));
+    ok("進まない理由: 自動の一時停止の理由と直す先", st?.kind === "auto" && st.text.includes("{{企業}}") && st.href === `/campaigns/${cid}/edit#tpl`, JSON.stringify(st));
     db.prepare("UPDATE form_campaigns SET pause_reason='AIで文面を作れないため: APIキーが正しくありません' WHERE id=?").run(cid);
-    eq("進まない理由: pause_reason があればそれを使う", ctx.campaignStall(camp(cid))?.href, "/settings#s-ai");
+    eq("進まない理由: pause_reason があればそれを使う（管理者）", ctx.campaignStall(camp(cid), { admin: true })?.href, "/settings#s-ai");
+    {
+      // 一般ユーザーは /settings を開けない（403）。開けないボタンを出さず、管理者に頼むよう言う
+      const st2 = ctx.campaignStall(camp(cid));
+      ok("進まない理由: 一般ユーザーにはAIの設定のボタンを出さない", st2?.kind === "auto" && !st2.href && !st2.action && st2.text.includes("管理者に"), JSON.stringify(st2));
+    }
     // 文面の間違いの説明に「AI」の文字が入っていても（{{AI}} の書き間違い）、AIの設定へは案内しない
     db.prepare("UPDATE form_campaigns SET pause_reason='文面に直す所があるため: 件名の差し込みが置き換わっていません: {{AI}}' WHERE id=?").run(cid);
-    eq("進まない理由: 文面の間違いはAIの設定へ案内しない", ctx.campaignStall(camp(cid))?.href, `/campaigns/${cid}/edit`);
+    eq("進まない理由: 文面の間違いはAIの設定へ案内しない", ctx.campaignStall(camp(cid), { admin: true })?.href, `/campaigns/${cid}/edit#tpl`);
     db.prepare("UPDATE form_campaigns SET status='paused', pause_reason='' WHERE id=?").run(cid);
     db.prepare("UPDATE form_jobs SET result_text='' WHERE campaign_id=?").run(cid);
     eq("進まない理由: 手で止めたものは自動停止と言わない", ctx.campaignStall(camp(cid)), null);
+  }
+
+  // ---- 3周目: 文面の検査を「止める／知らせるだけ」に分ける・送る直前の検査（lintMessage）と食い違わない ----
+  {
+    const { templateCheck, campaignStatusTag } = await import("../src/ui/parts.js");
+    const { lintMessage } = await import("../src/message.js");
+    type F = Parameters<typeof templateCheck>[0];
+    // 送る直前の検査で止まるか（message.ts の composeMessage と worker の lintMessage と同じ流れ）。
+    // 全文AIでも、AIが使えないとき（キー無し・月の上限）は本文をそのまま差し込んで送るので、本文も見る
+    const vars = { ...buildVars({ company_name: "A社", industry: "IT", sub_industry: "", prefecture: "東京都", representative: "山田" }, { company: "B社", person: "田中", email: "me@example.jp", tel: "03", url: "https://b.example.jp" } as never), 資料リンク: "", AI冒頭: "冒頭" };
+    const sendStops = (c: F) => {
+      const useB = Number(c.ab_enabled ?? 0) === 1 && String(c.template_b ?? "").trim() !== "";
+      const subjects = [c.subject_text || "サービスのご案内", ...String(c.subject_alts ?? "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean), ...(useB && String(c.subject_b ?? "").trim() ? [String(c.subject_b)] : [])];
+      const bodies = [String(c.template_text ?? ""), ...(useB ? [String(c.template_b)] : [])];
+      return subjects.some((s) => bodies.some((b) => lintMessage(renderTemplate(b, vars), renderTemplate(s, vars)).some((l) => l.level === "error")));
+    };
+    const body = (t: string) => `${t}\n${okTpl}`;
+    // 指摘の表。stop=開始を止めるか、warn=警告を出すか
+    const rows: { name: string; c: F; stop: boolean; warn?: boolean; has?: string }[] = [
+      { name: "{重要}なお知らせ（飾り）", c: { subject_text: "ご案内", template_text: body("{重要}なお知らせ") }, stop: false, warn: true },
+      { name: "料金は{月額}円（飾り）", c: { subject_text: "ご案内", template_text: body("料金は{月額}円") }, stop: false, warn: true },
+      { name: "件名の {重要}（飾り）", c: { subject_text: "{重要}ご案内", template_text: okTpl }, stop: false, warn: true },
+      { name: "全角の飾り ｛ご案内｝", c: { subject_text: "ご案内", template_text: body("｛ご案内｝") }, stop: false, warn: true },
+      { name: "URL の中の {id}", c: { subject_text: "ご案内", template_text: body("https://ex.jp/?q={id}") }, stop: false, warn: false },
+      { name: "顔文字の }", c: { subject_text: "ご案内", template_text: body("よろしくお願いします(^_^)}") }, stop: false, warn: true },
+      { name: "{会社名}", c: { subject_text: "ご案内", template_text: body("{会社名} 御中") }, stop: true },
+      { name: "｛会社名｝", c: { subject_text: "ご案内", template_text: body("｛会社名｝ 御中") }, stop: true },
+      { name: "{{会社名}", c: { subject_text: "ご案内", template_text: body("{{会社名} 御中") }, stop: true },
+      { name: "{{会社名}}}", c: { subject_text: "ご案内", template_text: body("{{会社名}}} 御中") }, stop: true },
+      { name: "{{{会社名}}（送る直前でも止まる形）", c: { subject_text: "ご案内", template_text: body("{{{会社名}} 御中") }, stop: true },
+      { name: "保存前からある ｛｛会社名｝｝", c: { subject_text: "ご案内", template_text: body("｛｛会社名｝｝ 御中") }, stop: true, has: "保存し直すと自動で直ります" },
+      { name: "{{自社url}}", c: { subject_text: "ご案内", template_text: body("{{自社url}}") }, stop: true, has: "{{自社URL}} のことですか" },
+      { name: "{{企業}}", c: { subject_text: "ご案内", template_text: body("{{企業}} 御中") }, stop: true, has: "{{会社名}} のことですか" },
+      { name: "件名の {{企業}}", c: { subject_text: "{{企業}}様へ", template_text: okTpl }, stop: true },
+      { name: "全文AIで本文が空", c: { mode: "ai", subject_text: "ご案内", template_text: " " }, stop: true, has: "伝えたいことを書いてください" },
+      { name: "全文AIの本文の {会社名}", c: { mode: "ai", subject_text: "ご案内", template_text: "{会社名}向けのサービスです" }, stop: false, warn: true },
+      { name: "全文AIでも件名の {会社名} は止める", c: { mode: "ai", subject_text: "{会社名}様へ", template_text: "サービスのご案内" }, stop: true },
+      { name: "全文AIの本文の {{企業}}（AIが使えないとき送る直前で止まる）", c: { mode: "ai", subject_text: "ご案内", template_text: "{{企業}}向け" }, stop: true },
+      { name: "A/Bで本文Bが空なら件名Bは見ない", c: { ab_enabled: 1, subject_text: "ご案内", template_text: okTpl, subject_b: "{{企業}}【ここに件名】", template_b: "" }, stop: false, warn: true },
+      { name: "A/Bで本文Bがあれば件名Bも見る", c: { ab_enabled: 1, subject_text: "ご案内", template_text: okTpl, subject_b: "{{企業}}", template_b: okTpl }, stop: true },
+      { name: "正しい文面", c: { subject_text: "{{会社名}}様へのご案内", template_text: okTpl }, stop: false, warn: false },
+    ];
+    for (const r of rows) {
+      const tc = templateCheck(r.c);
+      eq(`文面3: ${r.name} を${r.stop ? "止める" : "止めない"}`, tc.errors.length > 0, r.stop);
+      if (r.warn !== undefined) eq(`文面3: ${r.name} の警告`, tc.warnings.length > 0, r.warn);
+      if (r.has) ok(`文面3: ${r.name} の説明`, [...tc.errors, ...tc.warnings].some((x) => x.includes(r.has!)), JSON.stringify(tc));
+      // 開始を通した文面は、送る直前の検査でも止まらない（ここが食い違うと、待機中の全社が自動停止に変わる）
+      if (!tc.errors.length) eq(`文面3: ${r.name} は送る直前でも止まらない`, sendStops(r.c), false);
+      // 送る直前で止まる文面は、開始の時点で止める
+      if (sendStops(r.c)) eq(`文面3: ${r.name} は送る直前で止まるので開始でも止める`, tc.errors.length > 0, true);
+    }
+    // 波括弧のでたらめな組み合わせでも、「開始は通るのに送る直前で止まる」が無いこと
+    {
+      const parts = ["{", "}", "{{", "}}", "｛", "｝", "会社名", "企業", "重要", " ", "\n", "https://ex.jp/?q=", "様", "AI冒頭"];
+      let seed = 12345;
+      const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+      const bad: string[] = [];
+      for (let i = 0; i < 3000; i++) {
+        const t = Array.from({ length: 1 + Math.floor(rnd() * 8) }, () => parts[Math.floor(rnd() * parts.length)]).join("");
+        const c = { subject_text: rnd() < 0.3 ? t : "ご案内", template_text: body(t) };
+        if (!templateCheck(c).errors.length && sendStops(c)) bad.push(t);
+      }
+      eq("文面3: 開始を通る文面は送る直前でも止まらない（3,000通り）", bad.slice(0, 5), []);
+    }
+    // 古い呼び出し元のための templateProblems は errors と同じ
+    eq("文面3: templateProblems は止める理由だけ", templateProblems({ subject_text: "ご案内", template_text: body("{重要}") }), []);
+
+    // 状態の札: 進まない理由があれば、それを名前と説明に使う（メールの一時停止まで「時間待ち」と出ていた）
+    ok("札: メールの一時停止は時間待ちと言わない", campaignStatusTag("running", false, { kind: "email", text: "メール送信を一時停止中です" }).includes("メール停止中") && campaignStatusTag("running", false, { kind: "email", text: "メール送信を一時停止中です" }).includes('title="メール送信を一時停止中です"'));
+    ok("札: 再送待ち", campaignStatusTag("running", false, { kind: "retry", text: "再送待ち" }).includes(">再送待ち<"));
+    ok("札: 理由が無ければ時間待ち", campaignStatusTag("running", false).includes(">時間待ち<"));
+
+    // 進まない理由の文が二重にならない（待機に戻した会社の結果の文から拾うとき）
+    {
+      const cid = mk({ status: "paused", subject_text: "ご案内", template_text: "{{企業}} 御中" });
+      job(cid, { result_text: `文面に直す所があるため待機に戻しました${ctx.AUTO_PAUSE_MARK}: 差し込みが置き換わっていません: {{企業}}` });
+      const st = ctx.campaignStall(camp(cid));
+      eq("進まない理由3: 文が二重にならない", st?.text, "自動で一時停止しました。文面に直す所があるため: 差し込みが置き換わっていません: {{企業}}");
+      eq("進まない理由3: 文面を直す先は #tpl 付き", [st?.href, st?.action], [`/campaigns/${cid}/edit#tpl`, "文面を直す"]);
+      // ホームでは「「X」を自動で止めました。理由」の1文にする
+      const { homeCard } = await import("../src/ui/home.js");
+      const html = homeCard({ senders: 1, campaigns: 1, newAppointments: [], todo: 0, runningNames: [], setupDone: 1, setupTotal: 1, todayForm: 0, todayEmail: 0, monthForm: 0, monthEmail: 0, appointments: 0, queued: 1,
+        perCampaign: [{ id: cid, name: "案件A", status: "paused", running: false, todayForm: 0, todayEmail: 0, monthForm: 0, monthEmail: 0, appointments: 0, replies: 0, declines: 0, queued: 1, todo: 0, todoCaptcha: 0, capForm: 10, capEmail: 0, windowOk: true, nextStart: "", paused: "", stall: { ...st!, href: st!.href ?? "", action: st!.action ?? "" } }] } as never);
+      ok("ホーム3: 自動で止めた理由が1文", html.includes("「案件A」を自動で止めました。文面に直す所があるため") && !html.includes("止まっています。自動で"), html.slice(0, 400));
+      // 文面を直したら、「文面を直す」ではなく開始を促す
+      db.prepare("UPDATE form_campaigns SET template_text=? WHERE id=?").run(okTpl, cid);
+      const st2 = ctx.campaignStall(camp(cid));
+      ok("進まない理由3: 文面が直っていれば開始を促す", st2?.kind === "auto" && !st2.href && st2.text.includes("文面は直っています"), JSON.stringify(st2));
+    }
+    // メールの設定不備で止まっているときは、送信者の画面へ案内する
+    {
+      const { setEmailPause, clearEmailPause } = await import("../src/email.js");
+      const cid = mk({ channel: "email_only" });
+      job(cid, { channel: "email", email: "x@example.jp" });
+      const sender = db.prepare("SELECT * FROM sender_profiles WHERE id=?").get(sid) as never;
+      setEmailPause(sender, 60, "送信者の住所が未登録です。送信者プロフィールに住所を登録してください");
+      const st = ctx.campaignStall(camp(cid));
+      eq("進まない理由3: 住所の未登録は送信者の画面へ", [st?.kind, st?.href, st?.action], ["email", "/senders", "送信者の設定を直す"]);
+      setEmailPause(sender, 60, "メールサーバー（smtp.example.jp:465）に接続できませんでした");
+      eq("進まない理由3: 回線の問題は詳しく見る", ctx.campaignStall(camp(cid))?.action, "詳しく見る");
+      clearEmailPause(sender);
+    }
+    // 全文AIの開始前の確認（本物のAIには接続しない。fetch を差し替える）
+    {
+      const { aiStartProblem } = await import("../src/routes/campaigns.js");
+      const realFetch = globalThis.fetch;
+      const calls: string[] = [];
+      const fake = (status: number, bodyText: string) => { globalThis.fetch = (async (u: string) => { calls.push(String(u)); return new Response(bodyText, { status }); }) as typeof fetch; };
+      fake(200, JSON.stringify({ content: [{ type: "text", text: "OK" }] }));
+      eq("AI開始前: キーが無ければ確かめない", [await aiStartProblem(), calls.length], [null, 0]);
+      const set = (k: string, v: string) => db.prepare("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(k, v);
+      set("ai_provider", "anthropic"); set("ai_api_key", "test-dummy-key");
+      try {
+        eq("AI開始前: 通れば止めない", await aiStartProblem(), null);
+        ok("AI開始前: 差し替えた fetch だけを使う", calls.length === 1 && calls[0].includes("api.anthropic.com"), calls.join(","));
+        fake(401, '{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}');
+        ok("AI開始前: キーの間違いは止める", String(await aiStartProblem()).includes("APIキー"));
+        fake(400, '{"error":{"message":"Your credit balance is too low"}}');
+        ok("AI開始前: 残高切れは止める", String(await aiStartProblem()).includes("残高"));
+        fake(404, '{"error":{"type":"not_found_error","message":"model: x"}}');
+        ok("AI開始前: モデルの間違いは止める", String(await aiStartProblem()).includes("モデル"));
+        fake(529, '{"error":{"type":"overloaded_error"}}');
+        eq("AI開始前: 混雑は止めない（送信側が待って続ける）", await aiStartProblem(), null);
+      } finally {
+        globalThis.fetch = realFetch;
+        db.prepare("DELETE FROM settings WHERE key IN ('ai_provider','ai_api_key') OR key LIKE 'ai_usage:%'").run();
+      }
+    }
   }
 
   // お知らせ（/events）: 一般ユーザーには自分のキャンペーンのものだけ
@@ -437,6 +585,79 @@ ok("applog: 書いて読める", recentLogs(5).some((r) => r.text === "テスト
   const idx = (getDb().prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as { name: string }[]).map((r) => r.name);
   ok("db: 更新日時のインデックス", idx.includes("idx_form_jobs_updated"));
   ok("db: 反応のインデックス", idx.includes("idx_form_jobs_outcome"));
+}
+
+// ---- 自動起動・初回設定（3周目）: 解除の守り・登録の書き直し・「フォームだけで使う」はユーザー別 ----
+// 本物の登録（~/Library/LaunchAgents など）には触らない。登録ファイルの場所は一時フォルダに差し替え、launchctl は記録するだけの偽物にする
+{
+  const { disableAutostart, repairAutostart, autostartContent, autostartBlockedReason } = await import("../src/autostart.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fo-autostart-"));
+  const file = path.join(dir, "com.apoboost.start.plist");
+  const put = (body = "old") => fs.writeFileSync(file, body);
+  const calls: string[][] = [];
+  const ctl = (pidRunning: boolean) => (args: string[]) => { calls.push(args); return args[0] === "list" ? `{\n\t"Label" = "com.apoboost.start";\n${pidRunning ? '\t"PID" = 4242;\n' : ""}};` : ""; };
+  ok("自動起動: 単体テストの起動（一時データ）では登録しない", autostartBlockedReason() !== "");
+
+  put();
+  let r = disableAutostart({ file, platform: "darwin", env: { APOBOOST_NO_AUTOSTART: "1" }, runLaunchctl: ctl(false) });
+  ok("解除: APOBOOST_NO_AUTOSTART=1 では常に断る", !r.ok && !r.needConfirm && fs.existsSync(file), JSON.stringify(r));
+  r = disableAutostart({ file, platform: "darwin", env: { APOBOOST_NO_AUTOSTART: "1" }, confirmed: true, runLaunchctl: ctl(false) });
+  ok("解除: APOBOOST_NO_AUTOSTART=1 では確認しても断る", !r.ok && fs.existsSync(file));
+  eq("解除: 断ったときは launchctl も呼ばない", calls.length, 0);
+
+  r = disableAutostart({ file, platform: "darwin", env: { PORT: "3299" }, runLaunchctl: ctl(false) });
+  ok("解除: 別ポートの起動では、すぐ消さずに確認する", !r.ok && r.needConfirm === true && fs.existsSync(file), JSON.stringify(r));
+  ok("解除: 確認の文言", r.message.includes("既定の 3210番・data/ で起動する ApoBoost のもの"), r.message);
+  r = disableAutostart({ file, platform: "darwin", env: { DATA_DIR: path.join(dir, "data-dev") }, runLaunchctl: ctl(false) });
+  ok("解除: 別データの起動でも確認する", r.needConfirm === true && fs.existsSync(file));
+  eq("解除: 確認の前は launchctl を呼ばない", calls.length, 0);
+  r = disableAutostart({ file, platform: "darwin", env: { PORT: "3299" }, confirmed: true, runLaunchctl: ctl(false) });
+  ok("解除: 2回目（確認済み）で消える", r.ok && !fs.existsSync(file), JSON.stringify(r));
+  eq("解除: launchd で動いていなければ、ラベルで外す", calls.map((c) => c[0]), ["list", "remove"]);
+
+  // launchd の方で ApoBoost が動いているときは外さない（外すと動いている ApoBoost が止まる）。ファイルは消す
+  put(); calls.length = 0;
+  r = disableAutostart({ file, platform: "darwin", env: {}, runLaunchctl: ctl(true) });
+  ok("解除: 既定の起動なら確認なしで消える", r.ok && !fs.existsSync(file));
+  eq("解除: launchd の方で動いていれば remove しない", calls.map((c) => c[0]), ["list"]);
+  // 自分が launchd から起動されたものなら、launchctl に触らない
+  put(); calls.length = 0;
+  r = disableAutostart({ file, platform: "darwin", env: { XPC_SERVICE_NAME: "com.apoboost.start" }, runLaunchctl: ctl(false) });
+  ok("解除: launchd の下で動いているときもファイルは消える", r.ok && !fs.existsSync(file));
+  eq("解除: launchd の下で動いているときは launchctl を呼ばない", calls.length, 0);
+  // Windows はファイルを消すだけ
+  put(); calls.length = 0;
+  r = disableAutostart({ file, platform: "win32", env: {}, runLaunchctl: ctl(false) });
+  ok("解除: Windows はファイルを消すだけ", r.ok && !fs.existsSync(file) && calls.length === 0);
+  r = disableAutostart({ file, platform: "win32", env: {} });
+  ok("解除: もともと無ければオフのまま", r.ok);
+
+  // 書き直し: あるべき中身と違えば書き直す（Mac も）。別ポート・テスト用の起動では触らない
+  put("<plist>古い node を指したまま</plist>");
+  ok("書き直し: 別ポートの起動では書き直さない", !repairAutostart({ file, platform: "darwin", env: { PORT: "3299" } }) && fs.readFileSync(file, "utf8").includes("古い node"));
+  ok("書き直し: テスト用の起動では書き直さない", !repairAutostart({ file, platform: "darwin", env: { APOBOOST_NO_AUTOSTART: "1" } }) && fs.readFileSync(file, "utf8").includes("古い node"));
+  ok("書き直し: Mac で中身が違えば書き直す", repairAutostart({ file, platform: "darwin", env: {} }) && fs.readFileSync(file, "utf8") === autostartContent("darwin"));
+  ok("書き直し: Mac の中身は、いまの node を指す", autostartContent("darwin").includes(`<string>${process.execPath}</string>`));
+  ok("書き直し: 同じなら書き直さない", !repairAutostart({ file, platform: "darwin", env: {} }));
+  put("@echo off\r\nnpm start\r\n");
+  ok("書き直し: Windows も中身が違えば書き直す", repairAutostart({ file, platform: "win32", env: {} }) && fs.readFileSync(file, "utf8").includes("chcp 65001"));
+  fs.rmSync(file, { force: true });
+  ok("書き直し: 登録が無ければ作らない", !repairAutostart({ file, platform: "darwin", env: {} }) && !fs.existsSync(file));
+  fs.rmSync(dir, { recursive: true, force: true });
+
+  // 「フォームだけで使う」はユーザー別。1.0.14 の全員共通の値は、まだ選んでいない管理者にだけ引き継ぐ
+  const { setupEmailSkippedFor, saveSetupEmailSkipped, setupEmailSkipKey } = await import("../src/settings.js");
+  const admin = { id: 9001, role: "admin" }, member = { id: 9002, role: "user" }, admin2 = { id: 9003, role: "admin" };
+  ok("飛ばす: 何もしていなければ済みにならない", !setupEmailSkippedFor(admin) && !setupEmailSkippedFor(member));
+  saveSettingValue(S.setupEmailSkipped, true); // 1.0.14 で保存された全体の値
+  ok("飛ばす: 1.0.14 の値は管理者に引き継ぐ", setupEmailSkippedFor(admin) && setupEmailSkippedFor(admin2));
+  ok("飛ばす: 1.0.14 の値は一般ユーザーには引き継がない", !setupEmailSkippedFor(member));
+  saveSetupEmailSkipped(admin.id, false);
+  ok("飛ばす: 管理者が「やめる」を押せば、引き継いだ値より優先する", !setupEmailSkippedFor(admin) && setupEmailSkippedFor(admin2));
+  saveSetupEmailSkipped(member.id, true);
+  ok("飛ばす: 一般ユーザーが押しても、その人だけ", setupEmailSkippedFor(member) && !setupEmailSkippedFor(admin));
+  eq("飛ばす: キーは law_ack と同じ作り", setupEmailSkipKey(7), "setup_email_skipped:7");
+  saveSettingValue(S.setupEmailSkipped, false);
 }
 
 // ---- メールをエラーなく送れるか（email.ts / worker.ts / message.ts / 送信者の入力チェック）----
@@ -953,6 +1174,131 @@ ok("applog: 書いて読める", recentLogs(5).some((r) => r.text === "テスト
     eq("送信者: アドレスの形でないユーザー名（プロバイダのID）は通す", validateSender({ ...base, smtp_user: "user123" }), null);
   }
   await new Promise<void>((r) => server.close(() => r()));
+}
+
+// ---- メール3周目: 共有のフリーメール・要対応の分類・国際化ドメイン・送り始めた印 ----
+// 共有シート（Apps Script）にはつながない。fetch を差し替えて、送った中身を控えるだけにする
+{
+  const db = getDb();
+  const share = await import("../src/share.js");
+  const { normalizeEmail } = await import("../src/email.js");
+  const { todoReason } = await import("../src/ui/todo.js");
+  const { errKind } = await import("../src/ui/parts.js");
+  const { TODO_GROUPS } = await import("../src/app/context.js");
+  const { processJob } = await import("../src/worker.js");
+  const { CUT_PREFIX, INTERRUPTED_PREFIX, UNVERIFIED_TEXT, NOT_SENT_LEGACY_TEXT } = await import("../src/replies.js");
+
+  // A1 共有シートの1列目: フリーメールはアドレス（<> 付き）、それ以外はドメイン
+  eq("共有: 会社のドメインはそのまま", share.sharedKeyFor("example.co.jp", "info@example.co.jp"), "example.co.jp");
+  eq("共有: フリーメールはアドレスで書く", share.sharedKeyFor("gmail.com", "Taro@Gmail.com"), "<taro@gmail.com>");
+  eq("共有: フリーメールでアドレスが無ければ書かない", share.sharedKeyFor("gmail.com", ""), "");
+  eq("共有: 取り込み: アドレスの行はアドレスのまま（gmail.com にしない）", [share.sharedKeyOf("<taro@gmail.com>"), share.sharedKeyOf("taro@gmail.com")], ["taro@gmail.com", "taro@gmail.com"]);
+  eq("共有: 取り込み: ドメイン・URLの行は従来どおり", [share.sharedKeyOf("https://www.Example.co.jp/contact"), share.sharedKeyOf("なし")], ["example.co.jp", ""]);
+  // 古い版のアプリの読み方（1列目を URL として読み、読めなければそのまま）で、<> 付きのアドレスが「gmail.com」にならないこと
+  const { domainOf } = await import("../src/db.js");
+  const oldRead = (cell: string) => domainOf(cell) || cell.toLowerCase().trim();
+  eq("共有: 古い版が <アドレス> を読んでも gmail.com にならない", oldRead("<taro@gmail.com>"), "<taro@gmail.com>");
+  ok("共有: （参考）素のアドレスだと古い版は gmail.com と読んでしまう", oldRead("taro@gmail.com") === "gmail.com");
+
+  const realFetch = globalThis.fetch;
+  const posted: unknown[][] = [];
+  try {
+    db.prepare("INSERT INTO settings(key,value) VALUES(?,?),(?,?),(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .run(share.KEY.sentPullUrl, "https://sheet.invalid/x.csv", share.KEY.pushUrl, "https://script.invalid/exec", share.KEY.member, "自分");
+    // 取り込み: 旧版が書いた gmail.com の行・アドレスの行・自分の行
+    globalThis.fetch = (async (_u: unknown, init?: { method?: string; body?: string }) => {
+      if (init?.method === "POST") { const b = JSON.parse(init.body ?? "{}") as { rows: unknown[][] }; posted.push(...b.rows); return new Response(JSON.stringify({ ok: true, added: b.rows.length })); }
+      return new Response("ドメイン,会社名,送った人,送信日時\ngmail.com,旧版の行,佐藤,2026-09-01\n<hanako@gmail.com>,花子商店,佐藤,2026-09-02\nmine.example,自分の会社,自分,2026-09-03\nteam.example,チームの会社,佐藤,2026-09-04\n");
+    }) as typeof fetch;
+    await share.pullSharedSent();
+    ok("共有: 取り込みでアドレスの行はアドレスで入る", Boolean(db.prepare("SELECT 1 FROM shared_sent WHERE domain='hanako@gmail.com'").get()));
+    eq("共有: 旧版の gmail.com の行では、ほかの Gmail の会社を止めない", share.sharedSentBy("gmail.com", "jiro@gmail.com"), null);
+    eq("共有: 同じアドレスなら止める", share.sharedSentBy("gmail.com", "Hanako@gmail.com")?.member, "佐藤");
+    eq("共有: 会社のドメインは従来どおり止める", share.sharedSentBy("team.example", "")?.member, "佐藤");
+    // 自分の名前の行でも、このPCに送った記録が無ければ止める（同じ共有名を使う別のPCが送った会社に、こちらからも送らないため）
+    eq("共有: 自分の名前の行でも、手元に送信の記録が無ければ止める", share.sharedSentBy("mine.example", "")?.member, "自分");
+
+    // 書き出し: id の小さいキャンペーンが後から送った分も出る（shared_at で管理）・フリーメールはアドレスで出る
+    const s1 = db.prepare(`INSERT INTO sender_profiles(label,company,person,email,smtp_user,smtp_pass) VALUES('共有','株式会社共有','田中','s@share.example','s@share.example','')`).run().lastInsertRowid as number;
+    const cOld = db.prepare(`INSERT INTO form_campaigns(name,sender_id,mode,subject_text,template_text) VALUES('古いキャンペーン',?,'template','件','本')`).run(s1).lastInsertRowid as number;
+    const cNew = db.prepare(`INSERT INTO form_campaigns(name,sender_id,mode,subject_text,template_text) VALUES('新しいキャンペーン',?,'template','件','本')`).run(s1).lastInsertRowid as number;
+    db.prepare("UPDATE form_jobs SET shared_at=datetime('now') WHERE shared_at IS NULL").run(); // これまでの行は出し終わった扱いにして、このテストの分だけ見る
+    const ins = (c: number, name: string, email: string, domain: string, status: string) => db.prepare(`INSERT INTO form_jobs(campaign_id,company_name,email,domain,channel,status,sent_at) VALUES(?,?,?,?,'email',?,${status === "sent" ? "datetime('now')" : "NULL"})`).run(c, name, email, domain, status).lastInsertRowid as number;
+    const waitJob = ins(cOld, "古いキャンペーンの待機", "info@later.example", "later.example", "queued");
+    ins(cNew, "新しいキャンペーンの会社", "info@new.example", "new.example", "sent");
+    db.prepare("UPDATE form_jobs SET shared_at=datetime('now') WHERE id=?").run(ins(cNew, "自分が送った会社", "info@mine.example", "mine.example", "sent")); // 書き出しの確認には混ぜない
+    eq("共有: 自分の名前の行は、手元に送信の記録があれば見ない（手元の再送禁止で判断する）", share.sharedSentBy("mine.example", ""), null);
+    ins(cNew, "Gmailの会社", "Ken@Gmail.com", "gmail.com", "sent");
+    posted.length = 0;
+    await share.pushSent();
+    eq("共有: 書き出し: フリーメールはアドレス、それ以外はドメイン", posted.map((r) => r[0]).sort(), ["<ken@gmail.com>", "new.example"]);
+    db.prepare("UPDATE form_jobs SET status='sent', sent_at=datetime('now') WHERE id=?").run(waitJob);
+    posted.length = 0;
+    await share.pushSent();
+    eq("共有: id の小さいキャンペーンが後から送った分も書き出す", posted.map((r) => r[0]), ["later.example"]);
+    posted.length = 0;
+    await share.pushSent();
+    eq("共有: 書き出した分は二度出さない", posted.length, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+    db.prepare("DELETE FROM settings WHERE key IN (?,?,?)").run(share.KEY.sentPullUrl, share.KEY.pushUrl, share.KEY.member);
+  }
+
+  // A2 要対応の分類
+  const R = (result_text: string, status = "failed") => todoReason({ status, result_text, channel: "email" } as never);
+  eq("要対応: 送信の最後で切れた → 届いたか不明", R(`${CUT_PREFIX}（送信済みか不明・要確認）: x。送信用メールの「送信済み」フォルダに…`), "unsure");
+  eq("要対応: 送信中にアプリが止まった（メール） → 届いたか不明", R(`${INTERRUPTED_PREFIX}（送信済みか不明・要確認）: 送信用メールの「送信済み」フォルダ…`), "unsure");
+  eq("要対応: 確認できませんでした → 届いたか不明", R(UNVERIFIED_TEXT), "unsure");
+  eq("要対応: 時刻の記録が無い古い行 → 届いたか不明", R(NOT_SENT_LEGACY_TEXT), "unsure");
+  eq("要対応: 宛先が存在しない → 宛先のエラー", R("メール送信エラー: 宛先のメールアドレスが存在しません（アドレスの書き間違い・退職・廃止の可能性）"), "recipient");
+  eq("要対応: 受信箱がいっぱい → 宛先のエラー", R("メール送信エラー: 相手の受信箱がいっぱいで受け取ってもらえませんでした"), "recipient");
+  eq("要対応: 一時エラーが続いた → 宛先のエラー", R("メール送信エラー（3回試しても一時エラーのまま）: x"), "recipient");
+  eq("要対応: アドレスの形 → 宛先のエラー", R("メールアドレスの形が正しくない（info@@x）。会社の画面の「修正して再送信」で直してください"), "recipient");
+  eq("要対応: ログイン拒否は従来どおりメールの設定", R("メール送信エラー: Googleにログインを拒否されました。"), "mailconfig");
+  eq("要対応: 1行目が判定不能なら、ログに timeout があっても届いたか不明", R("送信後の判定不能: 完了の表示が見つからない\nclick失敗: Timeout 30000ms exceeded"), "unsure");
+  const { todoActions } = await import("../src/ui/todo.js");
+  const acts = (result_text: string) => todoActions({ id: 1, status: "failed", result_text, channel: "email", email: "a@b.example" } as never, "/todo");
+  ok("要対応: 届いたか不明の主ボタンは「送信済みにする」", /^<span class="todoacts">[^<]*<form[^>]*mark-sent/.test(acts(`${CUT_PREFIX}（送信済みか不明・要確認）: x`)), acts(`${CUT_PREFIX}（送信済みか不明・要確認）: x`).slice(0, 200));
+  ok("要対応: アドレスの形の主ボタンは「アドレスを直す」", /^<span class="todoacts"><a class="btn small" href="\/jobs\/1#fix">アドレスを直す/.test(acts("メールアドレスの形が正しくない（x）")));
+  eq("errKind: 届いたか不明", errKind({ status: "failed", result_text: `${CUT_PREFIX}（送信済みか不明・要確認）: x` }), "届いたか不明（送り直す前に確認）");
+  eq("errKind: 宛先のエラー", errKind({ status: "failed", result_text: "メール送信エラー: 宛先のメールアドレスが存在しません" }), "宛先のエラー");
+  eq("errKind: メールの設定", errKind({ status: "failed", result_text: "メール送信エラー: Googleにログインを拒否されました" }), "メールの設定");
+
+  // 「通信が切れて送れなかった」のまとめ（まとめて送り直す）に、届いたか分からない会社を入れない
+  {
+    const net = TODO_GROUPS.find((g) => g.key === "network")!;
+    const cg = db.prepare(`INSERT INTO form_campaigns(name,sender_id,mode,subject_text,template_text) VALUES('まとめ',1,'template','件','本')`).run().lastInsertRowid as number;
+    const f = (t: string, ch = "form") => db.prepare(`INSERT INTO form_jobs(campaign_id,company_name,domain,channel,status,result_text) VALUES(?,?,?,?,'failed',?)`).run(cg, t.slice(0, 10), "x.example", ch, t).lastInsertRowid as number;
+    const unsure = f("送信後の判定不能: 完了の表示が見つからない\nclick失敗: Timeout 30000ms exceeded");
+    const logOnly = f("確認画面を抜けられない\nwait: timeout");
+    const real = f("例外: page.goto: Timeout 30000ms exceeded");
+    const cut = f(`${CUT_PREFIX}（送信済みか不明・要確認）: メールサーバーとの通信が途中で切れました`, "email");
+    const hit = (db.prepare(`SELECT j.id FROM form_jobs j WHERE j.campaign_id=? AND ${net.where}`).all(cg) as { id: number }[]).map((r) => r.id);
+    eq("まとめ送り直し: 1行目が通信エラーのものだけ", hit, [real]);
+    ok("まとめ送り直し: 判定不能・ログだけの timeout・送信済みか不明は入らない", ![unsure, logOnly, cut].some((id) => hit.includes(id)));
+  }
+
+  // A6 国際化ドメイン
+  eq("国際化ドメイン: xn-- の形にそろえる", normalizeEmail("info@日本語.jp"), "info@xn--wgv71a119e.jp");
+  eq("国際化ドメイン: mailto: 付き・全角の＠も読める", normalizeEmail("mailto:Info＠例え.テスト"), "info@xn--r8jz45g.xn--zckzah");
+  eq("国際化ドメイン: ローカル部の日本語は従来どおり不可", normalizeEmail("営業@日本語.jp"), "");
+  eq("国際化ドメイン: 変換できないドメインは不可", normalizeEmail("info@日本語"), "");
+  eq("国際化ドメイン: 英数字のアドレスは今までどおり", normalizeEmail("Info@Example.co.jp"), "info@example.co.jp");
+
+  // 送り始めた印（sent_by_sender・send_started_at）: 送れていない行は試みのたびに消す。送れた記録のある行は消さない
+  {
+    const sp = db.prepare(`INSERT INTO sender_profiles(label,company,person,email,smtp_user,smtp_pass,address) VALUES('印','株式会社印','田中','m@mark.example','m@mark.example','x','東京都')`).run().lastInsertRowid as number;
+    const cm = db.prepare(`INSERT INTO form_campaigns(name,sender_id,mode,subject_text,template_text,channel) VALUES('印',?,'template','件','本','email')`).run(sp).lastInsertRowid as number;
+    db.prepare("INSERT OR IGNORE INTO form_suppressions(domain, reason) VALUES('suppressed-mark.example','テスト')").run();
+    const mk = (sentAt: boolean) => db.prepare(`INSERT INTO form_jobs(campaign_id,company_name,email,domain,channel,status,sent_by_sender,send_started_at,sent_at) VALUES(?,?,?,?,'email','failed',?,datetime('now'),${sentAt ? "datetime('now')" : "NULL"})`)
+      .run(cm, "株式会社印", "info@suppressed-mark.example", "suppressed-mark.example", sp).lastInsertRowid as number;
+    const never = mk(false), bounced = mk(true);
+    await processJob(null as never, never);
+    await processJob(null as never, bounced);
+    const g = (id: number) => db.prepare("SELECT status, sent_by_sender, send_started_at FROM form_jobs WHERE id=?").get(id) as { status: string; sent_by_sender: number | null; send_started_at: string | null };
+    eq("送り始めた印: 送れていない行は、SMTP の前に終わったら消えている", [g(never).status, g(never).sent_by_sender, g(never).send_started_at], ["skip_suppressed", null, null]);
+    eq("送り始めた印: 送れた記録のある行（戻りメール等）は消さない（今日の数・返信の照合のため）", g(bounced).sent_by_sender, sp);
+  }
 }
 
 if (failed) { console.error(`\nunit: ${failed}件 失敗`); process.exit(1); }

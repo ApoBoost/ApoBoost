@@ -234,6 +234,58 @@ const server = http.createServer(async (req, res) => {
   // 28) Contact Form 7 のクイズ欄（ボット対策）。答えずに CAPTCHA と同じ扱いで飛ばす
   if (p === "/quiz") return post ? done("quiz") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>")}<p><span class="wpcf7-form-control-wrap" data-name="quiz-1"><label><span class="wpcf7-quiz-label">1+1=?</span> <input type="text" name="quiz-1" size="10" class="wpcf7-form-control wpcf7-quiz"><input type="hidden" name="_wpcf7_quiz_answer_quiz-1" value="x"></label></span></p><button type="submit">送信する</button></form>`));
 
+  // ---- 3周目: 本番の実績から出た失敗の型 ----
+  // 29) Googleフォーム風: ラベルは aria-labelledby="i1 i4"（空白区切りの複数 id）だけ。見出しは入力欄から6階層以上離れている
+  const deep = (inner: string) => `<div><div><div><div><div><div>${inner}</div></div></div></div></div></div>`;
+  if (p === "/gform") return post ? done("gform") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">
+<div class="q"><div id="i1">お名前 *</div><div id="i4"></div>${deep('<input type="text" name="entry.1001" aria-labelledby="i1 i4" required>')}</div>
+<div class="q"><div id="i5">メールアドレス *</div><div id="i8"></div>${deep('<input type="text" name="entry.1002" aria-labelledby="i5 i8" required>')}</div>
+<div class="q"><div id="i9">お問い合わせ内容 *</div><div id="i12"></div>${deep('<textarea name="entry.1003" aria-labelledby="i9 i12" required></textarea>')}</div>
+<button type="submit">送信</button></form>`));
+
+  // 30) 電話・郵便番号が input type=number（ハイフン入りの文字は入らない）
+  if (p === "/numtel") return post ? done("numtel") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post"><table>
+<tr><th>お名前</th><td><input type="text" name="nm"></td></tr><tr><th>メールアドレス</th><td><input type="text" name="em"></td></tr>
+<tr><th>電話番号</th><td><input type="number" name="tel" required></td></tr><tr><th>郵便番号</th><td><input type="number" name="zip"></td></tr>
+<tr><th>お問い合わせ内容</th><td><textarea name="msg"></textarea></td></tr></table><button type="submit">送信する</button></form>`));
+
+  // 31) フォームの中に「確認」を含む別のボタン・リンク（SSLシール・確認事項・日付ピッカーの Next month・入力内容を編集）。
+  //     本物の確認ボタン「入力内容を確認する」だけを押す
+  if (["/pick/seal", "/pick/notice", "/pick/cal", "/pick/edit"].includes(p)) { hit("pick_decoy", { p }); res.writeHead(200, { "content-type": "text/plain" }); return res.end("ok"); }
+  if (p === "/pick") return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post" action="/pick/confirm">${fields("<th>電話番号（必須）</th>")}
+<p><a href="#" onclick="fetch('/pick/notice');return false;">個人情報の取り扱いに関する確認事項</a></p>
+<p>ご希望日 <input type="text" name="day"></p><div class="datepicker"><button type="button" onclick="fetch('/pick/cal')">Next month</button></div>
+<p><a href="#" onclick="fetch('/pick/seal');return false;">クリックして証明書の内容をご確認ください</a></p>
+<button type="button" onclick="fetch('/pick/edit')">入力内容を編集</button> <button type="submit">入力内容を確認する</button></form>`));
+  if (p === "/pick/confirm" && post) { hit("pick_confirm", b); return send(page("確認", `<h1>確認</h1><p>以下の内容で送信します。</p><form method="post" action="/pick/send">${hidden(b)}<button type="submit" formaction="/pick/edit">入力内容を変更</button> <button type="submit">送信する</button></form>`)); }
+  if (p === "/pick/send" && post) return done("pick");
+
+  // 32) 種類を判定できない必須の欄（text-92「トピック」・従業員数 type=number）。空だとブラウザが送信を止める
+  if (p === "/unk") return post ? (b["text-92"] ? done("unk") : send(page("エラー", "<p>必須項目が未入力です</p>"))) : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post"><table>
+<tr><th>お名前</th><td><input type="text" name="nm"></td></tr><tr><th>メールアドレス</th><td><input type="text" name="em"></td></tr>
+<tr><th>トピック</th><td><input type="text" name="text-92" required></td></tr><tr><th>従業員数</th><td><input type="number" name="emp"></td></tr>
+<tr><th>お問い合わせ内容</th><td><textarea name="msg"></textarea></td></tr></table><button type="submit">送信する</button></form>`));
+
+  // 33) 「TELは数値を入力してください」（「半角数字のみ」以外の言い回し）。ハイフンを抜いて入れ直す
+  if (p === "/numerr") {
+    if (post && /^\d+$/.test(b.tel ?? "")) return done("numerr");
+    return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>TEL（必須）</th>", b)}${post ? '<p style="color:red">TELは数値を入力してください</p>' : ""}<button type="submit">送信する</button></form>`));
+  }
+
+  // 34) 画像認証（画像の src に captcha を含まないので、押す前には分からない）。押したあとのエラー文で気づいて送り直さない
+  if (p === "/capterr") {
+    if (post) hit("capterr_post", b);
+    return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>", b)}<p><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="100" height="30"> 上の文字 <input type="text" name="kcode"></p>${post ? '<p style="color:red">上記画像内の文字を入力してください</p>' : ""}<button type="submit">送信する</button></form>`));
+  }
+
+  // 35) 「営業・売り込みを目的としたお問い合わせではないことを確認しました」の必須チェック。チェックせず、送らない
+  if (p === "/refusechk") return post ? done("refusechk") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号（必須）</th>")}<p><label><input type="checkbox" name="notsales" value="1" required> 営業・売り込みを目的としたお問い合わせではないことを確認しました</label></p><p><label><input type="checkbox" name="agree" value="1" required> 個人情報の取扱いに同意する</label></p><button type="submit">送信する</button></form>`));
+
+  // 36) 本文欄の無いフォームに、reCAPTCHA の隠し textarea（g-recaptcha-response）。段階式と読んで「送信」を押さない
+  if (p === "/rcta") return post ? done("rcta") : send(page("資料請求", `<h1>資料請求</h1><form method="post"><table>
+<tr><th>会社名</th><td><input type="text" name="co"></td></tr><tr><th>お名前</th><td><input type="text" name="nm"></td></tr><tr><th>メールアドレス</th><td><input type="email" name="em"></td></tr></table>
+<textarea name="g-recaptcha-response" id="g-recaptcha-response" style="display:none"></textarea><button type="submit">送信する</button></form>`));
+
   if (p === "/search") { hit("search", Object.fromEntries(url.searchParams)); return send(page("検索", "<p>検索結果</p>")); }
   send("not found", 404);
 });
@@ -253,7 +305,9 @@ try {
   const cases: [string, string, string][] = [...["kome", "imgreq", "minyuryoku", "alert", "plainerr", "imgbtn", "alink", "cf7ng", "proto", "kana", "both"].map((k): [string, string, string] => [k, `/${k}`, ""]),
     ["staff", "/staff/entry", "/staff/"], ["onlyentry", "", "/only-entry/"],
     ...["cta", "ifr", "ifrcap", "customer-success/contact", "weak", "sel", "telfmt", "spin"].map((k): [string, string, string] => [k.split("/")[0], `/${k}`, ""]),
-    ...["ajaxa", "ajaxb", "ajaxc", "stepconf", "ovl", "twota", "nf", "nf2", "hang", "quiz"].map((k): [string, string, string] => [k, `/${k}`, ""])];
+    ...["ajaxa", "ajaxb", "ajaxc", "stepconf", "ovl", "twota", "nf", "nf2", "hang", "quiz"].map((k): [string, string, string] => [k, `/${k}`, ""]),
+    ...["gform", "numtel", "pick", "unk", "numerr", "capterr", "refusechk", "rcta"].map((k): [string, string, string] => [k, `/${k}`, ""]),
+    ["refusechk2", "/refusechk", ""]];
   for (const [k, formPath, sitePath] of cases) {
     n++;
     if (only && !only.includes(k)) continue;
@@ -261,7 +315,7 @@ try {
     if (k === "hang") process.env.FO_SUBMIT_LIMIT_MS = "40000"; else delete process.env.FO_SUBMIT_LIMIT_MS;
     // 会社ごとに別のホスト名にする（同じドメインへの連続送信の扱いに引っかからないように）
     const host = `http://t${n}.localhost:${port}`;
-    const r = await submitToCompany(browser, { jobId: 9000 + n, formUrl: formPath ? host + formPath : "", siteUrl: sitePath ? host + sitePath : "", sender, subject: "ご案内", message: "はじめまして。サービスのご案内です。\nよろしくお願いいたします。" });
+    const r = await submitToCompany(browser, { jobId: 9000 + n, formUrl: formPath ? host + formPath : "", siteUrl: sitePath ? host + sitePath : "", sender, subject: "ご案内", message: "はじめまして。サービスのご案内です。\nよろしくお願いいたします。", ignoreRefusal: k === "refusechk2" });
     out[k] = { status: r.status, detail: r.detail, log: r.log };
     console.log(`- ${k}: ${r.status} | ${r.detail.split("\n")[0]}`);
     if (process.env.FO_DEBUG) console.log(r.log.join("\n"));
@@ -373,6 +427,21 @@ if (has("hang")) {
 
 if (has("quiz")) { assert.equal(out.quiz.status, "skip_captcha", `quiz: ${out.quiz.detail}`); assert.equal(got.quiz, undefined, "quiz: 送信しない"); }
 if (has("scanifrcap")) assert.equal(out.scanifrcap.status, "captcha", `scanifrcap: 事前チェックで iframe の中の reCAPTCHA を見つける → ${out.scanifrcap.detail}`);
+
+// ---- 3周目 ----
+if (has("gform")) { sentOnce("gform", "aria-labelledby の複数 id からラベルを読む"); assert.equal(got.gform[0]["entry.1001"], "山田 太郎", "gform: 名前"); assert.equal(got.gform[0]["entry.1002"], "sales@example.com", "gform: メール"); }
+if (has("numtel")) { sentOnce("numtel", "type=number の電話・郵便番号に数字だけを入れる"); assert.equal(got.numtel[0].tel, "0312345678"); assert.equal(got.numtel[0].zip, "1140001"); }
+if (has("pick")) {
+  sentOnce("pick", "フォームの中の SSLシール・確認事項・Next month・入力内容を編集／変更 を押さず、本物の確認ボタンと送信ボタンを押す");
+  assert.equal(got.pick_decoy, undefined, `pick: 別のボタンを押した ${JSON.stringify(got.pick_decoy)}`);
+  assert.equal(got.pick_confirm?.length, 1, "pick: 「入力内容を確認する」を1回押す");
+}
+if (has("unk")) { sentOnce("unk", "種類不明の必須欄を埋める"); assert.equal(got.unk[0]["text-92"], "特になし"); assert.equal(got.unk[0].emp, "", "unk: 数字の欄には事実と違う数字を入れない"); assert.equal(got.unk[0].nm, "山田 太郎", "unk: 氏名欄はそのまま"); }
+if (has("numerr")) { sentOnce("numerr", "「数値を入力してください」で電話番号を数字だけにする"); assert.equal(got.numerr[0].tel, "0312345678"); }
+if (has("capterr")) { assert.equal(out.capterr.status, "skip_captcha", `capterr: ${out.capterr.detail}\n${out.capterr.log.join("\n")}`); assert.equal(got.capterr_post?.length, 1, `capterr: 入れ直して送り直さない（${got.capterr_post?.length}回）`); }
+for (const k of ["refusechk", "refusechk2"]) if (has(k)) { assert.equal(out[k].status, "skip_refused", `${k}: ${out[k].detail}`); }
+if (has("refusechk") || has("refusechk2")) assert.equal(got.refusechk, undefined, "refusechk: 送らない");
+if (has("rcta")) { assert.equal(got.rcta, undefined, `rcta: 本文欄の無いフォームを送らない → ${out.rcta.detail}\n${out.rcta.log.join("\n")}`); assert.notEqual(out.rcta.status, "sent"); }
 
 console.log("todo: ALL OK");
 process.exit(0);

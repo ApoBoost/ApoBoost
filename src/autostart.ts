@@ -4,28 +4,67 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { logError, logInfo } from "./applog.js";
 
 export const ROOT = path.resolve(process.cwd());
 const LABEL = "com.apoboost.start";
-const PLIST = path.join(os.homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
 const WIN_STARTUP = path.join(os.homedir(), "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
-const WIN_FILE = path.join(WIN_STARTUP, "ApoBoost.bat");
+
+/** 自動起動の登録ファイルの場所。
+ *  APOBOOST_AUTOSTART_FILE で差し替えられる（単体テストで、このパソコンの本物の登録に触らずに試すため）。
+ *  差し替えているときは launchctl も呼ばない */
+export function autostartFile(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
+  const o = env.APOBOOST_AUTOSTART_FILE?.trim();
+  if (o) return path.resolve(o);
+  if (platform === "darwin") return path.join(os.homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
+  if (platform === "win32") return path.join(WIN_STARTUP, "ApoBoost.bat");
+  return "";
+}
+const overridden = (env: NodeJS.ProcessEnv = process.env) => Boolean(env.APOBOOST_AUTOSTART_FILE?.trim());
 
 export function autostartSupported(): boolean {
   return process.platform === "darwin" || process.platform === "win32";
 }
 
+/** 本物の登録に一切触ってはいけない起動（テスト・確認用のサーバー）。理由を返す。触ってよければ空文字 */
+export function autostartHardBlock(env: NodeJS.ProcessEnv = process.env): string {
+  return env.APOBOOST_NO_AUTOSTART === "1" ? "この起動では自動起動を変更しない設定です（APOBOOST_NO_AUTOSTART=1）" : "";
+}
+
+/** 既定（3210番・data/）とは別の ApoBoost として起動しているか。理由を返す。既定どおりなら空文字。
+ *  自動起動の登録はパソコンに1つだけで、ポートもデータの場所も渡さない（既定の 3210 番・data/ で起動する）ため、
+ *  この起動の登録ではない */
+export function autostartOtherInstance(env: NodeJS.ProcessEnv = process.env, root = ROOT): string {
+  if (env.PORT && env.PORT !== "3210") return `ポートを変えて起動しているため（PORT=${env.PORT}）`;
+  if (env.DATA_DIR && path.resolve(env.DATA_DIR) !== path.join(root, "data")) return "データの場所を変えて起動しているため（DATA_DIR）";
+  return "";
+}
+
 /** 自動起動を登録してはいけない起動かどうか（登録しない理由。登録してよければ空文字）。
- *  自動起動の登録はパソコンに1つだけで、ポートもデータの場所も渡さない（既定の 3210 番・data/ で起動する）。
  *  テストや開発の確認（別ポート・一時フォルダのデータ）でうっかり登録すると、そのパソコンの本物の自動起動を書き換えてしまうため、
  *  APOBOOST_NO_AUTOSTART=1 のとき、または PORT / DATA_DIR を既定から変えて起動しているときは、登録も書き直しもしない */
-export function autostartBlockedReason(): string {
-  if (process.env.APOBOOST_NO_AUTOSTART === "1") return "この起動では自動起動を登録しない設定です（APOBOOST_NO_AUTOSTART=1）";
-  if (process.env.PORT && process.env.PORT !== "3210") return `ポートを変えて起動しているため（PORT=${process.env.PORT}）、自動起動は登録しません`;
-  if (process.env.DATA_DIR && path.resolve(process.env.DATA_DIR) !== path.join(ROOT, "data")) return "データの場所を変えて起動しているため（DATA_DIR）、自動起動は登録しません";
-  return "";
+export function autostartBlockedReason(env: NodeJS.ProcessEnv = process.env): string {
+  const hard = autostartHardBlock(env);
+  if (hard) return hard;
+  const other = autostartOtherInstance(env);
+  return other ? `${other}、自動起動は登録しません` : "";
+}
+
+/** この起動が、自動起動（launchd）から立ち上がったものか。launchd は自分が起動したものに XPC_SERVICE_NAME=ラベル を渡す */
+function underLaunchd(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.XPC_SERVICE_NAME === LABEL;
+}
+
+/** launchctl を同期で呼ぶ。失敗したら null（登録されていない・launchctl が無いなど） */
+function realLaunchctl(args: string[]): string | null {
+  try { return execFileSync("launchctl", args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }); } catch { return null; }
+}
+
+/** launchd に読み込まれている自動起動が、いま ApoBoost を動かしているか（launchctl list の結果に PID がある） */
+function launchdJobRunning(ctl: (args: string[]) => string | null): boolean {
+  const out = ctl(["list", LABEL]);
+  return out !== null && /"PID"\s*=\s*\d+/.test(out);
 }
 
 /** 自動起動で使う PATH。動いている node のフォルダを先頭に置く。
@@ -63,17 +102,22 @@ function winBat(): string {
   return `@echo off\r\nchcp 65001 >nul\r\nrem ApoBoostをログイン時に起動する（ApoBoost の画面から作成されたファイルです）\r\ncd /d "${ROOT}"\r\nset "PATH=${nodeDir()};%PATH%"\r\nstart "ApoBoost" /min cmd /c "npm start"\r\n`;
 }
 
+/** 登録ファイルの「あるべき中身」（いまのフォルダ・いまの node で書いたもの） */
+export function autostartContent(platform: NodeJS.Platform = process.platform): string {
+  return platform === "darwin" ? macPlist() : platform === "win32" ? winBat() : "";
+}
+
 export function autostartEnabled(): boolean {
   try {
-    if (process.platform === "darwin") return fs.existsSync(PLIST);
-    if (process.platform === "win32") return fs.existsSync(WIN_FILE);
+    const f = autostartFile();
+    return Boolean(f) && fs.existsSync(f);
   } catch { /* 権限等 */ }
   return false;
 }
 
 /** 自動起動の設定ファイルの場所（画面に出して、手で消せるようにしておく） */
 export function autostartPath(): string {
-  return process.platform === "darwin" ? PLIST : process.platform === "win32" ? WIN_FILE : "";
+  return autostartFile();
 }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -82,21 +126,24 @@ export function enableAutostart(): { ok: boolean; message: string } {
   if (!autostartSupported()) return { ok: false, message: "このOSでは自動起動に対応していません" };
   const blocked = autostartBlockedReason();
   if (blocked) return { ok: false, message: blocked };
+  const file = autostartFile();
   try {
     if (process.platform === "darwin") {
-      fs.mkdirSync(path.dirname(PLIST), { recursive: true });
-      const plist = macPlist();
-      fs.writeFileSync(PLIST, plist, "utf8");
-      // 反映（失敗しても次回のログインで有効になる）
-      execFile("launchctl", ["unload", PLIST], () => {
-        execFile("launchctl", ["load", "-w", PLIST], () => {});
-      });
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, macPlist(), "utf8");
+      // 反映（失敗しても次回のログインで有効になる）。
+      // 自動起動（launchd）から動いているとき・launchd の方で ApoBoost が動いているときは、unload が動いている ApoBoost を止めてしまうので何もしない
+      if (!overridden() && !underLaunchd() && !launchdJobRunning(realLaunchctl)) {
+        execFile("launchctl", ["unload", file], () => {
+          execFile("launchctl", ["load", "-w", file], () => {});
+        });
+      }
       logInfo("autostart", "ログイン時の自動起動をオンにしました（Mac）");
       return { ok: true, message: "パソコンのログイン時に自動で起動します。次回からターミナルを開く必要はありません（この画面を http://localhost:3210 で開けます）" };
     }
     // Windows
-    fs.mkdirSync(WIN_STARTUP, { recursive: true });
-    fs.writeFileSync(WIN_FILE, winBat(), "utf8");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, winBat(), "utf8");
     logInfo("autostart", "ログイン時の自動起動をオンにしました（Windows）");
     return { ok: true, message: "パソコンのログイン時に自動で起動します（最小化された黒い画面が1つ出ます。閉じないでください）" };
   } catch (e) {
@@ -107,42 +154,56 @@ export function enableAutostart(): { ok: boolean; message: string } {
 }
 
 /** 起動時: 自動起動の設定が、いまのフォルダ・いまの node と食い違っていたら書き直す（オンにしているPCだけ）。
- *  Windows: 期待する中身と1文字でも違えば書き直す（以前の版のファイルには chcp 65001 や PATH が無く、
- *  日本語のフォルダや、フォルダの中の Node.js だけのPCでは、自動起動が黙って失敗し続けるため）。
- *  Mac: 指している node が無くなっていたら（Node.js を入れ替えた・消した）書き直す。次のログインから効く。
+ *  期待する中身と1文字でも違えば書き直す。
+ *  Windows: 以前の版のファイルには chcp 65001 や PATH が無く、日本語のフォルダや、フォルダの中の Node.js だけのPCでは、自動起動が黙って失敗し続けるため。
+ *  Mac: フォルダの中の Node.js（runtime/）を新しい版に入れ替えたあとも、古い node を指したままになるため。次のログインから効く。
  *  テストや開発の起動（autostartBlockedReason）では、本物の設定に触らない */
-export function repairAutostart(): void {
-  if (autostartBlockedReason()) return;
+export function repairAutostart(opts: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; file?: string } = {}): boolean {
+  const env = opts.env ?? process.env;
+  if (autostartBlockedReason(env)) return false;
+  const platform = opts.platform ?? process.platform;
   try {
-    if (process.platform === "win32") {
-      if (fs.existsSync(WIN_FILE) && fs.readFileSync(WIN_FILE, "utf8") !== winBat()) {
-        fs.writeFileSync(WIN_FILE, winBat(), "utf8");
-        logInfo("autostart", "自動起動のファイルを、いまの版の中身に書き直しました（Windows）");
-      }
-    } else if (process.platform === "darwin") {
-      if (!fs.existsSync(PLIST)) return;
-      const node = /<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]*)<\/string>/.exec(fs.readFileSync(PLIST, "utf8"))?.[1];
-      const unesc = (v: string) => v.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-      if (node && !fs.existsSync(unesc(node))) {
-        fs.writeFileSync(PLIST, macPlist(), "utf8");
-        logInfo("autostart", `自動起動が指していた Node.js（${unesc(node)}）が無くなっていたので、いまの Node.js に書き直しました（Mac）`);
-      }
-    }
+    const file = opts.file ?? autostartFile(platform, env);
+    if (!file || !fs.existsSync(file)) return false;
+    const want = autostartContent(platform);
+    if (!want || fs.readFileSync(file, "utf8") === want) return false;
+    fs.writeFileSync(file, want, "utf8");
+    logInfo("autostart", `自動起動のファイルを、いまのフォルダ・いまの Node.js（${process.execPath}）に合わせて書き直しました（次のログインから効きます）`);
+    return true;
   } catch { /* 読めなくても起動は続ける */ }
+  return false;
 }
 
-export function disableAutostart(): { ok: boolean; message: string } {
+export type DisableResult = { ok: boolean; message: string; needConfirm?: boolean };
+
+/** 自動起動を解除する。
+ *  - APOBOOST_NO_AUTOSTART=1 の起動（テスト・確認用）からは、常に断る
+ *  - PORT / DATA_DIR を既定から変えた起動（開発の確認など）からは、登録が別の ApoBoost（既定の 3210番・data/）のものなので、
+ *    confirmed で2回目の確認が来るまで消さない
+ *  - 解除は登録ファイルを消すだけ（次のログインから効く）。Mac の launchctl unload は非同期で、
+ *    しかも launchd から動いている ApoBoost を止めてしまうため、自分が launchd の下で動いておらず、launchd の方でも
+ *    ApoBoost が動いていないときだけ、読み込みを外す（ファイルを消したあとでも、ラベルで外せる remove を使う）
+ *  file / runLaunchctl / env / platform は、単体テストで本物の登録に触らずに試すための差し替え口 */
+export function disableAutostart(opts: { confirmed?: boolean; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; file?: string; runLaunchctl?: (args: string[]) => string | null } = {}): DisableResult {
+  const env = opts.env ?? process.env;
+  const platform = opts.platform ?? process.platform;
+  const hard = autostartHardBlock(env);
+  if (hard) return { ok: false, message: `${hard}。解除はしていません` };
+  const file = opts.file ?? autostartFile(platform, env);
+  if (!file) return { ok: false, message: "このOSでは自動起動に対応していません" };
   try {
-    if (process.platform === "darwin") {
-      if (fs.existsSync(PLIST)) {
-        execFile("launchctl", ["unload", "-w", PLIST], () => {});
-        fs.rmSync(PLIST);
-      }
-    } else if (process.platform === "win32") {
-      if (fs.existsSync(WIN_FILE)) fs.rmSync(WIN_FILE);
+    if (!fs.existsSync(file)) return { ok: true, message: "自動起動はもともとオフです" };
+    if (autostartOtherInstance(env) && !opts.confirmed) {
+      return { ok: false, needConfirm: true, message: "この登録は既定の 3210番・data/ で起動する ApoBoost のものです。それでも解除しますか" };
+    }
+    fs.rmSync(file);
+    const ctl = opts.runLaunchctl ?? (opts.file || overridden(env) ? null : realLaunchctl);
+    if (platform === "darwin" && ctl && !underLaunchd(env)) {
+      const listed = ctl(["list", LABEL]); // null = 読み込まれていない（外すものが無い）
+      if (listed !== null && !/"PID"\s*=\s*\d+/.test(listed)) ctl(["remove", LABEL]);
     }
     logInfo("autostart", "ログイン時の自動起動をオフにしました");
-    return { ok: true, message: "自動起動をオフにしました（これまでどおり、手で起動してください）" };
+    return { ok: true, message: "自動起動をオフにしました。次にパソコンにログインしたときから、自動では立ち上がりません（いま動いている ApoBoost はそのまま動きます）" };
   } catch (e) {
     return { ok: false, message: `解除に失敗しました: ${String((e as Error).message ?? e).slice(0, 160)}` };
   }

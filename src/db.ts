@@ -317,6 +317,12 @@ function migrate(db: Database.Database) {
   // 自動で一時停止したときの理由（AIの設定の問題・差し込み名の間違いなど）。キャンペーン画面とホームに「なぜ止まったか」を出すため。
   // 書くのは worker、消すのは「開始」「一時停止」の操作。空＝自動の一時停止ではない
   addCol("form_campaigns", "pause_reason", "TEXT NOT NULL DEFAULT ''");
+  // メールを送信用アカウント（SMTP）に送り始めた時刻（UTC）。送信の途中で止まったメールを送信済みフォルダで確かめるときの起点。
+  // 以前は updated_at を流用していて、「要対応に戻す」や反応の手入力で今の時刻に変わり、届いていたメールを「未送信」と判断して二重に送り得た
+  addCol("form_jobs", "send_started_at", "TEXT");
+  // チーム共有シートへ書き出した時刻（UTC）。NULL＝まだ書き出していない。
+  // 以前は「前回の form_jobs.id より大きいもの」で進めていたため、id の小さいキャンペーンが後から送った分が永久に書き出されなかった
+  addCol("form_jobs", "shared_at", "TEXT");
 
   // 質問箱から配布元（担当者）へ送った質問と、その返信。ticket は推測できない番号で、返信を読むための合い言葉になる
   db.exec(`CREATE TABLE IF NOT EXISTS support_tickets (

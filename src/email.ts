@@ -1,5 +1,6 @@
 // メール送信（自分のGmail / Google Workspace 等のSMTP）。差出人はクライアント自身のアカウント。
 import nodemailer from "nodemailer";
+import { domainToASCII } from "node:url";
 import { getDb, getSetting, setSetting, FREE_MAIL_DOMAINS, type SenderProfile } from "./db.js";
 
 export function senderEmailOk(sender: SenderProfile): { ok: boolean; reason?: string; from: string } {
@@ -232,7 +233,17 @@ export function normalizeEmail(raw: string | null | undefined): string {
       .replace(/^[<"'\[]+|[>"'\]]+$/g, "")
       .replace(/[.,;:。、]+$/, "")
       .toLowerCase();
-    if (t.includes("@") && STRICT_EMAIL_RE.test(t)) return t;
+    if (!t.includes("@")) continue;
+    if (STRICT_EMAIL_RE.test(t)) return t;
+    // 国際化ドメイン（info@日本語.jp）は、@ より後ろを xn-- の形（送信・照合で使う形）にしてから確かめる。
+    // 以前は「形が正しくない」で送れなかった。@ より前（ローカル部）の日本語は、送れないサーバーが多いので従来どおり通さない
+    const at = t.lastIndexOf("@");
+    const host = t.slice(at + 1);
+    if (/[^\x00-\x7f]/.test(host)) {
+      const ascii = domainToASCII(host);
+      const idn = ascii ? `${t.slice(0, at)}@${ascii.toLowerCase()}` : "";
+      if (idn && STRICT_EMAIL_RE.test(idn)) return idn;
+    }
   }
   return "";
 }

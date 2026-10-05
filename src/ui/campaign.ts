@@ -172,7 +172,7 @@ ${skipped.map((x) => `<tr><td>${esc(x.company)}</td><td class="small">${esc(x.re
 </table></details>` : ""}`;
 }
 
-export function campaignView(c: Campaign & { sender: SenderProfile }, jobs: Job[], counts: Record<string, number>, running: boolean, provider: string, extra: { preview?: { job: Job; subject: string; message: string; aiUsed: boolean; lint?: Lint[]; emailHtml?: string } | null; windowOk: boolean; sentToday: number; emailSentToday: number; scanning: boolean; unscanned: number; scanned: number; statusFilter?: string; qFilter?: string; outcomeFilter?: string; impFilter?: string; sortKey?: string; eta?: string; tab?: "prep" | "send" | "result"; page?: number; pageSize?: number; total?: number; companyTotal?: number; companyAll?: number; warmup?: { sent: number; limit: number; note: string } | null; ab?: { variant: string; sent: number; replied: number; appo: number }[]; undo?: { id: number; label: string; rows_count: number } | null; matched?: { n: number; sent: number }; attempts?: Record<string, number>; companyCounts?: Record<string, number>; outcomes: Record<string, number>; lastImport?: import("../csv.js").ImportSummary | null; retryTargets?: { id: number; company_name: string; status: string; result_text: string }[]; emailQueued?: number; period?: { todayForm: number; todayEmail: number; monthForm: number; monthEmail: number }; emailPaused?: { until: number; reason: string } | null; reactions?: { id: number; company_name: string; domain: string; email: string; channel: string; outcome: string; outcome_note: string; updated_at: string }[]; imports?: { key: string; label: string; at: string; total: number; sent: number; queued: number }[]; replyScan?: { enabled: boolean; checkedAt: string | null; error: string; checking: boolean }; stall?: { kind: string; text: string; blocking: boolean; href?: string; action?: string } | null; templateProblems?: string[] }) {
+export function campaignView(c: Campaign & { sender: SenderProfile }, jobs: Job[], counts: Record<string, number>, running: boolean, provider: string, extra: { preview?: { job: Job; subject: string; message: string; aiUsed: boolean; lint?: Lint[]; emailHtml?: string } | null; windowOk: boolean; sentToday: number; emailSentToday: number; scanning: boolean; unscanned: number; scanned: number; statusFilter?: string; qFilter?: string; outcomeFilter?: string; impFilter?: string; sortKey?: string; eta?: string; tab?: "prep" | "send" | "result"; page?: number; pageSize?: number; total?: number; companyTotal?: number; companyAll?: number; warmup?: { sent: number; limit: number; note: string } | null; ab?: { variant: string; sent: number; replied: number; appo: number }[]; undo?: { id: number; label: string; rows_count: number } | null; matched?: { n: number; sent: number }; attempts?: Record<string, number>; companyCounts?: Record<string, number>; outcomes: Record<string, number>; lastImport?: import("../csv.js").ImportSummary | null; retryTargets?: { id: number; company_name: string; status: string; result_text: string }[]; emailQueued?: number; period?: { todayForm: number; todayEmail: number; monthForm: number; monthEmail: number }; emailPaused?: { until: number; reason: string } | null; reactions?: { id: number; company_name: string; domain: string; email: string; channel: string; outcome: string; outcome_note: string; updated_at: string }[]; imports?: { key: string; label: string; at: string; total: number; sent: number; queued: number }[]; replyScan?: { enabled: boolean; checkedAt: string | null; error: string; checking: boolean }; stall?: { kind: string; text: string; blocking: boolean; href?: string; action?: string; reason?: string } | null; templateCheck?: { errors: string[]; warnings: string[] } }) {
   // 「反応」欄の下に出す、返信の自動確認の状態（送信用メールの受信箱を15分ごとに読んで反応を自動記録している）
   const replyScanLine = () => {
     const r = extra.replyScan;
@@ -224,7 +224,7 @@ ${sorted.map((r) => {
 <form method="post" action="/undo/${extra.undo.id}" class="inline" style="margin-left:10px" data-busy><button class="btn">削除を元に戻す</button></form>
 <p class="muted small" style="margin:6px 0 0">まちがえて消した場合は30分以内にここから戻せます（スクリーンショットの画像は戻りません）。</p></div>` : ""}
 <p style="margin:0 0 6px"><a href="/campaigns">← キャンペーン一覧</a></p>
-<div class="pagehead" style="margin-bottom:6px"><h1>${esc(c.name)} ${campaignStatusTag(c.status, running)}</h1>
+<div class="pagehead" style="margin-bottom:6px"><h1>${esc(c.name)} ${campaignStatusTag(c.status, running, extra.stall)}</h1>
 <span style="display:flex;gap:8px;align-items:center">${running
     ? `<form method="post" action="/campaigns/${c.id}/pause" class="inline"><button class="btn danger">一時停止</button></form>`
     : cnt("queued") > 0 && tab !== "send" ? `<form method="post" action="/campaigns/${c.id}/start" class="inline" data-busy><input type="hidden" name="only" value="${esc(c.send_only ?? "")}"><button class="btn primary" data-busytext="送信を開始しています…" title="送信時間帯の中で、1日の上限を守って送ります。対象や時間帯を変えるときは「② 送信」タブから">開始する（${n(cnt("queued"))}社）</button></form>` : ""}
@@ -275,17 +275,29 @@ ${whys.length ? `<div class="ovwhy"><span class="muted">送れなかった理由
 </div>`;
   })()}
 ${(() => {
-    // 文面の書き換え忘れ・差し込み名の間違い。開始のときにも同じ検査で止めるので、押す前にここで分かるようにする
-    const probs = extra.templateProblems ?? [];
-    if (!probs.length) return "";
-    return `<div class="flash" style="background:var(--c-ng-bg);color:var(--c-ng);display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap" data-nohelp>${IC_WARN}<div style="flex:1;min-width:240px"><b>文面に直すところがあります（このままでは開始できません）</b><ul style="margin:4px 0 0;padding-left:1.2em">${probs.slice(0, 6).map((x) => `<li class="small">${esc(x)}</li>`).join("")}${probs.length > 6 ? `<li class="small">ほか ${n(probs.length - 6)}件</li>` : ""}</ul></div><a class="btn small" href="/campaigns/${c.id}/edit#tpl">文面を直す</a></div>`;
-  })()}
-${(() => {
-    // いま送りが進まない理由（経路で1つに決めたもの）。「時間待ち」だけでは、なぜ進まないのか分からなかった
+    // 文面の書き換え忘れ・差し込み名の間違い（開始のときにも同じ検査で止めるので、押す前にここで分かるようにする）と、
+    // いま送りが進まない理由。文面の間違いで自動で止まったときは同じ内容・同じボタンの帯が2本並んでいたので、1本にまとめる
+    const errs = extra.templateCheck?.errors ?? [], warns = extra.templateCheck?.warnings ?? [];
     const st = extra.stall;
-    if (!st) return "";
-    const ng = st.kind === "auto";
-    return `<div class="flash" style="background:${ng ? "var(--c-ng-bg)" : "var(--c-warn-bg)"};color:${ng ? "var(--c-ng)" : "var(--c-warn)"};display:flex;gap:10px;align-items:center;flex-wrap:wrap" data-nohelp>${ng ? IC_WARN : ""}<span style="flex:1;min-width:240px">${st.blocking ? "<b>いま送っていない理由:</b> " : ""}${esc(st.text)}</span>${st.href && st.action ? `<a class="btn small" href="${esc(st.href)}">${esc(st.action)}</a>` : ""}</div>`;
+    const list = (xs: string[]) => `<ul style="margin:4px 0 0;padding-left:1.2em">${xs.slice(0, 6).map((x) => `<li class="small">${esc(x)}</li>`).join("")}${xs.length > 6 ? `<li class="small">ほか ${n(xs.length - 6)}件</li>` : ""}</ul>`;
+    const fixBtn = `<a class="btn small" href="/campaigns/${c.id}/edit#tpl">文面を直す</a>`;
+    const out: string[] = [];
+    // 文面のせいで自動で止まった（直す先が文面の編集）なら、理由の帯は出さず、文面の帯の見出しに「自動で止めた」を入れる
+    const stallIsTemplate = st?.kind === "auto" && errs.length > 0 && (st.href ?? "").includes("/edit");
+    if (errs.length) {
+      out.push(`<div class="flash" style="background:var(--c-ng-bg);color:var(--c-ng);display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap" data-nohelp>${IC_WARN}<div style="flex:1;min-width:240px"><b>${stallIsTemplate ? "文面に直すところがあるため、自動で一時停止しました（直してから「開始する」を押すと続きから送ります）" : "文面に直すところがあります（このままでは開始できません）"}</b>${list(errs)}</div>${fixBtn}</div>`);
+    }
+    if (st && !stallIsTemplate) {
+      // いま送りが進まない理由（経路で1つに決めたもの）。「時間待ち」だけでは、なぜ進まないのか分からなかった
+      const ng = st.kind === "auto";
+      out.push(`<div class="flash" style="background:${ng ? "var(--c-ng-bg)" : "var(--c-warn-bg)"};color:${ng ? "var(--c-ng)" : "var(--c-warn)"};display:flex;gap:10px;align-items:center;flex-wrap:wrap" data-nohelp>${ng ? IC_WARN : ""}<span style="flex:1;min-width:240px">${st.blocking ? "<b>いま送っていない理由:</b> " : ""}${esc(st.text)}</span>${st.href && st.action ? `<a class="btn small" href="${esc(st.href)}">${esc(st.action)}</a>` : ""}</div>`);
+    }
+    // 警告は開始を止めない。飾りの波括弧などが、そのまま相手に届くことだけ知らせる（止める理由があるときは、そちらを先に直してもらう）。
+    // 飾りのつもりの人には毎回出ると邪魔なので、開始する前（準備中・一時停止）だけ出す
+    if (warns.length && !errs.length && (c.status === "draft" || c.status === "paused")) {
+      out.push(`<div class="flash" style="background:var(--c-warn-bg);color:var(--c-warn);display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap" data-nohelp><div style="flex:1;min-width:240px"><b>文面の確認（このままでも開始できます）</b>${list(warns)}</div>${fixBtn}</div>`);
+    }
+    return out.join("\n");
   })()}
 
 ${tabsNav}

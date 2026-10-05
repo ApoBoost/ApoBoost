@@ -295,7 +295,8 @@ ${!st.configured
 export type HealthCheck = { level: "ok" | "warn" | "ng"; label: string; detail: string; fix?: string };
 
 export type HealthState = {
-  autostart: { supported: boolean; enabled: boolean; path: string };
+  /** blocked: この起動から登録できない理由（空なら登録できる）。locked: テスト用の起動などで、解除もできない */
+  autostart: { supported: boolean; enabled: boolean; path: string; blocked?: string; locked?: boolean };
   autoUpdate: boolean;
   awakeNote: string;
   logs: { errors24h: number; total: number };
@@ -324,11 +325,12 @@ export function healthView(checks: HealthCheck[], st: HealthState): string {
 <div class="card">
   <form method="post" action="/settings/autostart" class="inline" data-busy>
     <label style="display:flex;align-items:center;gap:8px;font-weight:600">
-      <input type="checkbox" name="autostart" value="1" ${st.autostart.enabled ? "checked" : ""} onchange="this.form.submit()" ${st.autostart.supported && st.isAdmin ? "" : "disabled"} style="width:auto">
+      <input type="checkbox" name="autostart" value="1" ${st.autostart.enabled ? "checked" : ""} onchange="this.form.submit()" ${st.autostart.supported && st.isAdmin && !st.autostart.locked && (st.autostart.enabled || !st.autostart.blocked) ? "" : "disabled"} style="width:auto">
       パソコンのログイン時に自動で起動する
     </label>
   </form>
   <p class="muted">オンにすると、パソコンを起動・再起動したあとに自分で立ち上げる必要がなくなります（起動し忘れ・黒い画面を閉じて止まる事故を防げます）。${st.autostart.supported ? "" : "このOSでは対応していません。"}${st.autostart.enabled && st.autostart.path ? `<br>設定ファイル: <code>${esc(st.autostart.path)}</code>` : ""}</p>
+  ${st.autostart.supported && st.autostart.blocked ? `<p class="muted"><b>この起動からは登録できません</b>（${esc(st.autostart.blocked.replace(/、自動起動は登録しません$/, ""))}）。${st.autostart.enabled ? "上の「オン」は、このパソコンの既定の ApoBoost（3210番・data/）の登録です。" : ""}</p>` : ""}
   <p class="muted">スリープ対策: ${esc(st.awakeNote)}</p>
   <hr style="border:0;border-top:1px solid var(--hive-200);margin:12px 0">
   <form method="post" action="/settings/auto-update" class="inline" data-busy>
