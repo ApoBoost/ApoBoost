@@ -169,7 +169,11 @@ function start() {
   // node の --import は Node.js 20.6 以降。それより古いPCでは従来どおり npx tsx で起動する
   const [maj, min] = process.versions.node.split(".").map(Number);
   const direct = maj > 20 || (maj === 20 && min >= 6);
-  const p = direct
+  // 配布版（src が無く、固めた app/server.mjs だけがある）は、そのまま node で動かす。開発フォルダは src から動かす
+  const bundled = !fs.existsSync(path.join(root, "src", "server.ts")) && fs.existsSync(path.join(root, "app", "server.mjs"));
+  const p = bundled
+    ? spawn(process.execPath, ["app/server.mjs"], { cwd: root, stdio: "inherit", env: process.env })
+    : direct
     ? spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, stdio: "inherit", env: process.env })
     : spawn(WIN ? "npx.cmd" : "npx", ["tsx", "src/server.ts"], { cwd: root, stdio: "inherit", shell: WIN, env: process.env });
   p.on("close", (code) => {

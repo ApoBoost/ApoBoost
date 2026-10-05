@@ -123,31 +123,29 @@ npm start
 
 ## リリース（配布済みPCに届ける）
 
-push しただけでは誰にも届きません。**バージョンを上げて `release.json` を更新**して初めて、各PCの画面に「新しい版があります」と出ます。
+**このリポジトリ（開発用）は非公開。お客さんには、ソースを固めた配布版だけを渡す。**
+
+- 配布版: `node scripts/build-dist.mjs` が `src/` を1つのファイル `app/server.mjs` に固めて名前を詰める（esbuild）。`src`・`test`・`CLAUDE.md`・ライセンス発行用スクリプト・秘密鍵は入れない。npm の部品はお客さんのPCで `npm install`
+- 配布先: 公開の配布用リポジトリ **ApoBoost/ApoBoost-release**。お客さんのアプリは、そこの `release.json`（`update.json` の `manifest_url`）を見て更新する。最初の配布も、そこの「Code → Download ZIP」か、配布元が渡す zip
+- `scripts/run.mjs` は、`src/server.ts` が無く `app/server.mjs` があれば（配布版）それを node で動かす
+- **開発フォルダ（`.git` がある）は、アプリの「アップデート」も自動更新もしない**（`update.ts` の `isDevCheckout`）。配布版で上書きすると、ソースと固めたものが混ざって壊れるため。開発フォルダは `git pull`
 
 ```bash
 git pull                               # 先に他の人の変更を取り込む
 npx tsc --noEmit && npm test           # 型チェックと送信の通しテスト
-npm version patch                      # 0.3.1 → 0.3.2
-npm run release -- "直した内容を一言"     # ← この文言がそのまま利用者の画面に出る
-git add -A && git commit -m "ApoBoost v0.3.2" && git push
+npm version patch --no-git-tag-version # 0.3.1 → 0.3.2
+npm run release -- "直した内容を一言"     # ← 配布版を作って配布用リポジトリに出す。この文言がそのまま利用者の画面に出る
+git add -A && git commit -m "ApoBoost v0.3.2" && git push   # 開発用にも残す
 ```
 
-**`git push` は1回だけです。**（以前は配布用ミラーへの `git subtree push` も必要でしたが、リポジトリを一本化したので不要になりました）
+- 固めたことで壊れていないかは、`node scripts/build-test-bundle.mjs test/todo.ts test/e2e.ts` で同じ固め方のテストを作り、`node .dist-test/todo.mjs` などで確かめられる
+- `npm run release -- --dry` は配布版を `.release/` に作るだけで出さない。`--beta` は先行版
+- 配布用リポジトリの作業フォルダ `.release/` は git に入れない（初回は自動で clone）
 
-**リリースする人が複数いるので、必ず順番を守ってください。**
-
-1. 上のコマンド列は `git pull` から始まります。**途中だけコピーしないこと**（バージョン番号の取り合いを防ぐため）
-2. 自分の環境で実際に画面を開いて、直した箇所を目で確認する
-3. リリースしたら、チャットで一報を入れる（誰がどの版を出したか分かるように）
-
-なお `npm version patch` は `package.json` の値を書き換えるだけです（このリポジトリでは git タグも作りますが、実害はありません）。
-
-配布済みのPCに一斉に配られます。取り消しはできません（新しい版を出して上書きするしかない）。迷ったらリリースせず、`git push` だけで止めて相談してください。
+**リリースする人が複数いるので、必ず順番を守ってください。** 上のコマンド列は `git pull` から始める（途中だけコピーしない）。自分の環境で画面を開いて直した箇所を確かめる。リリースしたらチャットで一報を入れる。
+配布済みのPCに一斉に配られ、取り消しはできません（新しい版を出して上書きするしかない）。迷ったら `npm run release` せずに相談してください。
 
 **`update.json` を壊さないこと。** 配布済みの全PCがこのURLを見ています。空や `CHANGE-ME` を含む値で公開すると、以後どの端末も更新できなくなります（`update.ts` 側にガードあり）。
-
-**バージョンを上げずに push した場合**は、コードは GitHub に入りますが誰にも配られません。開発中の細かい修正はそれでよく、区切りがついたところでリリースする、という使い分けで構いません。
 
 ## 配布物（zipに入るもの）
 

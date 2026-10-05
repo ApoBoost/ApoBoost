@@ -15,3 +15,8 @@ runtime/
 
 # LP・営業資料・導入ガイド・動画（配布物に入れない。手元で作って別途公開する）
 販促/
+
+# 配布版の作業用（build-dist / release の出力。配布用リポジトリの作業フォルダ）
+.dist/
+.release/
+.dist-test/

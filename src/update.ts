@@ -11,7 +11,7 @@ import { getSetting } from "./db.js";
 export const ROOT = path.resolve(process.cwd());
 
 /** 更新で入れ替えてよいもの。data/ と node_modules/ は対象外 */
-const UPDATABLE = ["src", "test", "package.json", "package-lock.json", "tsconfig.json", "README.md", "LICENSE", "scripts", "update.json",
+const UPDATABLE = ["src", "app", "test", "package.json", "package-lock.json", "tsconfig.json", "README.md", "LICENSE", "scripts", "update.json",
   // ダブルクリックで起動するファイル（配布済みのPCにも届くように更新対象に入れる）
   "ApoBoost起動.command", "ApoBoost起動.bat", "インストール（最初に1回）.bat", "ApoBoost.app",
   // ロゴ・通知の絵など。ゲームの素材もここに入っている
@@ -104,14 +104,23 @@ export async function checkUpdate(force = false): Promise<UpdateStatus> {
   }
 }
 
-/** zip の中から、実体（package.json のあるフォルダ）を探す。GitHubのzipは1階層深い */
+/** zip の中から、実体（package.json のあるフォルダ）を探す。GitHubのzipは1階層深い。
+ *  配布版は src の代わりに app/server.mjs（固めたもの）が入っている */
+function isAppDir(dir: string): boolean {
+  return fs.existsSync(path.join(dir, "package.json")) && (fs.existsSync(path.join(dir, "src")) || fs.existsSync(path.join(dir, "app", "server.mjs")));
+}
 function findAppRoot(dir: string): string | null {
-  if (fs.existsSync(path.join(dir, "package.json")) && fs.existsSync(path.join(dir, "src"))) return dir;
+  if (isAppDir(dir)) return dir;
   for (const name of fs.readdirSync(dir)) {
     const sub = path.join(dir, name);
-    if (fs.statSync(sub).isDirectory() && fs.existsSync(path.join(sub, "package.json")) && fs.existsSync(path.join(sub, "src"))) return sub;
+    if (fs.statSync(sub).isDirectory() && isAppDir(sub)) return sub;
   }
   return null;
+}
+
+/** git で取ってきた開発フォルダか。開発フォルダは git pull で受け取る（配布版で上書きすると、ソースと固めたものが混ざって壊れる） */
+export function isDevCheckout(root = ROOT): boolean {
+  return fs.existsSync(path.join(root, ".git"));
 }
 
 function copyDir(from: string, to: string) {
@@ -153,6 +162,7 @@ export async function applyUpdate(): Promise<ApplyResult> {
   const log: string[] = [];
   const url = manifestUrl();
   if (!url) return { ok: false, log, error: "更新先が設定されていません（update.json の manifest_url）" };
+  if (isDevCheckout()) return { ok: false, log, error: "開発フォルダ（git で取ってきたフォルダ）なので、ここでは更新しません。git pull で受け取ってください" };
   // 裏のブラウザの用意と npm install を重ねない。数分なら待ち、それでも終わらなければ何も変えずに断る
   if (browserInstallBusy()) {
     log.push("フォーム操作用のブラウザの用意が終わるのを待っています（最大3分）");

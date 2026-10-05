@@ -25,7 +25,7 @@ import { drainForShutdown, clearStaleRuns, runCampaign, requestStop, isRunning, 
 import { launchBrowser, openAndFill } from "../engine.js";
 import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmails, learnFromCorrection, loadReplyRules, clearReplyRulesCache } from "../replies.js";
 import { notify, notifyEnabled } from "../notify.js";
-import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel } from "../update.js";
+import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel, isDevCheckout } from "../update.js";
 import { errorPage, n as fmtN } from "../ui/layout.js";
 import { templateProblems } from "../ui/parts.js";
 import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
@@ -35,7 +35,9 @@ export const app = express();
 
 // ゲームの音声など静的アセット（src の1つ上の assets/ を配信）
 // このファイルは src/app/ にあるので、2つ上がアプリのフォルダ
-export const ASSETS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "assets");
+// アプリのフォルダ（起動したフォルダ）から見る。配布版は src を1つのファイル（app/server.mjs）に固めるので、
+// このファイルの場所から数えると、開発版と配布版で行き先がずれる
+export const ASSETS_DIR = path.resolve(process.cwd(), "assets");
 
 // fieldSize は貼り付け欄（文字）の上限。multer（busboy）の既定は1MBで、4,000社ほどのリストを貼ると超えて
 // 理由の分からない500ページになっていた。ファイルと同じくらいまで受け付ける
@@ -871,6 +873,8 @@ export const updateResults = new Map<number, Awaited<ReturnType<typeof applyUpda
 // 起動から3分後と、以後6時間ごとに確認する。更新前にバックアップを取り、送信中の会社は送り終わってから再起動する
 export async function autoUpdateIfEnabled() {
   if (getSetting(S.autoUpdate, "0") !== "1") return;
+  // 開発フォルダ（git）は git pull で受け取る。配布版で上書きしない（失敗の通知も出さない）
+  if (isDevCheckout()) return;
   try {
     const st = await checkUpdate(true);
     if (!st.available) return;
