@@ -18,7 +18,7 @@ import { healthChecks, diagnosticsText } from "../health.js";
 import { createBackup, listBackups, requestRestore, autoBackupIfDue, backupLabel, BACKUP_DIR } from "../backup.js";
 import { autostartEnabled, autostartSupported, enableAutostart, disableAutostart, autostartPath } from "../autostart.js";
 import { releaseAwakeAll, AWAKE_NOTE } from "../awake.js";
-import { licenseStatus, setLicenseKey, licenseEnforced, cappedDailyLimit } from "../license.js";
+import { licenseStatus, setLicenseKey, licenseEnforced, cappedDailyLimit, licenseBlock } from "../license.js";
 import { syncShare, shareConfigured, APPS_SCRIPT, KEY as SHARE_KEY } from "../share.js";
 import { drainForShutdown, clearStaleRuns, runCampaign, requestStop, isRunning, isScanning, scanCampaign, processJob, inSendWindow, sentToday, sentTodayBySender, warmupLimit, effectiveEmailLimit, nextWindowText } from "../worker.js";
 import { launchBrowser, openAndFill } from "../engine.js";
@@ -457,6 +457,10 @@ app.post("/campaigns/:id/start", safeAsync(async (req, res) => {
   if (!camp) return forbidden(req, res);
   if (isRunning(id)) return redirectWith(res, `/campaigns/${id}`, "すでに実行中です");
   const only = ["email", "form"].includes(String(req.body.only)) ? String(req.body.only) : "";
+
+  // ライセンスが無い（お試し期間が終わった）・期限切れなら開始しない。走り出しても1通も送れないため
+  const lic = licenseBlock();
+  if (lic) return redirectWith(res, `/campaigns/${id}`, lic);
 
   // 文面に【ここに…】や差し込み名の間違いが残っていたら開始しない。
   // 以前はそのまま走り出し、送る直前の文面チェックで待機中の全社が1社ずつ「失敗」になっていた（初期値の件名「【ここに件名】のご案内」のままでも同じ）

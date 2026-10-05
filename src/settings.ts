@@ -8,7 +8,9 @@ export const S = {
   autoUpdate: "auto_update",                 // 1=新しい版が出たら自動で更新
   updateChannel: "update_channel",           // stable | beta
   licenseKey: "license_key",
-  licenseEnforce: "license_enforce",         // 1=未登録・期限切れを1日50件に制限
+  licenseEnforce: "license_enforce",         // 以前の版の「制限する／しない」。いまは読まない（ライセンスは必須で、外せない）
+  licenseTrialStart: "license_trial_start",  // お試し期間の始まり（この版を初めて起動した日時）
+  termsAgreed: "terms_agreed",               // 同意した利用規約の版と日時・同意した人（例: "2026-10-05|2026-10-05 10:00|admin"）
   excludedIndustries: "excluded_industries", // 送りたくない業種・キーワード（改行区切り）
   notifyDesktop: "notify_desktop",           // 1=パソコンに通知を出す
   gameEnabled: "game_enabled",               // 1=おまけのゲームを表示

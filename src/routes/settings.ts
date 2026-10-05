@@ -231,10 +231,9 @@ app.post("/settings/license", requireAdmin, (req, res) => {
   redirectWith(res, "/settings", st.state === "valid" ? `ライセンスを登録しました: ${st.label}` : st.state === "none" ? "ライセンスキーを削除しました" : `ライセンスを保存しましたが、状態は「${st.label}」です`);
 });
 
-app.post("/settings/license-enforce", requireAdmin, (req, res) => {
-  const on = req.body.enforce === "1";
-  saveSetting(S.licenseEnforce, on ? "1" : "0");
-  redirectWith(res, "/settings", on ? "ライセンスが無い・期限切れのときは、1日50件までに制限します" : "ライセンスによる制限をオフにしました（制限なく動きます）");
+// 以前の版の「ライセンスの制限をオン／オフ」。いまはライセンスが必須で外せないので、押されても何も変えない
+app.post("/settings/license-enforce", requireAdmin, (_req, res) => {
+  redirectWith(res, "/settings#s-license", "ライセンスは必須のため、制限を外すことはできません");
 });
 
 // AIの月の上限（#66）

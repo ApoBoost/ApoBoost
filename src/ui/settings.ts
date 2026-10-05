@@ -133,10 +133,8 @@ export function settingsView(ngWords: string[], ai: import("../message.js").AiCo
 <label>ライセンスキー（配布元から受け取った APO1… で始まる1行）</label>
 <input type="text" name="key" value="${esc(license.key)}" placeholder="APO1.xxxxx.xxxxx">
 <p style="margin-top:8px"><button class="btn sub">保存する</button></p></form>
-<form method="post" action="/settings/license-enforce" style="margin-top:6px">
-<label style="display:flex;align-items:center;gap:8px;font-weight:400"><input type="checkbox" name="enforce" value="1" ${license.enforce ? "checked" : ""} onchange="this.form.submit()" style="width:auto">
-ライセンスが無い・期限切れのときは、1日50件までに制限する</label></form>
-<p class="muted small" style="margin:6px 0 0">チェックを外していれば、ライセンスの状態にかかわらず制限なく動きます（既定）。<br>キーには「宛先の会社名・台数・期限」だけが入っており、通信は行いません（オフラインで確認します）。</p></div>` : "";
+
+<p class="muted small" style="margin:6px 0 0">ライセンスキーが無いと、初めて起動してから14日間（お試し期間）のあとは送信できません。キーには「使用を許諾した会社名・台数・期限」だけが入っていて、確認に通信は使いません。許諾した会社名は、各画面の下とログイン画面に表示されます。</p></div>` : "";
 
   // AIの使用量と上限（#66）。「いくらかかるか読めない」のが不安でAIを使えない、という状態をなくす
   const budgetCard = aiBudget ? `<div class="card"><h2 style="margin-top:0">AIの利用料と上限</h2>

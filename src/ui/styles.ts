@@ -70,6 +70,9 @@ header.top a.upd{background:var(--c-brand);color:var(--c-brand-ink);font-weight:
 
 /* ---- 本文 ---- */
 main{max-width:1120px;margin:0 auto;padding:24px 20px 80px}
+/* 画面の下: 使用を許諾した相手と著作権表示（流出したコピーでも、元の購入者の名前が出る） */
+footer.lic{max-width:1120px;margin:-56px auto 0;padding:0 20px 28px;text-align:center;font-size:11px;line-height:1.7;color:var(--c-ink-3)}
+footer.lic a{color:var(--c-ink-3)}
 h1{font-size:26px;font-weight:700;letter-spacing:-.01em;margin:4px 0 16px;line-height:1.3}
 h2{font-size:17px;font-weight:600;letter-spacing:-.005em;margin:24px 0 8px;line-height:1.45}
 /* 面: 枠線ではなく、淡い灰色の地の上に白い面を置いて区切る */

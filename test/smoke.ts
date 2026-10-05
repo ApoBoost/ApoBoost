@@ -17,6 +17,9 @@ const { getDb } = await import("../src/db.js");
 const { createUser } = await import("../src/auth.js");
 const db = getDb();
 createUser("smoke", "smoke-pass-123", { role: "admin", displayName: "スモーク", mustChange: false });
+// 利用規約にはもう同意した状態にする（同意の画面そのものは下で確かめる）
+const { agreeTerms } = await import("../src/terms.js");
+agreeTerms("smoke");
 db.prepare(`INSERT INTO sender_profiles(owner_user_id,label,company,person,email,address,tel,smtp_user,smtp_pass)
   VALUES(1,'テスト送信者','株式会社テスト','山田 太郎','a@example.test','東京都港区1-1-1','03-0000-0000','a@example.test','abcdabcdabcdabcd')`).run();
 db.prepare(`INSERT INTO form_campaigns(owner_user_id,name,sender_id,mode,subject_text,template_text,status)
@@ -80,6 +83,9 @@ try {
     ["/health", "動作チェック"],
     ["/logs", "エラーログ"],
     ["/settings", "設定"],
+    ["/terms", "第3条（禁止事項）"],
+    ["/", "お試し期間中"],
+    ["/", "利用規約"],
     ["/senders", "テスト送信者"],
     ["/senders/1", "株式会社テスト"],
     ["/suppressions", "除外リスト"],
@@ -246,7 +252,10 @@ try {
     const mismatch = await form("/welcome", "username=owner&password=owner-pass-123&password2=other-pass-123", { origin: base });
     if (mismatch.status !== 400 || !(await mismatch.text()).includes("一致しません")) ng("確認用パスワードが違うのに通っています");
     // 自動起動にチェックを入れて送っても、テストの起動（APOBOOST_NO_AUTOSTART=1）では登録せず、初回設定は成功する
-    const ok = await form("/welcome", "username=Owner&password=owner-pass-123&password2=owner-pass-123&autostart=1&autostart_shown=1", { origin: base });
+    // 利用規約に同意しないと作れない
+    const noTerms = await form("/welcome", "username=Owner&password=owner-pass-123&password2=owner-pass-123", { origin: base });
+    if (noTerms.status !== 400 || !(await noTerms.text()).includes("利用規約に同意すると")) ng("利用規約に同意しなくても管理者を作れてしまいます");
+    const ok = await form("/welcome", "username=Owner&password=owner-pass-123&password2=owner-pass-123&terms=1&autostart=1&autostart_shown=1", { origin: base });
     const ck = (ok.headers.get("set-cookie") ?? "").split(";")[0];
     if (ok.status !== 302 || !ck) ng(`初回設定で管理者を作れません（HTTP ${ok.status}）`);
     else {

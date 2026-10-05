@@ -11,7 +11,7 @@ import { getSetting } from "./db.js";
 export const ROOT = path.resolve(process.cwd());
 
 /** 更新で入れ替えてよいもの。data/ と node_modules/ は対象外 */
-const UPDATABLE = ["src", "test", "package.json", "package-lock.json", "tsconfig.json", "README.md", "scripts", "update.json",
+const UPDATABLE = ["src", "test", "package.json", "package-lock.json", "tsconfig.json", "README.md", "LICENSE", "scripts", "update.json",
   // ダブルクリックで起動するファイル（配布済みのPCにも届くように更新対象に入れる）
   "ApoBoost起動.command", "ApoBoost起動.bat", "インストール（最初に1回）.bat", "ApoBoost.app",
   // ロゴ・通知の絵など。ゲームの素材もここに入っている

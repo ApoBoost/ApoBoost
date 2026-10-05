@@ -80,11 +80,24 @@ saveSettingValue(S.todoHideDays, "30");
   ok("license: 形が違うものは通らない", verifyLicense("hello").ok === false);
   eq("license: 未登録の状態", licenseStatus().state, "none");
   eq("license: 不正キーの状態", setLicenseKey(forged).state, "invalid");
-  eq("license: 制限オフなら上限そのまま", cappedDailyLimit(300).limit, 300);
-  saveSettingValue(S.licenseEnforce, true);
-  eq("license: 制限オンで未登録なら50件", cappedDailyLimit(300).limit, 50);
-  saveSettingValue(S.licenseEnforce, false);
+  // ライセンスは必須: キーが無くても、お試し期間（初めて起動してから14日）は送れる。過ぎたら送れない。設定では外せない
   setLicenseKey("");
+  const { getSetting: gs, setSetting: ss } = await import("../src/db.js");
+  const { licenseBlock, licenseeLine, trialDaysLeft, TRIAL_DAYS } = await import("../src/license.js");
+  const trialWas = gs(S.licenseTrialStart, "");
+  ss(S.licenseTrialStart, new Date().toISOString());
+  eq("license: お試し期間中はキーが無くても上限そのまま", cappedDailyLimit(300).limit, 300);
+  eq("license: お試し期間の残り", trialDaysLeft(), TRIAL_DAYS);
+  ok("license: お試し期間中と画面に出る", /お試し期間中（あと14日）/.test(licenseeLine()));
+  ss(S.licenseTrialStart, new Date(Date.now() - (TRIAL_DAYS + 1) * 86400_000).toISOString());
+  eq("license: お試し期間が過ぎたら送れない", cappedDailyLimit(300).limit, 0);
+  ok("license: 送れない理由が分かる", /お試し期間（14日）が終わった/.test(licenseBlock() ?? ""));
+  saveSettingValue(S.licenseEnforce, false);
+  eq("license: 以前の「制限しない」の設定では外れない", cappedDailyLimit(300).limit, 0);
+  eq("license: 不正なキーでも送れない", (setLicenseKey(forged), cappedDailyLimit(300).limit), 0);
+  // 正しい鍵で作ったキー（テストの中で作った鍵の公開鍵は src に無いので、検証が通るのは配布元の鍵だけ。ここでは期限切れの扱いだけ確かめる）
+  setLicenseKey("");
+  ss(S.licenseTrialStart, trialWas || new Date().toISOString());
 }
 
 // ---- share.ts ----

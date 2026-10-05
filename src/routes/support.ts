@@ -4,6 +4,7 @@ import { app, me, ownedJob, ownedCampaign } from "../app/context.js";
 import { getDb, jst, STATUS_LABEL, type Job, type JobStatus } from "../db.js";
 import { askSupport, supportEnabled, supportNote, supportThread, supportUnread, markSupportSeen, pollSupportReplies, recordHelpFeedback, recordHelpMiss, saveChat, listChats, getChat, activeChatId, type ChatMessage } from "../support.js";
 import { errKind, CAMPAIGN_STATUS_LABEL } from "../ui/parts.js";
+import { licenseStatus } from "../license.js";
 
 let lastPoll = 0;
 
@@ -90,7 +91,9 @@ app.post("/support/ask", express.json({ limit: "20kb" }), async (req, res) => {
   const ctx = req.body?.jobId ? jobContext(req, Number(req.body.jobId)) : req.body?.campaignId ? campaignContext(req, Number(req.body.campaignId)) : null;
   // 誰からの質問か分かるように、会社名（送信者の1件目）と表示名を添える
   const s = getDb().prepare("SELECT company FROM sender_profiles ORDER BY id LIMIT 1").get() as { company: string } | undefined;
-  const who = [s?.company, u.display_name || u.username].filter(Boolean).join(" / ");
+  // 許諾した会社名（ライセンス）も添える。誰からの質問か、正規の購入者かが分かるように
+  const lic = licenseStatus();
+  const who = [lic.state === "valid" ? `【${lic.payload?.to}】` : "【ライセンス未登録】", s?.company, u.display_name || u.username].filter(Boolean).join(" / ");
   const r = await askSupport(u.id, who, question, String(req.body?.page ?? ""), ctx?.text ?? "", Number(req.body?.parentId) || 0, Number(req.body?.chatId) || 0);
   res.json({ ok: true, sent: r.ok });
 });

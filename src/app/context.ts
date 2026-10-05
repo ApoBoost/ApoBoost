@@ -19,7 +19,7 @@ import { healthChecks, diagnosticsText } from "../health.js";
 import { createBackup, listBackups, requestRestore, autoBackupIfDue, backupLabel, BACKUP_DIR } from "../backup.js";
 import { autostartEnabled, autostartSupported, enableAutostart, disableAutostart, autostartPath } from "../autostart.js";
 import { releaseAwakeAll, AWAKE_NOTE } from "../awake.js";
-import { licenseStatus, setLicenseKey, licenseEnforced, cappedDailyLimit } from "../license.js";
+import { licenseStatus, setLicenseKey, licenseEnforced, cappedDailyLimit, licenseBlock } from "../license.js";
 import { syncShare, shareConfigured, APPS_SCRIPT, KEY as SHARE_KEY } from "../share.js";
 import { drainForShutdown, clearStaleRuns, runCampaign, requestStop, isRunning, isScanning, scanCampaign, processJob, inSendWindow, sentToday, sentTodayBySender, warmupLimit, effectiveEmailLimit, nextWindowText, aiPause, emailSenderIds, pickEmailSender } from "../worker.js";
 import { launchBrowser, openAndFill } from "../engine.js";
@@ -353,6 +353,9 @@ export const SENDER_FIX_RE = /未登録|未設定|ログインを拒否|差出�
  *  理由が無い（送っている・送る会社が無い・準備中や手動の一時停止）ときは null。
  *  admin は見ている人が管理者か。AIの設定（/settings）は管理者しか開けないので、一般の人には開けないボタンを出さない */
 export function campaignStall(c: Campaign, opts: { admin?: boolean } = {}): CampaignStall | null {
+  // ライセンス（お試し期間が終わった・期限切れ）で止まっているなら、まずそれを出す（ほかの理由を直しても送れないため）
+  const lic = licenseBlock();
+  if (lic) return opts.admin ? { kind: "auto", blocking: true, reason: lic, text: lic, href: "/settings#s-license", action: "ライセンスキーを登録する" } : { kind: "auto", blocking: true, reason: lic, text: `${lic}（管理者に依頼してください）` };
   const auto = autoPauseReason(c);
   if (auto) {
     const reason = auto.replace(/^自動で一時停止しました[:：。]?\s*/, "");

@@ -2,6 +2,8 @@
 import { CSS } from "./styles.js";
 import { FX_APP } from "./fx.js";
 import { HELP_WIDGET } from "./help.js";
+import { licenseeLine } from "../license.js";
+import { COPYRIGHT } from "../terms.js";
 
 export const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -77,6 +79,7 @@ export function layout(title: string, body: string, flash = "", user: NavUser = 
 <style>${CSS}</style></head><body>
 <header class="top"><a class="logo" href="/">${LOGO}</a>${user ? `${navOf(user)}<div class="right">${user.role === "admin" && updateReady ? `<a class="upd" href="/update">新しい版があります</a>` : ""}<span>${esc(user.display_name || user.username)}${user.role === "admin" && (user.display_name || user.username) !== "管理者" ? "（管理者）" : ""}</span><a href="/password">パスワード</a><a href="/logout">ログアウト</a></div>` : ""}</header>
 <main>${flash ? `<div class="flash">${esc(flash)}</div>` : ""}${user ? settingsTabsFor(user) : ""}${body}</main>
+${user ? `<footer class="lic">${esc(licenseeLine())}<br>${esc(COPYRIGHT)} <a href="/terms">利用規約</a></footer>` : ""}
 <script>
 // 送信系フォームの送信中スピナー＋二重送信防止（既存 .spin スタイルを流用）
 document.addEventListener("submit", (e) => {

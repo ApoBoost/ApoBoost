@@ -1,4 +1,5 @@
 // ログイン（単体版）。ユーザーごとにアカウントを発行し、キャンペーン・送信者・送信履歴を分離する。
+import { termsAgreed } from "./terms.js";
 import crypto from "node:crypto";
 import { errorPage } from "./ui/layout.js";
 import os from "node:os";
@@ -149,7 +150,7 @@ export function endSession(req: Request, res: Response) {
 export type AuthedRequest = Request & { user?: User };
 
 /** 認証が要らないパス（ログイン画面・初回設定・配信停止リンク）。/welcome は経路の側で「管理者がまだいない・このPCから」を確かめる */
-const PUBLIC_PATHS = [/^\/login$/, /^\/logout$/, /^\/welcome$/, /^\/unsubscribe\//, /^\/healthz$/];
+const PUBLIC_PATHS = [/^\/login$/, /^\/logout$/, /^\/welcome$/, /^\/unsubscribe\//, /^\/healthz$/, /^\/terms$/];
 
 export function authMiddleware(req: AuthedRequest, res: Response, next: NextFunction) {
   const db = getDb();
@@ -164,6 +165,8 @@ export function authMiddleware(req: AuthedRequest, res: Response, next: NextFunc
   if (req.user) {
     // パスワード変更が必要なうちは、変更画面以外に進ませない
     if (req.user.must_change && !/^\/(password|logout)$/.test(req.path)) return res.redirect("/password");
+    // 利用規約（この版）に管理者がまだ同意していなければ、同意の画面へ。質問箱など画面の裏の呼び出しは止めない
+    if (req.user.role === "admin" && !termsAgreed() && req.method === "GET" && !/^\/(terms|logout|password|support\/|events)/.test(req.path)) return res.redirect("/terms");
     return next();
   }
   // 管理者がまだいない: このPCから開いたときは、どの画面を開いても初回設定へ案内する（ログイン画面で止まらないように）

@@ -18,7 +18,8 @@ import { healthChecks, diagnosticsText } from "../health.js";
 import { createBackup, listBackups, requestRestore, autoBackupIfDue, backupLabel, BACKUP_DIR } from "../backup.js";
 import { autostartEnabled, autostartSupported, enableAutostart, disableAutostart, autostartPath, autostartBlockedReason, ROOT as APP_ROOT } from "../autostart.js";
 import { releaseAwakeAll, AWAKE_NOTE } from "../awake.js";
-import { licenseStatus, setLicenseKey, licenseEnforced } from "../license.js";
+import { licenseStatus, setLicenseKey, licenseEnforced, licenseeLine } from "../license.js";
+import { termsAgreed, agreeTerms, termsAgreedInfo } from "../terms.js";
 import { syncShare, shareConfigured, APPS_SCRIPT, KEY as SHARE_KEY } from "../share.js";
 import { drainForShutdown, clearStaleRuns, runCampaign, requestStop, isRunning, isScanning, scanCampaign, processJob, inSendWindow, sentToday, sentTodayBySender, warmupLimit, effectiveEmailLimit, nextWindowText } from "../worker.js";
 import { launchBrowser, openAndFill } from "../engine.js";
@@ -26,7 +27,7 @@ import { checkReplies, isCheckingReplies, replyScanStatus, verifyInterruptedEmai
 import { notify, notifyEnabled } from "../notify.js";
 import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel } from "../update.js";
 import { errorPage } from "../ui/layout.js";
-import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
+import { esc, layout, termsPage, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, needsFirstSetup, isLocalRequest, createFirstAdmin, defaultAdminUsername, type AuthedRequest } from "../auth.js";
 import { firstAdminPage } from "../ui/account.js";
 import { app, db, redirectWith, takeFlash, me, appState, navUser, loginFails, LOGIN_WINDOW, recentFails, issuedOnce, shareUrls } from "../app/context.js";
@@ -54,7 +55,7 @@ app.get("/login", (req, res) => {
   if ((req as AuthedRequest).user) return res.redirect("/");
   // 管理者がまだいないのに他のPCから開いた場合: ここではログインできないので、どこで何をすればよいかを出す
   const notice = needsFirstSetup() ? FIRST_SETUP_ELSEWHERE : undefined;
-  res.send(loginPage({ next: String(req.query.next ?? "/"), notice }));
+  res.send(loginPage({ next: String(req.query.next ?? "/"), notice, licensee: licenseeLine() }));
 });
 
 // ---- 初回設定（管理者がまだいないとき、このPCから開いた人に管理者のIDとパスワードを決めてもらう）----
@@ -77,6 +78,7 @@ app.post("/welcome", (req, res) => {
   const wantAuto = req.body.autostart === "1";
   const again = (error: string) => firstAdminPage({ username, error, autostart: welcomeAutostart(req.body.autostart_shown ? wantAuto : true) });
   if (p1 !== p2) return res.status(400).send(again("パスワードが一致しません。もう一度入力してください"));
+  if (req.body.terms !== "1") return res.status(400).send(again("利用規約に同意すると、はじめられます"));
   let u: ReturnType<typeof createFirstAdmin>;
   try {
     u = createFirstAdmin(username, p1);
@@ -84,6 +86,7 @@ app.post("/welcome", (req, res) => {
     return res.status(400).send(again(String((e as Error).message)));
   }
   logInfo("auth", `最初の管理者を作りました（ログインID: ${u.username}）`);
+  agreeTerms(u.username);
   startSession(res, u.id);
   // 自動起動は「おまけ」。失敗しても初回設定は成功させ、理由だけお知らせに出す。
   // テストや開発の起動（別ポート・一時データ・APOBOOST_NO_AUTOSTART=1）では、このPCの本物の自動起動に登録しない（autostart.ts）
@@ -102,6 +105,19 @@ app.post("/welcome", (req, res) => {
   }
   // そのまま「はじめの設定」へ（ホームを経由させない。最初にやることが1つに決まっているため）
   redirectWith(res, "/setup", `管理者「${u.username}」でログインしました。下の順に進めれば送信を始められます。${autoNote ? ` ${autoNote}` : ""}`);
+});
+
+// ---- 利用規約 ----
+// 読むのは誰でも（ログイン前も）。同意は管理者だけ。まだ同意していない管理者は、ほかの画面に進めない（auth.ts）
+app.get("/terms", (req, res) => {
+  const u = (req as express.Request & { user?: { role: string } }).user;
+  res.send(termsPage({ canAgree: u?.role === "admin" && !termsAgreed(), waitAdmin: Boolean(u) && u?.role !== "admin" && !termsAgreed(), agreedInfo: termsAgreedInfo() }));
+});
+app.post("/terms", requireAdmin, (req, res) => {
+  if (req.body.agree !== "1") return res.redirect("/terms");
+  agreeTerms(me(req).username);
+  logInfo("auth", `利用規約（${termsAgreedInfo()?.at ?? ""}）に同意しました: ${me(req).username}`);
+  redirectWith(res, "/", "利用規約に同意しました。ありがとうございます");
 });
 
 // はじめの設定:「フォームだけで使う（メールの設定は飛ばす）」。フォームにだけ送る人は、送信用メールの手順が

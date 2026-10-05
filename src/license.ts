@@ -3,9 +3,9 @@
 // 仕組み: 配布元の秘密鍵で署名したキーを発行し、アプリ側は公開鍵で検証する。
 // キーの中身は「宛先の会社名・台数・有効期限」だけで、個人情報も通信も必要ない（オフラインで検証できる）。
 //
-// 正直に書いておくと: このアプリはソースコードごと配るため、ソースを書き換えれば検証は無効にできます。
-// これは「期限と台数を管理し、うっかり期限切れのまま使われるのを防ぐ」ためのもので、強固なコピー防止ではありません。
-// 既定では送信を止めません（license_enforce=1 のときだけ、未登録・期限切れで1日50件に制限します）。
+// 正直に書いておくと: ソースを書き換えれば検証は無効にできます。コピー防止の決め手は、利用規約（無断の複製・再配布・転売・
+// 解析の禁止）と、画面に出る「使用を許諾した相手の名前」（流出元が分かる）の組み合わせです。
+// ライセンスは必須: キーが無いと、お試し期間（初めて起動してから TRIAL_DAYS 日）が過ぎたら送信を止める。設定で外すことはできない。
 import crypto from "node:crypto";
 import { S } from "./settings.js";
 import { getSetting, setSetting } from "./db.js";
@@ -53,7 +53,7 @@ export function verifyLicense(keyText: string): { ok: boolean; payload?: License
 
 export function licenseStatus(): LicenseStatus {
   const key = getSetting(S.licenseKey, "").trim();
-  if (!key) return { state: "none", label: "ライセンス未登録（お試し利用）" };
+  if (!key) { const d = trialDaysLeft(); return { state: "none", label: d > 0 ? `ライセンス未登録（お試し期間 あと${d}日）` : "ライセンス未登録（お試し期間は終了しました）" }; }
   const v = verifyLicense(key);
   if (!v.ok || !v.payload) return { state: "invalid", label: "ライセンスキーが正しくありません（配布元にご確認ください）" };
   const p = v.payload;
@@ -71,16 +71,51 @@ export function setLicenseKey(key: string): LicenseStatus {
   return licenseStatus();
 }
 
-/** 制限をかけるか（既定はオフ＝止めない）。オンのときだけ、未登録・期限切れで1日50件までにする */
-export function licenseEnforced(): boolean {
-  return getSetting(S.licenseEnforce, "0") === "1";
+/** お試し期間の日数。キーが無くても、初めて起動してからこの日数は送れる */
+export const TRIAL_DAYS = 14;
+
+/** お試し期間の始まり。まだ無ければ「いま」を記録する（以前の版から上がったPCも、ここから数える） */
+export function trialStart(): number {
+  const raw = getSetting(S.licenseTrialStart, "");
+  const t = Date.parse(raw);
+  if (raw && Number.isFinite(t)) return t;
+  const now = new Date();
+  setSetting(S.licenseTrialStart, now.toISOString());
+  return now.getTime();
 }
+/** お試し期間の残り日数（0 以下なら終わっている） */
+export function trialDaysLeft(): number {
+  return Math.ceil((trialStart() + TRIAL_DAYS * 86400_000 - Date.now()) / 86400_000);
+}
+
+/** いま送信できない理由（ライセンスの面で）。送れるなら null */
+export function licenseBlock(): string | null {
+  const st = licenseStatus();
+  if (st.state === "valid") return null;
+  if (st.state === "none" && trialDaysLeft() > 0) return null;
+  if (st.state === "expired") return `ライセンスの有効期限が切れているため、送信を止めています（${st.payload?.exp ?? ""}まで）。配布元から新しいキーを受け取り、設定 → ライセンスに登録してください`;
+  if (st.state === "invalid") return "ライセンスキーが正しくないため、送信を止めています。配布元から受け取ったキーを、設定 → ライセンスに貼り直してください";
+  return `お試し期間（${TRIAL_DAYS}日）が終わったため、送信を止めています。配布元から受け取ったライセンスキーを、設定 → ライセンスに登録してください`;
+}
+
+/** 画面の下に出す「使用を許諾した相手」。流出したコピーでも、元の購入者の名前が出る */
+export function licenseeLine(): string {
+  const st = licenseStatus();
+  if (st.state === "valid" && st.payload) return `${st.payload.to} 様に使用を許諾しています（ライセンス ${st.payload.id}）`;
+  if (st.state === "none") { const d = trialDaysLeft(); return d > 0 ? `お試し期間中（あと${d}日）` : "ライセンス未登録（お試し期間は終了しました）"; }
+  return st.label;
+}
+
+/** 以前の版の「制限する／しない」の名残。いまは常に必須 */
+export function licenseEnforced(): boolean {
+  return true;
+}
+/** 以前の版の名残（1日50件の制限）。いまは使わない */
 export const TRIAL_DAILY_LIMIT = 50;
 
-/** いまの1日の上限（ライセンスの状態を加味した値）。制限しない場合は設定値をそのまま返す */
+/** いまの1日の上限（ライセンスの状態を加味した値）。送れないときは 0 */
 export function cappedDailyLimit(configured: number): { limit: number; note: string } {
-  if (!licenseEnforced()) return { limit: configured, note: "" };
-  const st = licenseStatus();
-  if (st.state === "valid") return { limit: configured, note: "" };
-  return { limit: Math.min(configured, TRIAL_DAILY_LIMIT), note: `ライセンス未登録のため、1日 ${TRIAL_DAILY_LIMIT}件までに制限しています（${st.label}）` };
+  const why = licenseBlock();
+  if (!why) return { limit: configured, note: "" };
+  return { limit: 0, note: why };
 }

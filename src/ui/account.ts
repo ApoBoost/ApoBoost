@@ -5,6 +5,7 @@ import { TEMPLATE_LIBRARY } from "../templates.js";
 import { esc, layout, n, type NavUser } from "./layout.js";
 import { post } from "./parts.js";
 import { FX_LOGIN } from "./fx.js";
+import { TERMS, TERMS_TITLE, TERMS_VERSION, COPYRIGHT } from "../terms.js";
 
 // ================= ログイン関連の画面 =================
 
@@ -45,10 +46,12 @@ input:focus{outline:0;border-color:#0071E3;box-shadow:0 0 0 4px rgba(0,113,227,.
 .check{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:#1D1D1F;margin:18px 0 0;cursor:pointer}
 .check input{width:auto;margin:2px 0 0;flex:none}
 .hint{color:#6E6E73;font-size:12px;line-height:1.6;margin:4px 0 0 24px}
+.foot{position:fixed;left:0;right:0;bottom:10px;text-align:center;font-size:11px;color:#86868B;pointer-events:none}
+.foot a,.check a{color:#0066CC;pointer-events:auto}
 `;
 
 /** ログイン画面（ヘッダー無しの独立レイアウト）。notice は「管理者がまだいない」ときの案内など */
-export function loginPage(opts: { error?: string; next?: string; notice?: string } = {}): string {
+export function loginPage(opts: { error?: string; next?: string; notice?: string; licensee?: string } = {}): string {
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ログイン | ApoBoost</title>
 <style>
@@ -62,7 +65,36 @@ ${opts.error ? `<div class="err">${esc(opts.error)}</div>` : ""}
 <label>パスワード</label><input name="password" type="password" autocomplete="current-password" required>
 <button>ログイン</button>
 <img class="buddy" src="/assets/mascot.png?v=1" alt="" onerror="this.remove()">
-</form>${FX_LOGIN}</body></html>`;
+</form>${authFoot(opts.licensee)}${FX_LOGIN}</body></html>`;
+}
+
+/** ログイン前の画面の下: 使用を許諾した相手・著作権表示・利用規約 */
+function authFoot(licensee?: string): string {
+  return `<div class="foot">${licensee ? `${esc(licensee)}<br>` : ""}${esc(COPYRIGHT)} <a href="/terms" target="_blank" rel="noopener">利用規約</a></div>`;
+}
+
+/** 利用規約の画面。canAgree=true（管理者で、まだ同意していない）なら同意ボタンを出す */
+export function termsPage(opts: { canAgree?: boolean; agreedInfo?: { at: string; who: string } | null; waitAdmin?: boolean } = {}): string {
+  const body = TERMS.map(([h, ...ps]) => `<h2>${esc(h)}</h2>${ps.map((p) => `<p>${esc(p)}</p>`).join("")}`).join("");
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>利用規約 | ApoBoost</title>
+<style>
+${AUTH_CSS}
+body{display:block;padding:40px 16px 80px}
+.terms{max-width:720px;margin:0 auto;background:#fff;border-radius:18px;padding:32px 36px;box-shadow:0 2px 16px rgba(0,0,0,.06)}
+.terms h1{font-size:22px;text-align:left;margin:0 0 4px}.terms .ver{color:#6E6E73;font-size:12px;margin:0 0 18px}
+.terms h2{font-size:15px;margin:22px 0 6px}.terms p{margin:0 0 6px;line-height:1.8;font-size:13.5px}
+.terms form{margin-top:26px;border-top:1px solid #E3E3E8;padding-top:18px}
+.terms .done{background:#E4F6E9;color:#1B7F37;border-radius:8px;padding:9px 12px;font-size:13px;margin-top:22px}
+.foot{position:static;margin-top:18px}
+</style></head><body><div class="terms">
+<h1>${esc(TERMS_TITLE)}</h1><p class="ver">${esc(TERMS_VERSION)} 版</p>
+${opts.canAgree ? `<div class="info">ApoBoost を使う前に、利用規約をお読みください。同意すると使い始められます。</div>` : ""}
+${opts.waitAdmin ? `<div class="info">利用規約が新しくなりました。管理者が同意すると、引き続き使えます。</div>` : ""}
+${body}
+${opts.canAgree ? `<form method="post" action="/terms"><label class="check"><input type="checkbox" name="agree" value="1" required>上記の利用規約に同意します</label><button>同意して使いはじめる</button></form>` : ""}
+${opts.agreedInfo ? `<div class="done">${esc(opts.agreedInfo.at)} に ${esc(opts.agreedInfo.who)} が同意しました。</div>` : ""}
+</div>${authFoot()}</body></html>`;
 }
 
 /** 初回設定: 最初の管理者のログインIDとパスワードを本人に決めてもらう（このPCから開いたときだけ出る）。
@@ -87,10 +119,11 @@ ${opts.error ? `<div class="err">${esc(opts.error)}</div>` : ""}
 <label>パスワード（8文字以上）</label><input name="password" type="password" autocomplete="new-password" autofocus required minlength="8">
 <label>パスワード（確認のためもう一度）</label><input name="password2" type="password" autocomplete="new-password" required minlength="8">
 ${auto}
+<label class="check"><input type="checkbox" name="terms" value="1" required><span><a href="/terms" target="_blank" rel="noopener">利用規約</a>に同意します</span></label>
 <button>決めてはじめる</button>
 <p class="note">このIDとパスワードで次回からログインします。控えておいてください。メンバーのアカウントは、あとから「ユーザー管理」で発行できます。</p>
 <img class="buddy" src="/assets/mascot.png?v=1" alt="" onerror="this.remove()">
-</form>${FX_LOGIN}</body></html>`;
+</form>${authFoot()}${FX_LOGIN}</body></html>`;
 }
 
 /** パスワード変更 */
