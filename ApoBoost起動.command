@@ -2,7 +2,8 @@
 # ApoBoost（Mac用）ダブルクリックで起動するファイル。
 # 初回はこのファイルだけで、必要な部品の用意から起動まで全部やります（Node.js が無ければ、このフォルダの中に自動で用意します）。
 # ※ このファイルはフォルダの中に置いたまま使ってください（移動すると起動できません）
-cd "$(dirname "$0")" || exit 1
+# フォルダに入れないときは、何も出さずに終わらないよう理由を出す（「ダウンロード」等で、ターミナルのアクセスを「許可しない」にしたとき）
+cd "$(dirname "$0")" || { echo "【準備が必要です】ApoBoost のフォルダを開けませんでした。"; echo "システム設定 →「プライバシーとセキュリティ」→「ファイルとフォルダ」で「ターミナル」をオンにしてから、もう一度このファイルを開いてください。"; read -r -p "returnキーでこの画面を閉じます… " _; exit 1; }
 export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 
 # ---- 自動で用意する Node.js（版とハッシュはここ1か所だけに書く）----
@@ -22,7 +23,7 @@ PREBUILT_MAJORS="22 24 26"
 if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then NODE_ARCH=arm64; NODE_SHA="$NODE_SHA_ARM64"; else NODE_ARCH=x64; NODE_SHA="$NODE_SHA_X64"; fi
 NODE_NAME="node-$NODE_DIST_VER-darwin-$NODE_ARCH"
 
-close_wait() { echo ""; read -r -p "Enterキーでこの画面を閉じます… " _; }
+close_wait() { echo ""; read -r -p "returnキーでこの画面を閉じます… " _; }
 
 clear
 echo "============================================"
@@ -34,9 +35,18 @@ echo ""
 if [ ! -f package.json ] || [ ! -f scripts/run.mjs ]; then
   echo "【準備が必要です】ApoBoost のファイルがそろっていません。"
   echo "zip をダブルクリックして展開（解凍）し、できたフォルダの中の「ApoBoost起動.command」を開いてください。"
+  case "$PWD" in
+    "$HOME/Downloads"*|"$HOME/Desktop"*|"$HOME/Documents"*)
+      echo "（展開したフォルダから開いてもこの表示が出るときは、「ターミナル」がこのフォルダを読めていません。"
+      echo "  システム設定 →「プライバシーとセキュリティ」→「ファイルとフォルダ」で「ターミナル」をオンにしてください）" ;;
+  esac
   close_wait
   exit 1
 fi
+
+# この起動ファイルを開けた（＝macOS の確認を一度通った）ら、フォルダの中の「インターネットから来た」印を外す。
+# 外さないと、あとで ApoBoost.app やほかのファイルを開くたびに、同じ確認がもう一度出る
+xattr -dr com.apple.quarantine "$PWD" 2>/dev/null || true
 
 # 置き場所の注意（1回だけ）。「ダウンロード」「デスクトップ」「書類」は macOS が見張っている場所で、
 # パソコンの起動時の自動起動（裏で動く node）が読めずに動かないことがある。iCloud で同期していると部品のファイルが壊れやすい
@@ -85,7 +95,7 @@ fetch_fail() {
 fetch_node() {
   local url="https://nodejs.org/dist/$NODE_DIST_VER/$NODE_NAME.tar.gz" part="runtime/$NODE_NAME.tar.gz.part" got retry=2 ct=20
   [ "$1" = quick ] && { retry=0; ct=10; }
-  echo "Node.js（$NODE_DIST_VER）をこのフォルダの中に用意します（約40MB。数分かかることがあります）"
+  echo "Node.js（$NODE_DIST_VER）をこのフォルダの中に用意します（約50MB。数分かかることがあります）"
   mkdir -p runtime || { fetch_fail "フォルダを作れませんでした"; return 1; }
   rm -rf runtime/.extract "$part"
   # 途中で止まる回線で永久に待たないよう、1分間ほとんど進まなければ・全体で10分かかったら、あきらめる
@@ -150,18 +160,17 @@ if [ -z "$RT" ]; then
     elif [ "$SYS_MAJOR" -eq 0 ]; then
       echo ""
       echo "【準備が必要です】Node.js が入っていません。"
-      echo "ブラウザで https://nodejs.org/ を開きます。"
-      echo "「LTS」と書かれた方をダウンロードして入れたあと、もう一度このファイルをダブルクリックしてください。"
-      open "https://nodejs.org/"
+      echo "Node.js のインストーラーをダウンロードします。開いたら案内どおりに入れて、もう一度このファイルをダブルクリックしてください。"
+      echo "（会社のパソコンでは、ネットワークの制限で自動の用意が止められていることがあります。その場合は社内のご担当にご相談ください）"
+      open "https://nodejs.org/dist/$NODE_DIST_VER/node-$NODE_DIST_VER.pkg"
       close_wait
       exit 1
     else
       # Node.js 20 未満では部品（better-sqlite3 など）が動かないため、入れ直してもらう
       echo ""
       echo "【準備が必要です】Node.js が古いため動きません（いま: ${SYS_VER:-不明} / 必要: 20 以上）。"
-      echo "ブラウザで https://nodejs.org/ を開きます。"
-      echo "「LTS」と書かれた方をダウンロードして入れ直したあと、もう一度このファイルをダブルクリックしてください。"
-      open "https://nodejs.org/"
+      echo "Node.js のインストーラーをダウンロードします。開いたら案内どおりに入れ直して、もう一度このファイルをダブルクリックしてください。"
+      open "https://nodejs.org/dist/$NODE_DIST_VER/node-$NODE_DIST_VER.pkg"
       close_wait
       exit 1
     fi
@@ -170,8 +179,9 @@ fi
 [ -n "$RT" ] && export PATH="$PWD/$RT/bin:$PATH"
 
 if [ ! -f "$READY" ]; then
-  echo "部品を用意しています（初回は3〜5分かかります。たくさん文字が流れますが、そのままお待ちください）"
-  npm install --no-audit --no-fund || { echo ""; echo "準備に失敗しました。インターネットにつながっているか確かめて、もう一度このファイルをダブルクリックしてください。"; echo "それでも失敗する場合は、この画面を写真に撮って配布元に送ってください。"; close_wait; exit 1; }
+  echo "部品を用意しています（1〜5分ほど。画面が止まって見えても動いています。そのままお待ちください）"
+  # 英語の注意書き（部品の古さ・npm の新しい版の案内）は購入者には関係が無く、見て不安になって閉じる人がいるので出さない
+  npm install --no-audit --no-fund --loglevel=error --no-update-notifier || { echo ""; echo "準備に失敗しました。インターネットにつながっているか確かめて、もう一度このファイルをダブルクリックしてください。"; echo "会社のパソコンでは、ネットワークの制限で止められていることがあります。社内のご担当に、github.com・nodejs.org・registry.npmjs.org・cdn.playwright.dev への接続の許可をご相談ください。"; echo "それでも失敗する場合は、この画面を写真に撮って配布元に送ってください。"; close_wait; exit 1; }
   date > "$READY"
   [ -n "$PLACE_SHOWN" ] && date > "$PLACE_NOTED"
 fi
@@ -181,7 +191,7 @@ export FO_OPEN=1
 
 echo ""
 echo "起動します（Node.js $(node -v 2>/dev/null)）。この黒い画面は閉じないでください（閉じると送信も止まります）。"
-echo "止めるときは、この画面で Ctrl+C を押してください。"
+echo "止めるときは、この画面で control キーを押しながら C を押してください。"
 echo ""
 npm start
 

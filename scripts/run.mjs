@@ -148,7 +148,7 @@ function ensureBrowser() {
     } catch { /* 入れられなくても Chrome / Edge で送れる */ }
     return;
   }
-  console.log("\nフォーム操作用のブラウザを用意しています（初回は数分かかります。そのままお待ちください）");
+  console.log("\nフォーム操作用のブラウザを用意しています（初回は数分かかります。英語の文字が出ますが、そのままお待ちください。終わるとブラウザが自動で開きます）");
   const r = spawnSync(process.execPath, [cli, "install", "chromium"], { cwd: root, env: process.env, stdio: "inherit" });
   if (r.status === 0) console.log("→ 用意できました\n");
   else console.log("→ 用意できませんでした。インターネットにつながっているか確かめてください。Google Chrome を入れると、そちらを使って送れます\n");

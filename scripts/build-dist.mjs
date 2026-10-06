@@ -42,11 +42,13 @@ const copy = (name) => {
   if (!fs.existsSync(from)) return;
   fs.cpSync(from, to, { recursive: true });
 };
-for (const name of ["assets", "LICENSE", "update.json", "ApoBoost.app", "ApoBoost起動.command", "ApoBoost起動.bat", "インストール（最初に1回）.bat"]) copy(name);
+// ApoBoost.app は入れない: 初めての人が「アプリらしい見た目」の方を先に開き、macOS の確認を2回くぐった末に
+// 「この場所からは開けません」で止まっていた。起動は ApoBoost起動.command に一本化する
+for (const name of ["assets", "LICENSE", "update.json", "ApoBoost起動.command", "ApoBoost起動.bat", "インストール（最初に1回）.bat"]) copy(name);
 fs.mkdirSync(path.join(out, "scripts"), { recursive: true });
 fs.copyFileSync(path.join(root, "scripts", "run.mjs"), path.join(out, "scripts", "run.mjs"));
 // Mac のダブルクリック起動ファイルには実行権限が要る
-for (const f of ["ApoBoost起動.command", "ApoBoost.app/Contents/MacOS/apoboost"]) { try { fs.chmodSync(path.join(out, f), 0o755); } catch { /* 無い場合は何もしない */ } }
+for (const f of ["ApoBoost起動.command"]) { try { fs.chmodSync(path.join(out, f), 0o755); } catch { /* 無い場合は何もしない */ } }
 
 // 3) package.json: 動かすのに要る部品だけ（開発用の tsx・typescript などは入れない）
 const distPkg = {
@@ -66,6 +68,11 @@ fs.copyFileSync(path.join(root, "package-lock.json"), path.join(out, "package-lo
 // 4) README: 配布元向けの節（キーの発行）は外す
 let readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
 readme = readme.replace(/\n### キーの発行（配布元の作業）[\s\S]*?(?=\n## )/, "\n");
+// 開発者向けの案内と、コマンドで操作する方法は購入者には要らない（GitHub のページで最初に目に入り、そちらに従ってしまう）
+readme = readme.replace(/\n開発する方は `CLAUDE.md` を先に読んでください。\n/, "\n");
+readme = readme.replace(/\n### これまでの方法（コマンドで操作する）[\s\S]*?(?=\n## )/, "\n");
+// ApoBoost.app は配布しないので、触れている行を外す
+readme = readme.split("\n").filter((l) => !l.includes("ApoBoost.app")).join("\n");
 fs.writeFileSync(path.join(out, "README.md"), readme);
 
 // 5) 入っていないことを確かめる（ソース・秘密鍵・データが紛れ込まないように）

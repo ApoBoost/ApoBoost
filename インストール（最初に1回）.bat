@@ -25,6 +25,11 @@ rem zip の中から直接開いた場合（ファイルが一時フォルダに
 if not exist "package.json" goto :notextracted
 if not exist "scripts\run.mjs" goto :notextracted
 
+rem ダウンロードした zip から展開したファイルには「インターネットから来た」印が付き、開くたびに警告が出る。
+rem このファイルを開けた（＝一度許可した）ら、フォルダの中の印を外す（2回目以降・ショートカットから開くときに警告を出さないため）。外せなくても続ける
+set "AB_HERE=%CD%"
+powershell -NoProfile -Command "Get-ChildItem -LiteralPath $env:AB_HERE -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue" >nul 2>&1
+
 rem 置き場所の注意（1回だけ。ApoBoost起動.bat と同じ目印を使う）
 set "AB_PLACE_SHOWN="
 if exist "node_modules\.apoboost-place-noted" goto :place_done
@@ -73,8 +78,10 @@ set "PATH=%AB_RT%;%PATH%"
 for /f "tokens=*" %%v in ('node -v') do echo Node.js: %%v
 
 echo.
-echo [1/2] 必要な部品をダウンロードしています（3〜5分かかります）
-call npm install --no-audit --no-fund
+echo [1/2] 必要な部品をダウンロードしています（1〜5分ほど。画面が止まって見えても動いています）
+echo       画面の中はクリックしないでください（クリックすると止まります。止まったら Enter キーを1回押してください）
+rem 英語の注意書き（部品の古さ・npm の新しい版の案内）は購入者には関係が無く、見て不安になって閉じる人がいるので出さない
+call npm install --no-audit --no-fund --loglevel=error --no-update-notifier
 if errorlevel 1 goto :install_failed
 rem 準備が最後まで通った目印。ApoBoost起動.bat はこれを見て、準備をやり直すかどうかを決める
 echo ok>"node_modules\.apoboost-ready"
@@ -106,7 +113,9 @@ echo 次からは、デスクトップの「ApoBoost」をダブルクリック�
 echo いま起動しますか？
 choice /c YN /m "起動する(Y) / あとで(N)"
 if errorlevel 2 goto :later
-start "" "%AB_TARGET%"
+rem 同じ窓のまま起動する（別の窓で開くと黒い画面が2つになり、どちらを閉じてよいか迷うため）。
+rem 1行にしてある（待っているあいだにアップデートでこのファイルが置き換わっても、読み直す前に終わるように）
+call "%AB_TARGET%" & exit /b 0
 :later
 rem 最後は1行にしてある（待っているあいだにアップデートでこのファイルが置き換わっても、読み直す前に終わるように。ApoBoost起動.bat と同じ理由）
 echo. & echo この画面は閉じて構いません。 & pause & exit /b 0
@@ -121,7 +130,7 @@ if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" goto :fetch_go
 echo → この Windows（%PROCESSOR_ARCHITECTURE%）には自動で用意できません。
 goto :fetch_failed
 :fetch_go
-echo Node.js（%AB_NODE_VER%）をこのフォルダの中に用意します（約50MB。数分かかることがあります）
+echo Node.js（%AB_NODE_VER%）をこのフォルダの中に用意します（約40MB。数分かかることがあります）
 if not exist "runtime" mkdir "runtime"
 if exist "runtime\node.zip.part" del /f /q "runtime\node.zip.part"
 if exist "runtime\node.zip" del /f /q "runtime\node.zip"
@@ -198,9 +207,10 @@ goto :node_ok
 :nonode
 echo.
 echo 【準備が必要です】Node.js が入っていません。
-echo ブラウザで https://nodejs.org/ を開きます。「LTS」をダウンロードして入れたあと、
+echo Node.js のインストーラーをダウンロードします。開いたら案内どおりに入れて、
 echo このファイルをもう一度ダブルクリックしてください。
-start "" "https://nodejs.org/"
+echo （会社のパソコンでは、ネットワークの制限で自動の用意が止められていることがあります。その場合は社内のご担当にご相談ください）
+start "" "https://nodejs.org/dist/%AB_NODE_VER%/node-%AB_NODE_VER%-x64.msi"
 echo.
 pause
 exit /b 1
@@ -209,9 +219,8 @@ exit /b 1
 rem Node.js 20 未満では部品（better-sqlite3 など）が動かないため、入れ直してもらう
 echo.
 echo 【準備が必要です】Node.js が古いため動きません。いま: v%NODE_MAJOR% / 必要: 20 以上
-echo ブラウザで https://nodejs.org/ を開きます。
-echo 「LTS」と書かれた方をダウンロードして入れ直したあと、もう一度このファイルをダブルクリックしてください。
-start "" "https://nodejs.org/"
+echo Node.js のインストーラーをダウンロードします。開いたら案内どおりに入れ直して、もう一度このファイルをダブルクリックしてください。
+start "" "https://nodejs.org/dist/%AB_NODE_VER%/node-%AB_NODE_VER%-x64.msi"
 echo.
 pause
 exit /b 1
@@ -219,6 +228,7 @@ exit /b 1
 :install_failed
 echo.
 echo 失敗しました。インターネットにつながっているか確かめて、もう一度このファイルをダブルクリックしてください。
+echo 会社のパソコンでは、ネットワークの制限で止められていることがあります。社内のご担当に、github.com・nodejs.org・registry.npmjs.org・cdn.playwright.dev への接続の許可をご相談ください。
 echo それでも失敗する場合は、この画面を写真に撮って配布元に送ってください。
 pause
 exit /b 1
