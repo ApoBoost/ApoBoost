@@ -27,8 +27,15 @@ if not exist "scripts\run.mjs" goto :notextracted
 
 rem ダウンロードした zip から展開したファイルには「インターネットから来た」印が付き、開くたびに警告が出る。
 rem このファイルを開けた（＝一度許可した）ら、フォルダの中の印を外す（2回目以降・ショートカットから開くときに警告を出さないため）。外せなくても続ける
+rem 1回だけ行う（印が付くのは zip から展開したファイルだけ。アップデートで入れ替わるファイルには付かない）。起動のたびに部品まで数千ファイルを調べると遅くなるため
+if exist ".apoboost-unblocked" goto :unblock_done
 set "AB_HERE=%CD%"
 powershell -NoProfile -Command "Get-ChildItem -LiteralPath $env:AB_HERE -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue" >nul 2>&1
+echo ok>".apoboost-unblocked"
+attrib +h ".apoboost-unblocked" >nul 2>&1
+:unblock_done
+rem npm が英語で「新しい版があります」と出すのを止める（購入者には関係が無い）
+set "npm_config_update_notifier=false"
 
 rem 置き場所の注意（1回だけ）。OneDrive の中だと、部品（数万個のファイル）の同期で準備が失敗しやすく、自動起動も動かないことがある
 set "AB_PLACE_SHOWN="

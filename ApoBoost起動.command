@@ -193,6 +193,8 @@ echo ""
 echo "起動します（Node.js $(node -v 2>/dev/null)）。この黒い画面は閉じないでください（閉じると送信も止まります）。"
 echo "止めるときは、この画面で control キーを押しながら C を押してください。"
 echo ""
+# 止めたときに npm が英語で「新しい版があります」と出すのを止める（購入者には関係が無い）
+export npm_config_update_notifier=false
 npm start
 
 echo ""

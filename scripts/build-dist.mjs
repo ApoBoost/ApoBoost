@@ -71,6 +71,9 @@ readme = readme.replace(/\n### キーの発行（配布元の作業）[\s\S]*?(?
 // 開発者向けの案内と、コマンドで操作する方法は購入者には要らない（GitHub のページで最初に目に入り、そちらに従ってしまう）
 readme = readme.replace(/\n開発する方は `CLAUDE.md` を先に読んでください。\n/, "\n");
 readme = readme.replace(/\n### これまでの方法（コマンドで操作する）[\s\S]*?(?=\n## )/, "\n");
+// 配布元の作業（更新版の出し方）とソースの構成は、購入者には要らない（開発用リポジトリの中身が分かってしまう）
+readme = readme.replace(/\n## 更新版を配る（配布元の作業）[\s\S]*?(?=\n## |$)/, "\n");
+readme = readme.replace(/\n## 構成[\s\S]*?(?=\n## |$)/, "\n");
 // ApoBoost.app は配布しないので、触れている行を外す
 readme = readme.split("\n").filter((l) => !l.includes("ApoBoost.app")).join("\n");
 fs.writeFileSync(path.join(out, "README.md"), readme);
