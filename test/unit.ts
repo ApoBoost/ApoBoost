@@ -1314,5 +1314,25 @@ ok("applog: 書いて読める", recentLogs(5).some((r) => r.text === "テスト
   }
 }
 
+// ---- アポを担当者に渡す（LINE用の文章）----
+{
+  const { handoffActions, handoffText } = await import("../src/ui/appointments.js");
+  ok("handoff: 日程の話は日程調整", handoffActions("来週の日程をいただけますか")[0].startsWith("日程調整"));
+  ok("handoff: 料金の話は単価の案内", handoffActions("費用感を教えてください").some((t) => t.startsWith("単価")));
+  eq("handoff: 日程と料金の両方", handoffActions("一度お打ち合わせを。あわせてお見積りもお願いします").length, 2);
+  ok("handoff: 拾えないときはお礼と日程の候補", handoffActions("ご連絡ありがとうございます")[0].includes("お礼"));
+  const row = { id: 1, company_name: "株式会社サンプル", domain: "sample.example", email: "info@sample.example", channel: "email", outcome: "appointment",
+    outcome_note: "自動判定（キーワード: 「日程」）2026-10-06 05:05:00 件名「Re: ご案内」 本文「…来週の日程をいただけますか。料金も知りたいです…」",
+    updated_at: "2026-10-08 05:05:00", sent_at: null, campaign_id: 1, campaign_name: "春の案内", mailbox: "me@example.com", site_url: "" };
+  const t = handoffText(row, "松田");
+  ok("handoff: 宛名", t.startsWith("松田さん\n"));
+  ok("handoff: 会社と返信日（日本時間）", t.includes("■ 会社：株式会社サンプル") && t.includes("■ 返信日：10/8（木）14:05"));
+  ok("handoff: 次にやること2つ", t.includes("1. 日程調整") && t.includes("2. 単価・料金のご案内"));
+  ok("handoff: 期限は次の平日（木曜の返信なら金曜）", t.includes("■ 期限：10/9（金）中"));
+  ok("handoff: 名前が無ければ宛名を付けない", handoffText(row, "").startsWith("アポの対応をお願いします。"));
+  const fri = handoffText({ ...row, updated_at: "2026-10-09 05:00:00" }, "松田");
+  ok("handoff: 金曜の返信なら期限は月曜", fri.includes("■ 期限：10/12（月）中"));
+}
+
 if (failed) { console.error(`\nunit: ${failed}件 失敗`); process.exit(1); }
 console.log("unit: ALL OK");

@@ -76,6 +76,7 @@ try {
     ["/setup", "はじめの設定"],
     ["/todo", "要対応"],
     ["/appointments", "送信済み商事"],
+    ["/appointments", "LINEで送る"],
     ["/todo?kind=captcha", "認証株式会社"],
     ["/todo?kind=failed", "失敗サービス"],
     ["/stats", "成果"],

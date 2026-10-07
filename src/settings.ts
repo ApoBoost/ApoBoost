@@ -60,6 +60,8 @@ export function saveSettingValue(key: SettingKey, value: string | number | boole
 // ユーザーごとに持つ（法令確認の law_ack:<ID> と同じ作り）。全員共通だと、一般ユーザーが押しただけで
 // 管理者や他のメンバーの「送信用メール」の手順まで済み扱いになっていた
 export const setupEmailSkipKey = (userId: number) => `setup_email_skipped:${userId}`;
+/** アポを渡す相手の名前（例: 松田）。アポの画面の「◯◯さんに渡す（LINE用）」に使う。人によって渡す相手が違うのでユーザー別 */
+export const handoffNameKey = (userId: number) => `handoff_name:${userId}`;
 
 /** この人が「フォームだけで使う」を選んでいるか。
  *  まだ自分で選んでいない人は、1.0.14 で保存された全員共通の値を、管理者についてだけ引き継ぐ
