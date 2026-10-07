@@ -1,7 +1,7 @@
 // 成果・ガイド・はじめの設定などの画面
 // 管理画面（localhost）。
 import express from "express";
-import { S, setting, settingOn, settingNum, saveSettingValue, handoffNameKey } from "../settings.js";
+import { S, setting, settingOn, settingNum, saveSettingValue } from "../settings.js";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
@@ -72,19 +72,12 @@ app.get("/appointments", (req, res) => {
   const campaignId = Number(req.query.campaign) || 0;
   const where = `j.is_test=0 AND ${sc.sql.replace("owner_user_id", "c.owner_user_id")}${campaignId ? " AND c.id=?" : ""}`;
   const args = [...sc.args, ...(campaignId ? [campaignId] : [])];
-  const cols = `j.id, j.company_name, j.domain, j.email, j.site_url, j.channel, j.outcome, j.outcome_note, j.updated_at, j.sent_at, j.appo_seen_at, c.id campaign_id, c.name campaign_name, lower(s.smtp_user) mailbox`;
+  const cols = `j.id, j.company_name, j.domain, j.email, j.channel, j.outcome, j.outcome_note, j.updated_at, j.sent_at, j.appo_seen_at, c.id campaign_id, c.name campaign_name, lower(s.smtp_user) mailbox`;
   const from = `FROM form_jobs j JOIN form_campaigns c ON c.id=j.campaign_id JOIN sender_profiles s ON s.id=c.sender_id`;
   const appos = db.prepare(`SELECT ${cols} ${from} WHERE ${where} AND j.outcome='appointment' ORDER BY j.updated_at DESC`).all(...args) as import("../views.js").AppoRow[];
   const replies = db.prepare(`SELECT ${cols} ${from} WHERE ${where} AND j.outcome='replied' ORDER BY j.updated_at DESC LIMIT 50`).all(...args) as import("../views.js").AppoRow[];
   const campaigns = db.prepare(`SELECT id, name FROM form_campaigns c WHERE ${sc.sql.replace("owner_user_id", "c.owner_user_id")} ORDER BY id DESC`).all(...sc.args) as { id: number; name: string }[];
-  res.send(layout("アポ", appointmentsView(appos, replies, campaigns, campaignId, getSetting(handoffNameKey(me(req).id), "")), takeFlash(req), navUser(req), appState.updateReady));
-});
-
-// アポを渡す相手の名前（ユーザー別）
-app.post("/appointments/handoff-name", (req, res) => {
-  const name = String(req.body.name ?? "").replace(/\s+/g, " ").trim().replace(/さん$/, "").slice(0, 20);
-  saveSetting(handoffNameKey(me(req).id), name);
-  redirectWith(res, "/appointments", name ? `アポを渡す相手を「${name}さん」にしました` : "アポを渡す相手の名前を消しました");
+  res.send(layout("アポ", appointmentsView(appos, replies, campaigns, campaignId), takeFlash(req), navUser(req), appState.updateReady));
 });
 
 // 開いているページが、新しいお知らせを取りに来る（数秒ごと）。通知はページ側が出す
