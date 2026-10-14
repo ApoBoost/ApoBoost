@@ -1314,5 +1314,20 @@ ok("applog: 書いて読める", recentLogs(5).some((r) => r.text === "テスト
   }
 }
 
+// ---- Windows の .bat: Shift_JIS で配る（UTF-8 ＋ chcp 65001 だと cmd が読み位置を数え間違えて、説明書きの途中を命令として実行した）----
+{
+  // @ts-expect-error 配布版を作るスクリプト（.mjs）の部品をそのまま使う
+  const { encodeSjis, decodeSjis } = await import("../scripts/sjis.mjs");
+  for (const f of ["ApoBoost起動.bat", "インストール（最初に1回）.bat"]) {
+    const text = fs.readFileSync(path.join(process.cwd(), f), "utf8");
+    ok(`${f}: 2行目が chcp 932`, text.split("\r\n")[1] === "chcp 932 >nul");
+    ok(`${f}: chcp 65001 が残っていない`, !/^(?!rem )[^\r\n]*chcp\s+65001/im.test(text));
+    ok(`${f}: 改行がすべて CRLF`, !text.replace(/\r\n/g, "").includes("\n"));
+    let back = "";
+    try { back = decodeSjis(encodeSjis(text)); } catch (e) { ok(`${f}: Shift_JIS にできる`, false, String(e)); }
+    ok(`${f}: Shift_JIS にして戻すと同じ中身`, back.replace(/〜/g, "～") === text.replace(/〜/g, "～"));
+  }
+}
+
 if (failed) { console.error(`\nunit: ${failed}件 失敗`); process.exit(1); }
 console.log("unit: ALL OK");

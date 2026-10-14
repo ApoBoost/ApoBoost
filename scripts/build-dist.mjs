@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { encodeSjis, decodeSjis } from "./sjis.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const out = path.resolve(process.argv[2] || path.join(root, ".dist", "ApoBoost"));
@@ -49,6 +50,18 @@ fs.mkdirSync(path.join(out, "scripts"), { recursive: true });
 fs.copyFileSync(path.join(root, "scripts", "run.mjs"), path.join(out, "scripts", "run.mjs"));
 // Mac のダブルクリック起動ファイルには実行権限が要る
 for (const f of ["ApoBoost起動.command"]) { try { fs.chmodSync(path.join(out, f), 0o755); } catch { /* 無い場合は何もしない */ } }
+// Windows の .bat は Shift_JIS にして配る（編集しやすいようにリポジトリでは UTF-8 のまま）。
+// UTF-8 ＋ chcp 65001 だと、日本語版 Windows の cmd が外のコマンド（powershell・npm など）を呼んだあとにファイルの読み位置を数え間違え、
+// 説明書きの途中を命令として実行していた（英語のエラーが並び、最後の「いま起動しますか？」で Y を押すと窓ごと閉じた）
+for (const f of ["ApoBoost起動.bat", "インストール（最初に1回）.bat"]) {
+  const file = path.join(out, f);
+  const text = fs.readFileSync(file, "utf8");
+  if (/^(?!rem )[^\r\n]*chcp\s+65001/im.test(text) || !/^chcp 932 >nul\r$/m.test(text)) { console.error(`${f}: 2行目は「chcp 932 >nul」にしてください（Shift_JIS で配るため）`); process.exit(1); }
+  if (text.replace(/\r\n/g, "").includes("\n")) { console.error(`${f}: 改行が CRLF になっていない行があります`); process.exit(1); }
+  const sjis = encodeSjis(text);
+  if (decodeSjis(sjis).replace(/〜/g, "～") !== text.replace(/〜/g, "～")) { console.error(`${f}: Shift_JIS に変換すると中身が変わります`); process.exit(1); }
+  fs.writeFileSync(file, sjis);
+}
 
 // 3) package.json: 動かすのに要る部品だけ（開発用の tsx・typescript などは入れない）
 const distPkg = {

@@ -1,5 +1,8 @@
 @echo off
-chcp 65001 >nul
+chcp 932 >nul
+rem 文字コードの決まり: このファイルは UTF-8 で編集し、配布版を作るとき（scripts/build-dist.mjs）に Shift_JIS に変換して配る。
+rem UTF-8 ＋ chcp 65001 だと、日本語版 Windows の cmd が外のコマンドのあとにファイルの読み位置を数え間違え、説明書きの途中を命令として実行していた。
+rem chcp 932 は、文字コードを UTF-8 にしている Windows（ベータの設定）でも Shift_JIS として読ませるため
 rem ApoBoost Windows用インストーラー（最初に1回だけ実行してください）。
 rem Node.js の用意 → 必要な部品の用意 → デスクトップとスタートメニューにショートカットを作成 まで行います。
 rem Node.js が無い・古いときは、このフォルダの中（runtime\）に公式の配布物を自動で用意します。
