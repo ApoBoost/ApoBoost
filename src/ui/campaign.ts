@@ -104,6 +104,13 @@ ${(() => {
 <label>本文（B）</label><textarea name="template_b" style="min-height:220px" placeholder="Aとは別の切り口の文面を入れてください" data-tplfield>${d("template_b")}</textarea>
 <label>件名の別案（1行に1つ・任意）</label><textarea name="subject_alts" style="min-height:70px" data-tplfield placeholder="同じ件名を大量に送ると迷惑メール扱いされやすくなります。別案を入れると順番に使います">${d("subject_alts")}</textarea>
 </div></details>
+<details style="margin:12px 0" ${String(defaults.template_short ?? "").trim() || Number(defaults.fit_limits ?? 1) === 0 ? "open" : ""}><summary style="cursor:pointer;font-weight:700">文字数の制限があるフォーム（「500文字以内」など）</summary>
+<div style="border:1px solid var(--hive-200);border-radius:8px;padding:10px 12px;margin-top:8px">
+<input type="hidden" name="fit_limits_shown" value="1">
+<label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="fit_limits" value="1" ${Number(defaults.fit_limits ?? 1) ? "checked" : ""} style="width:auto">相手のフォームの制限で弾かれたら、本文を合わせて入れ直す（おすすめ）</label>
+<p class="muted small" style="margin:4px 0 8px">「500文字以内で入力してください」と出たら、下の短い文面か、本文を自動で短くしたものに替えて送り直します（自動のときは、最初の段落と最後の署名を残し、間の段落を省きます）。「本文にURLを入れられません」と出たら、URLを外して送り直します。どちらも相手に届く前のエラーなので、二重に送ることはありません。</p>
+<label>短い文面（任意・300文字くらいまで）</label><textarea name="template_short" style="min-height:140px" data-tplfield placeholder="空なら本文を自動で短くします。差し込み（{{会社名}} など）も使えます">${d("template_short")}</textarea>
+</div></details>
 <label>AIへの追加指示（任意）</label><input type="text" name="ai_instruction" value="${d("ai_instruction")}" placeholder="例: 採用課題に寄せる／飲食店向けに集客の話をする">
 </div><div data-step="3"><h2>③ 上限と時間帯</h2>
 ${editId ? "" : `<p class="muted" data-nohelp>ここは最初のままで大丈夫です。あとから「設定を変える」でいつでも変更できます。</p>`}

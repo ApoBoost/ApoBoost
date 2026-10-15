@@ -297,6 +297,15 @@ export async function composeMessage(job: Job, sender: SenderProfile, campaign: 
   return { subject, message, aiUsed, variant };
 }
 
+/** 文字数の制限があるフォーム用の短い文面（キャンペーンに登録があれば）。無ければ空文字（エンジン側で自動で短くする） */
+export function composeShortMessage(job: Job, sender: SenderProfile, campaign: Campaign): string {
+  const tpl = String(campaign.template_short ?? "").trim();
+  if (!tpl) return "";
+  const vars = buildVars(job, sender);
+  vars["資料リンク"] = campaign.material_url || "";
+  return renderTemplate(tpl, { ...vars, AI冒頭: "" }).trim();
+}
+
 // ---- NGワード ----
 export function loadNgWords(): string[] {
   try {

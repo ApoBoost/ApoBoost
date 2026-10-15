@@ -152,6 +152,8 @@ function migrate(db: Database.Database) {
   addCol("form_jobs", "scan_note", "TEXT NOT NULL DEFAULT ''");
   addCol("form_campaigns", "resend_days", "INTEGER NOT NULL DEFAULT 90");   // 同じ会社への再送禁止期間（0=制限なし）
   addCol("form_campaigns", "ignore_refusal", "INTEGER NOT NULL DEFAULT 0"); // 1=営業お断りのサイトにも送る（非推奨）
+  addCol("form_campaigns", "fit_limits", "INTEGER NOT NULL DEFAULT 1");     // 1=相手のフォームの制限（文字数・URL禁止）で弾かれたら、本文を合わせて入れ直す
+  addCol("form_campaigns", "template_short", "TEXT NOT NULL DEFAULT ''");   // 文字数の制限があるフォーム用の短い文面（空なら自動で短くする）
 
   // ---- ログイン（単体版）----
   db.exec(`
@@ -456,6 +458,8 @@ export type Campaign = {
   email_daily_limit: number;
   resend_days: number;
   ignore_refusal: number;
+  fit_limits?: number;
+  template_short?: string;
   status: "draft" | "running" | "paused" | "done";
   material_url: string;   // フォーム送信で本文に載せる資料の公開リンク
   attach_path: string;    // メール添付する資料ファイルの保存先（DATA_DIR/materials 配下）

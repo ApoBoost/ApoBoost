@@ -9,7 +9,7 @@ import { notify } from "./notify.js";
 import { keepAwake } from "./awake.js";
 import { logError, logWarn, logInfo } from "./applog.js";
 import { jpError } from "./jp.js";
-import { composeMessage, findNgWords, activeProvider, lintMessage, aiErrorKind } from "./message.js";
+import { composeMessage, composeShortMessage, findNgWords, activeProvider, lintMessage, aiErrorKind } from "./message.js";
 import { matchExcludedKeyword } from "./csv.js";
 import { sharedSentBy } from "./share.js";
 import { cappedDailyLimit } from "./license.js";
@@ -559,7 +559,7 @@ async function processJobInner(browser: Browser, jobId: number, opts: { dryRun?:
     }
   }
 
-  const r = await submitToCompany(browser, { jobId, formUrl: job.form_url, siteUrl: job.site_url, sender, subject, message, dryRun: opts.dryRun, ignoreRefusal: Boolean(campaign.ignore_refusal), aiMode: (campaign.mode === "ai" || campaign.mode === "tpl_ai") && activeProvider() !== "none", company: job.company_name, manualAnswers: parseManualAnswers(job.manual_answers) });
+  const r = await submitToCompany(browser, { jobId, formUrl: job.form_url, siteUrl: job.site_url, sender, subject, message, dryRun: opts.dryRun, ignoreRefusal: Boolean(campaign.ignore_refusal), aiMode: (campaign.mode === "ai" || campaign.mode === "tpl_ai") && activeProvider() !== "none", company: job.company_name, manualAnswers: parseManualAnswers(job.manual_answers), fitLimits: Number(campaign.fit_limits ?? 1) !== 0, shortMessage: composeShortMessage(job, sender, campaign) });
   const detail = [r.detail, ...r.log].join("\n");
   // フォームが見つからなかった会社に、メールアドレスがあればメール送信へ自動で振り替える（#16）。
   // これまでは「フォーム無し」で止まり、人が手で振り分け直していた（取りこぼしが最も多かったところ）
@@ -573,7 +573,7 @@ async function processJobInner(browser: Browser, jobId: number, opts: { dryRun?:
     db.prepare("INSERT OR IGNORE INTO form_suppressions(domain, reason) VALUES(?,?)").run(job.domain, "営業お断り文言を検知（自動）");
   }
   const status: JobStatus = opts.dryRun ? "queued" : r.status;
-  return finish(status, detail, { message_used: message, screenshot_path: r.screenshot, form_url: r.finalUrl && r.status !== "skip_no_form" ? r.finalUrl : undefined, pending_questions: r.pendingQuestions ? JSON.stringify(r.pendingQuestions) : undefined });
+  return finish(status, detail, { message_used: r.messageUsed || message, screenshot_path: r.screenshot, form_url: r.finalUrl && r.status !== "skip_no_form" ? r.finalUrl : undefined, pending_questions: r.pendingQuestions ? JSON.stringify(r.pendingQuestions) : undefined });
 }
 
 /** 1社分の処理全体の見張り。フォーム入力には submitToCompany の見張り（4分）があるが、その前後で待つ処理

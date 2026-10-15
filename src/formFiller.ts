@@ -209,6 +209,9 @@ const COLLECT_SCRIPT = `
     if (!isVisible(el)) continue;
     const nm = ((el.getAttribute('name') || '') + ' ' + (el.id || '') + ' ' + (el.className || '')).toLowerCase();
     if (/honeypot|honey_pot|hp_field|_hp\b|bot-?field|botcheck|nospam|do-?not-?fill|leave-?blank|website2|url2/.test(nm)) continue;
+    // ブログのコメント欄（WordPress の #commentform など）は問い合わせではない。書き込むと営業文が公開のコメントとして載る
+    // （eco-station.jp の実例: 「お問い合わせ」ページの下のコメント欄に送っていた）
+    if (el.closest('#commentform, #respond, .comment-respond, .comment-form, form[action*="wp-comments-post"]')) continue;
     el.setAttribute('data-fo-idx', String(i));
     const own = [ownText(el), el.getAttribute('placeholder'), el.getAttribute('name'), el.id, el.getAttribute('autocomplete'), el.getAttribute('title')].filter(Boolean).join(' | ').replace(/\\s+/g, ' ').slice(0, 200);
     const sig = own + ' || ' + labelText(el).replace(/\\s+/g, ' ').slice(0, 200);
@@ -398,12 +401,88 @@ function applyFixups(cat: Category, value: string): string {
   return v;
 }
 
-/** textarea の maxlength に収まるように、段落の切れ目で短くする */
+/** textarea の maxlength に収まるように短くする */
 function fitMessage(message: string, max: number): string {
-  if (!max || message.length <= max) return message;
-  const cut = message.slice(0, max);
-  const at = Math.max(cut.lastIndexOf("\n\n"), cut.lastIndexOf("。"));
-  return (at > max * 0.5 ? cut.slice(0, at + 1) : cut).trim();
+  return shortenMessage(message, max);
+}
+
+/** 文字数の数え方。改行を2文字と数えるサーバー（CR LF で数える）があるので、改行は2文字として数える（少し短めになる側に倒す） */
+export const formLength = (s: string) => s.length + (s.match(/\n/g) || []).length;
+
+/** 本文を max 文字に収める。先頭の段落（名乗りと用件）と最後の段落（署名・連絡先）は残し、間の段落を後ろから外していく。
+ *  以前は頭から max 文字で切っていたので、署名と連絡先が消えていた */
+export function shortenMessage(message: string, max: number): string {
+  if (!max || formLength(message) <= max) return message;
+  const paras = message.split(/\n[ \t　]*\n/).map((p) => p.trim()).filter(Boolean);
+  const join = (ps: string[]) => ps.join("\n\n");
+  if (paras.length >= 3) {
+    const head = paras[0], tail = paras[paras.length - 1];
+    const mid = paras.slice(1, -1);
+    while (mid.length) {
+      mid.pop();
+      const m = join([head, ...mid, tail]);
+      if (formLength(m) <= max) return m;
+    }
+    // 先頭と署名だけでも長い: 先頭の段落を文の切れ目で詰める
+    const room = max - formLength(tail) - 2;
+    if (room >= 40) return join([cutAtSentence(head, room), tail]);
+  }
+  return cutAtSentence(message, max);
+}
+
+function cutAtSentence(text: string, max: number): string {
+  let cut = text;
+  while (formLength(cut) > max) cut = cut.slice(0, cut.length - 1);
+  const at = Math.max(cut.lastIndexOf("\n"), cut.lastIndexOf("。"));
+  return (at > cut.length * 0.5 ? cut.slice(0, at + 1) : cut).trim();
+}
+
+/** エラー文から、本文の文字数の上限を読む（「500文字以内で入力してください」「半角255文字（全角127文字）以内」「1000文字を超えています」）。
+ *  全角の数が書いてあればそちらを使う（日本語の本文は全角のため）。読めなければ null */
+export function limitFromError(detail: string): number | null {
+  const t = detail.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).replace(/[,，]/g, "");
+  const zen = /全角\s*(\d{2,5})\s*(文字|字)/.exec(t);
+  const any = zen ?? /(\d{2,5})\s*(文字|字)\s*(以内|まで|以下|を超え|をこえ|未満)/.exec(t);
+  if (!any) return null;
+  const n = Number(any[1]);
+  return n >= 20 ? n : null;
+}
+
+/** エラー文が「本文に URL を入れられない」と言っているか */
+export function urlBanned(detail: string): boolean {
+  return /(URL|ＵＲＬ|ｕｒｌ|リンク|https?)/i.test(detail) && /((でき|出来)ません|禁止|含め|入れないで|使用し?ないで|お控え)/.test(detail);
+}
+
+/** 本文から URL を外す。URL だけの行と、その直前の案内（「▼資料はこちら」等）も外す */
+export function stripUrls(message: string): string {
+  const lines = message.split("\n");
+  const out: string[] = [];
+  for (const line of lines) {
+    if (/^\s*(https?:\/\/|www\.)\S+\s*$/i.test(line)) {
+      const prev = out[out.length - 1] ?? "";
+      if (prev.trim().length <= 40 && /(こちら|▼|■|●|URL|リンク|ページ|資料)/.test(prev)) out.pop();
+      continue;
+    }
+    out.push(line.replace(/(https?:\/\/|www\.)[^\s　）)」』]+/gi, "").replace(/[ \t　]+$/, ""));
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/** 入力エラー・拒否の文言に合わせて本文を作り直す。直す必要が無い（直せない）ときは null。
+ *  short: キャンペーンに登録された「短い文面」（あれば、収まるときはそれを使う） */
+export function fitMessageToSite(message: string, detail: string, short = ""): { message: string; why: string } | null {
+  const banned = urlBanned(detail) && /(https?:\/\/|www\.)/i.test(message);
+  const limit = limitFromError(detail);
+  const tooLong = limit !== null && formLength(message) > limit;
+  if (!banned && !tooLong) return null;
+  let base = message;
+  const useShort = tooLong && !!short.trim() && formLength(banned ? stripUrls(short) : short) <= (limit as number);
+  if (useShort) base = short.trim();
+  if (banned) base = stripUrls(base);
+  if (tooLong) base = shortenMessage(base, limit as number);
+  if (base === message || !base.trim()) return null;
+  const why = [banned && "URLを外しました", tooLong && `${limit}文字以内に${useShort ? "収まる短い文面に替えました" : "短くしました"}`].filter(Boolean).join("・");
+  return { message: base, why };
 }
 
 /** 収集した項目に値を入れる。戻り値は入力レポート */
@@ -1057,7 +1136,7 @@ const NEXT_ONLY_RE = /(次へ|進む|すすむ|next)/i;
 // 「内容を確認して送信」のように文末が送信のものは送信ボタンのまま
 const CONFIRM_END_RE = /(確認(する|します|画面へ|画面に進む|へ進む|へ)?|confirm)[\s>＞»→▶]*$/i;
 // 押したあとに出る確認画面の文言（ボタン名で見分けられなかったときの保険）
-const CONFIRM_PAGE_RE = /(下記の?内容で送信|以下の内容で送信|下記の内容でよろしければ|以下の内容でよろしければ|入力内容(を|の)?(ご)?確認|内容を(ご)?確認(の(上|うえ)|下さい|ください)|[「『]送信(する)?[」』]\s*(ボタン)?を(押|クリック))/;
+const CONFIRM_PAGE_RE = /(下記の?内容で送信|以下の内容で送信|下記の内容でよろしければ|以下の内容でよろしければ|入力内容(を|の)?(ご)?確認|内容を(ご)?確認(の(上|うえ)|下さい|ください)|[「『]送信(する)?[」』]\s*(ボタン)?を(押|クリック)|送信内容(を|の)(ご)?確認|よくご確認(ください|下さい))/;
 // ページ内ポップアップの確認文言（入力欄は後ろに残ったままなので「フォームが消えた」判定とは別に見る）
 const CONFIRM_MODAL_RE = /(送信|この内容で|以下の内容で|下記の内容で|お問い?合わ?せ).{0,25}(よろしいですか|よろしいでしょうか)/;
 
@@ -1076,6 +1155,16 @@ const BUTTONS_SCRIPT = `
     while (a && a !== document.body && a.querySelectorAll('[data-fo-idx]').length < 3) a = a.parentElement;
     scope = a && a !== document.body ? a : null;
   }
+  // 画面の真ん中に重なっている固定表示の層（確認のポップアップ）。class 名に modal 等が無く z-index も低いポップアップを見分けられず、
+  // 後ろに隠れた元のボタンを押して先へ進めなかった（mpatakara.com・ryomalife.com・yamasake.com の実例）。
+  // 入力した本文欄を含む層（ページ全体を固定表示にしているサイト）はポップアップとみなさない
+  let topLayer = null;
+  try {
+    for (let a = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2); a && a !== document.body && a !== document.documentElement; a = a.parentElement) {
+      if (getComputedStyle(a).position === 'fixed') topLayer = a;
+    }
+  } catch (e) {}
+  if (topLayer && topLayer.querySelector('textarea[data-fo-idx]')) topLayer = null;
   const out = [];
   let i = 0;
   for (let k = 0; k < list.length; k++) {
@@ -1136,7 +1225,7 @@ const BUTTONS_SCRIPT = `
     if (!search && el.closest('[role=search]')) search = true;
     el.setAttribute('data-fo-btn', String(i));
     // ページ内ポップアップ（確認ダイアログ等）の中のボタンか。明示的なダイアログ要素か、画面に固定表示された重なり（position:fixed で z-index が高い）の中
-    let inDialog = !!el.closest('dialog[open],[role=dialog],[role=alertdialog],[aria-modal=true],[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],[class*="popup"],[class*="lightbox"]');
+    let inDialog = !!el.closest('dialog[open],[role=dialog],[role=alertdialog],[aria-modal=true],[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],[class*="popup"],[class*="lightbox"]') || (!!topLayer && topLayer.contains(el));
     // 固定表示のヘッダー・追従する案内ボタン（「お申し込み」等の実URLの <a>）はポップアップではない
     const fixedOk = !inChrome('header, nav, [class*="header"], [id*="header"]') && !leavesReal;
     for (let a = el.parentElement; fixedOk && !inDialog && a && a !== document.body; a = a.parentElement) {
@@ -1318,11 +1407,14 @@ const SUCCESS_URL_RE = /(thanks|thank-?you|kanryo|kanryou|touroku_kanryo|(^|[/_.
 const WEAK_SUCCESS_RE = /^(自動返信|確認(の)?メール|ご入力(いただき)?(誠に)?ありがとう|受付番号|お問い?合わ?せ番号)/;
 // 「下さい」表記、「未入力です」「入力されていません」「は必須です」「カタカナ以外の文字が…」なども拾う。
 // これらを知らず、エラーが出ているのに「判定不能」「確認画面を抜けられない」になっていた（hightouch-haken.com / fs224.formasp.jp / tac21 の実例）
-const ERROR_RE = /((入力|記入|選択|指定|チェック)して(ください|下さい)|ご(入力|記入|選択)(ください|下さい)|必須項目|未入力|未記入|未選択|(入力|選択|記入)されていません|(入力|選択)が必須|は必須です|必須入力|正しく(入力|ありません)|形式が|不正|以外の文字|エラーが|エラーです|入力に(エラー|誤り|不備)|入力漏れ|error(s)? (occurred|found)|is required|invalid|入力内容に誤り|確認して(ください|下さい))/i;
+const ERROR_RE = /((入力|記入|選択|指定|チェック)して(ください|下さい)|ご(入力|記入|選択)(ください|下さい)|必須項目|未入力|未記入|未選択|(入力|選択|記入)されていません|(入力|選択)が必須|は必須です|必須入力|正しく(入力|ありません)|形式が|不正|以外の文字|エラーが|エラーです|入力に(エラー|誤り|不備)|入力漏れ|error(s)? (occurred|found)|is required|invalid|入力内容に誤り|確認して(ください|下さい)|入力内容に問題|(含め|使用|入力|記載|記入)(る)?(事|こと)(は|が)?(でき|出来)ません|[0-9０-９]+\s*(文字|字)(以内|まで|以下))/i;
 // サイトの側で受け付けを断られたときの文言。入力を直しても通らないので、入力エラーとは分けて扱う。
 //   ・Contact Form 7 の「メッセージの送信に失敗しました」（スパム判定・メールサーバーの不調）
 //   ・「スパム送信の可能性があります」、403 Forbidden、PHP の Fatal error、前の画面の内容が引き継がれない（Please fill out the form on the previous page）
-const REJECT_RE = /(メッセージの送信に失敗しました|送信に失敗しました|送信できませんでした|スパム(送信|メール|と判定|の可能性)|spam|403\s*Forbidden|Access\s*Denied|アクセスが拒否|不正な(アクセス|送信|リクエスト|操作)|Fatal error|Internal Server Error|Please fill out the form on the previous page|セッション(が|の)?(切れ|タイムアウト|有効期限|無効)|時間をおいて(から)?(再度|もう一度)|しばらく(たって|経って)から|404\s*Not\s*Found|405\s*Not\s*Allowed|Method\s*Not\s*Allowed|Service\s*Unavailable|ページが見つかりません)/i;
+const REJECT_RE = /(Failed to send mail|SMTP connect\(\) failed|Mailer Error|メッセージの送信に失敗しました|送信に失敗しました|送信できませんでした|スパム(送信|メール|と判定|の可能性)|spam|403\s*Forbidden|Access\s*Denied|アクセスが拒否|不正な(アクセス|送信|リクエスト|操作)|Fatal error|Internal Server Error|Please fill out the form on the previous page|セッション(が|の)?(切れ|タイムアウト|有効期限|無効)|時間をおいて(から)?(再度|もう一度)|しばらく(たって|経って)から|404\s*Not\s*Found|405\s*Not\s*Allowed|Method\s*Not\s*Allowed|Service\s*Unavailable|ページが見つかりません)/i;
+/** 送信の前に時間をおくよう求める文言（ロボット対策）。「送信中です。しばらくお待ちください」は送っている最中なので含めない（押し直すと二重送信） */
+const WAIT_RE = /送信前に(もう少し|少々|しばらく)お待ち(ください|下さい)|セキュリティ(の)?チェックを(行|おこな)って(い|お)/;
+export const WAIT_DETAIL = "送信前の確認待ち";
 /** 文字列の中に、ある言葉が何回出てくるか（送信の前後で増えたかを見るのに使う） */
 const countOf = (hay: string, needle: string) => (needle ? hay.split(needle).length - 1 : 0);
 
@@ -1434,6 +1526,10 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
   // 「入力してください」のような短い言葉は注意書きとして最初から載っていることが多く、新しく出たエラーまで捨てていた
   // （jhn.co.jp の実例: 電話番号の下に赤字で「入力してください。」が出ているのに判定不能）。回数が増えたかで見る
   const isFresh = (phrase: string) => { const k = phrase.replace(/\s+/g, ""); return !beforeCompact || countOf(compact, k) > countOf(beforeCompact, k); };
+  // 送信の前に、サイトが時間をおくよう求めている（「送信前にもう少しお待ちください。簡単なセキュリティチェックを行っています。」）。
+  // ページを開いてからの時間でロボットかを見分ける仕組みで、まだ何も送られていない。少し待って押し直せば通る（conrad.co.jp の実例）
+  const wait = WAIT_RE.exec(text);
+  if (afterSubmit && wait && isFresh(wait[0])) return { status: "unsure", detail: `${WAIT_DETAIL}: ${wait[0]}` };
   // サイトの側で受け付けを断られた（入力を直しても通らない）
   const rj = REJECT_RE.exec(text.slice(0, 6000));
   if (rj && isFresh(rj[0])) {
@@ -1484,7 +1580,8 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
     if (isFresh(phrase)) return { status: "failed", detail: `入力エラー: ${phrase}` };
   }
   // どの欄かは書かれていないが、エラーだとは言っている
-  const generic = /入力(内容)?に(エラー|誤り|不備)があります/.exec(text);
+  // Contact Form 7 の「入力内容に問題があります。確認して再度お試しください。」も（towaprint.com の実例）
+  const generic = /入力(内容)?に(エラー|誤り|不備|問題)があります/.exec(text);
   if (generic && isFresh(generic[0])) return { status: "failed", detail: `入力エラー: ${generic[0]}` };
   if (afterSubmit && CONFIRM_MODAL_RE.test(compact) && !CONFIRM_MODAL_RE.test(beforeCompact)) {
     return { status: "unsure", detail: "確認画面（ポップアップ）で止まっている" };
@@ -1495,6 +1592,11 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
   // 入力欄が無くなっても、確認画面（「下記の内容で送信します」等）なら送信済みではない。呼び出し側でもう一度送信ボタンを押す
   if (afterSubmit && hadFieldsBefore > 0 && fieldsNow === 0 && confirmFresh) {
     return { status: "unsure", detail: "確認画面で止まっている" };
+  }
+  // 入力欄が残ったままの確認画面・確認のポップアップ（「以下の内容でよろしければ送信ボタンを…」「よくご確認ください」）。
+  // 入力欄が無くなったときだけを確認画面としていたので、最後の「送信」を押さずに判定不能にしていた（skm-net.co.jp・yamasake.com の実例）
+  if (afterSubmit && confirmFresh && (await submitButtonRemains(where))) {
+    return { status: "unsure", detail: "確認画面で止まっている（入力欄が残ったまま）" };
   }
   if (afterSubmit && hadFieldsBefore > 0 && fieldsNow === 0) return { status: "sent", detail: "フォームが消えた（完了文言なし・要確認）" };
   // 送信ボタンを押したあと別のページに移り、入力欄がほとんど無くなっていれば送信できたとみなす（#7）。

@@ -1339,6 +1339,35 @@ ok("applog: 書いて読める", recentLogs(5).some((r) => r.text === "テスト
   eq("固まらない: 時間内に終われば、その結果をそのまま返す", (await withJobLimit(Promise.resolve(done), jid)).status, "sent");
 }
 
+// ---- 相手のフォームの制限に本文を合わせる（文字数・URL禁止）----
+{
+  const { shortenMessage, limitFromError, urlBanned, stripUrls, fitMessageToSite, formLength } = await import("../src/formFiller.js");
+  const { formEchoedInUrl } = await import("../src/engine.js");
+  const msg = ["株式会社テスト 御中", "はじめまして。山田です。", "説明".repeat(200), "資料はこちら\nhttps://example.com/a", "山田 太郎\nsales@example.com"].join("\n\n");
+  const s300 = shortenMessage(msg, 300);
+  ok("短縮: 上限に収まる（改行は2文字で数える）", formLength(s300) <= 300, String(formLength(s300)));
+  ok("短縮: 先頭の段落と最後の署名は残す", s300.startsWith("株式会社テスト 御中") && s300.endsWith("sales@example.com"), s300);
+  eq("短縮: 収まっていれば変えない", shortenMessage("短い本文", 300), "短い本文");
+  ok("短縮: 段落が無くても上限に収める", formLength(shortenMessage("あ".repeat(900), 500)) <= 500);
+  eq("上限: 「500文字以内で入力してください」", limitFromError("入力エラー: お問い合わせ内容は500文字以内で入力してください。"), 500);
+  eq("上限: 全角の数を優先する", limitFromError("備考は半角255文字（全角127文字）以内で入力してください。"), 127);
+  eq("上限: 全角数字・「を超えています」", limitFromError("本文が１，０００文字を超えています"), 1000);
+  eq("上限: 数字の無いエラーは null", limitFromError("お名前を入力してください"), null);
+  ok("URL禁止: 「URLを含める事はできません」", urlBanned("入力内容にURLを含める事はできません。"));
+  ok("URL禁止: 関係の無いエラーは違う", !urlBanned("電話番号を正しく入力してください"));
+  const nu = stripUrls("資料はこちら\nhttps://example.com/a\n\n詳しくは https://example.com/b をご覧ください\n山田");
+  ok("URLを外す: URL だけの行と、その前の案内を外す", !/https?:/.test(nu) && !nu.includes("資料はこちら") && nu.includes("山田"), nu);
+  const f1 = fitMessageToSite(msg, "入力エラー: 300文字以内で入力してください", "短い文面です。\n山田 太郎");
+  ok("合わせる: 短い文面が収まれば、それを使う", f1?.message === "短い文面です。\n山田 太郎" && /短い文面/.test(f1.why), JSON.stringify(f1));
+  const f2 = fitMessageToSite(msg, "入力エラー: 300文字以内で入力してください");
+  ok("合わせる: 短い文面が無ければ自動で短くする", !!f2 && formLength(f2.message) <= 300);
+  ok("合わせる: URL 禁止なら URL を外す", !/https?:/.test(fitMessageToSite(msg, "本文にURLを入力することはできません")?.message ?? "https:"));
+  eq("合わせる: 関係の無いエラーでは変えない", fitMessageToSite(msg, "入力エラー: お名前を入力してください"), null);
+  ok("読み直しだけ: 入力内容がアドレス欄に付いた", formEchoedInUrl("https://a.wixsite.com/x/contact", "https://a.wixsite.com/x/contact?%E5%90%8D=a&email=sales%40example.com", "sales@example.com"));
+  ok("読み直しだけ: 別のページへ移ったのは違う", !formEchoedInUrl("https://a.jp/contact", "https://a.jp/thanks?email=sales%40example.com", "sales@example.com"));
+  ok("読み直しだけ: 自分のアドレスが無いクエリは違う", !formEchoedInUrl("https://a.jp/contact", "https://a.jp/contact?sent=1", "sales@example.com"));
+}
+
 // ---- Windows の .bat: Shift_JIS で配る（UTF-8 ＋ chcp 65001 だと cmd が読み位置を数え間違えて、説明書きの途中を命令として実行した）----
 {
   // @ts-expect-error 配布版を作るスクリプト（.mjs）の部品をそのまま使う

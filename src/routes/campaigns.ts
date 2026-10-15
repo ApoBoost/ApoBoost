@@ -32,7 +32,7 @@ import { esc, layout, lawView, todoView, todoRunView, setupView, checklistView, 
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, type AuthedRequest } from "../auth.js";
 import { app, upload, db, setFlash, safeAsync, needsBrowser, redirectWith, takeFlash, me, appState, navUser, scope, ownedCampaign, ownedSender, notFound, forbidden, groupCandidates, applyGroupMembers, groupNames, retryTargetJobs, campaignRows, extraSenderIds, saveMaterial, removeMaterialFileIfUnused, loadCampaignFull, lastImports, pendingImports, previews, fetchGoogleSheetCsv, ReactionRow, jobFilter, CAMPAIGN_EXPORT_COLS, importHistory, recentUndo, deleteJobsWhere, setupState, setupProgress, todoCounts, lawKey, TODO_ANY, todoActive, campaignNumbers, CAMPAIGN_NUM_DEFAULTS, uploadSingle, campaignStall, AUTO_PAUSE_MARK } from "../app/context.js";
 
-const TEMPLATE_KEYS = ["subject_text", "template_text", "subject_b", "template_b", "subject_alts"] as const;
+const TEMPLATE_KEYS = ["subject_text", "template_text", "subject_b", "template_b", "subject_alts", "template_short"] as const;
 
 /** 自動の一時停止で待機に戻した会社の結果の文（「…（キャンペーンを一時停止）: 理由」）を消す。
  *  開始・一時停止のあとまで残ると、次に止めたときに古い理由を「自動で止まった理由」として出してしまうため */
@@ -42,6 +42,12 @@ function clearAutoPauseMarks(campaignId: number) {
 
 /** 保存する前に文面をそろえる（全角の ｛｛会社名｝｝ を半角の {{会社名}} に）。
  *  全角のままだと差し込みにならず、波括弧ごと相手に送られていた。そろえたら true */
+/** 「相手の制限で弾かれたら本文を合わせて入れ直す」のチェック。チェックを外すと値が届かないので、欄が画面にあったか（fit_limits_shown）で見分ける。
+ *  画面に欄が無い古い経路から保存されたときは、既定（する）のまま */
+function fitLimitsOf(b: Record<string, unknown>): number {
+  return b.fit_limits === "1" || !b.fit_limits_shown ? 1 : 0;
+}
+
 function tidyTemplates(b: Record<string, unknown>): boolean {
   let changed = false;
   for (const k of TEMPLATE_KEYS) {
@@ -190,8 +196,8 @@ app.post("/campaigns", uploadSingle("material_file", () => "/campaigns/new"), (r
   const tplFixed = tidyTemplates(b);
   const materialUrl = String(b.material_url ?? "").trim();
   const nums = campaignNumbers(b, CAMPAIGN_NUM_DEFAULTS);
-  const r = db.prepare(`INSERT INTO form_campaigns(owner_user_id, name, sender_id, mode, subject_text, template_text, ai_instruction, daily_limit, send_window_start, send_window_end, weekdays_only, channel, email_daily_limit, resend_days, ignore_refusal, material_url, group_name, material_url_in_email, email_warmup, email_sender_ids, ab_enabled, template_b, subject_b, subject_alts)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(me(req).id, b.name, Number(b.sender_id), b.mode, b.subject_text ?? "", b.template_text ?? "", b.ai_instruction ?? "", nums.daily_limit, nums.send_window_start, nums.send_window_end, Number(b.weekdays_only) ? 1 : 0, channel, nums.email_daily_limit, nums.resend_days, Number(b.ignore_refusal) ? 1 : 0, materialUrl, String(b.group_name ?? "").trim(), b.material_url_in_email === "1" ? 1 : 0, b.email_warmup === "1" ? 1 : 0, extraSenderIds(req, b), b.ab_enabled === "1" ? 1 : 0, String(b.template_b ?? ""), String(b.subject_b ?? ""), String(b.subject_alts ?? ""));
+  const r = db.prepare(`INSERT INTO form_campaigns(owner_user_id, name, sender_id, mode, subject_text, template_text, ai_instruction, daily_limit, send_window_start, send_window_end, weekdays_only, channel, email_daily_limit, resend_days, ignore_refusal, material_url, group_name, material_url_in_email, email_warmup, email_sender_ids, ab_enabled, template_b, subject_b, subject_alts, fit_limits, template_short)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(me(req).id, b.name, Number(b.sender_id), b.mode, b.subject_text ?? "", b.template_text ?? "", b.ai_instruction ?? "", nums.daily_limit, nums.send_window_start, nums.send_window_end, Number(b.weekdays_only) ? 1 : 0, channel, nums.email_daily_limit, nums.resend_days, Number(b.ignore_refusal) ? 1 : 0, materialUrl, String(b.group_name ?? "").trim(), b.material_url_in_email === "1" ? 1 : 0, b.email_warmup === "1" ? 1 : 0, extraSenderIds(req, b), b.ab_enabled === "1" ? 1 : 0, String(b.template_b ?? ""), String(b.subject_b ?? ""), String(b.subject_alts ?? ""), fitLimitsOf(b), String(b.template_short ?? ""));
   const cid = Number(r.lastInsertRowid);
   // 資料ファイル（メール添付用）を保存する
   const warn = req.file ? saveMaterial(cid, req.file) : "";
@@ -219,8 +225,8 @@ app.post("/campaigns/:id/edit", uploadSingle("material_file", (req) => `/campaig
   if (!ownedSender(req, Number(b.sender_id))) return redirectWith(res, `/campaigns/${id}/edit`, "送信者を選び直してください");
   const tplFixed = tidyTemplates(b);
   const nums = campaignNumbers(b, before);
-  db.prepare(`UPDATE form_campaigns SET name=?, sender_id=?, mode=?, subject_text=?, template_text=?, ai_instruction=?, daily_limit=?, send_window_start=?, send_window_end=?, weekdays_only=?, channel=?, email_daily_limit=?, resend_days=?, ignore_refusal=?, material_url=?, group_name=?, material_url_in_email=?, email_warmup=?, email_sender_ids=?, ab_enabled=?, template_b=?, subject_b=?, subject_alts=? WHERE id=?`)
-    .run(b.name, Number(b.sender_id), b.mode, b.subject_text ?? "", b.template_text ?? "", b.ai_instruction ?? "", nums.daily_limit, nums.send_window_start, nums.send_window_end, Number(b.weekdays_only) ? 1 : 0, channel, nums.email_daily_limit, nums.resend_days, Number(b.ignore_refusal) ? 1 : 0, String(b.material_url ?? "").trim(), String(b.group_name ?? "").trim(), b.material_url_in_email === "1" ? 1 : 0, b.email_warmup === "1" ? 1 : 0, extraSenderIds(req, b), b.ab_enabled === "1" ? 1 : 0, String(b.template_b ?? ""), String(b.subject_b ?? ""), String(b.subject_alts ?? ""), id);
+  db.prepare(`UPDATE form_campaigns SET name=?, sender_id=?, mode=?, subject_text=?, template_text=?, ai_instruction=?, daily_limit=?, send_window_start=?, send_window_end=?, weekdays_only=?, channel=?, email_daily_limit=?, resend_days=?, ignore_refusal=?, material_url=?, group_name=?, material_url_in_email=?, email_warmup=?, email_sender_ids=?, ab_enabled=?, template_b=?, subject_b=?, subject_alts=?, fit_limits=?, template_short=? WHERE id=?`)
+    .run(b.name, Number(b.sender_id), b.mode, b.subject_text ?? "", b.template_text ?? "", b.ai_instruction ?? "", nums.daily_limit, nums.send_window_start, nums.send_window_end, Number(b.weekdays_only) ? 1 : 0, channel, nums.email_daily_limit, nums.resend_days, Number(b.ignore_refusal) ? 1 : 0, String(b.material_url ?? "").trim(), String(b.group_name ?? "").trim(), b.material_url_in_email === "1" ? 1 : 0, b.email_warmup === "1" ? 1 : 0, extraSenderIds(req, b), b.ab_enabled === "1" ? 1 : 0, String(b.template_b ?? ""), String(b.subject_b ?? ""), String(b.subject_alts ?? ""), fitLimitsOf(b), String(b.template_short ?? ""), id);
   const attachWarn = req.file ? saveMaterial(id, req.file) : "";
   if (req.file) { /* 保存済み。注意文は下の完了メッセージに付ける */ }
   else if (b.remove_attach === "1" && before.attach_path) {
@@ -647,8 +653,8 @@ app.post("/campaigns/:id/duplicate", (req, res) => {
   const id = Number(req.params.id);
   const c = ownedCampaign(req, id);
   if (!c) return notFound(req, res);
-  const r = db.prepare(`INSERT INTO form_campaigns(owner_user_id, name, sender_id, mode, subject_text, template_text, ai_instruction, daily_limit, send_window_start, send_window_end, weekdays_only, channel, email_daily_limit, resend_days, ignore_refusal, material_url, attach_path, attach_name, status, group_name, material_url_in_email)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',?,?)`).run(me(req).id, c.name + " のコピー", c.sender_id, c.mode, c.subject_text, c.template_text, c.ai_instruction, c.daily_limit, c.send_window_start, c.send_window_end, c.weekdays_only, c.channel, c.email_daily_limit, c.resend_days, c.ignore_refusal, c.material_url, c.attach_path, c.attach_name, c.group_name, c.material_url_in_email ?? 0); // 複製は同じグループのまま
+  const r = db.prepare(`INSERT INTO form_campaigns(owner_user_id, name, sender_id, mode, subject_text, template_text, ai_instruction, daily_limit, send_window_start, send_window_end, weekdays_only, channel, email_daily_limit, resend_days, ignore_refusal, material_url, attach_path, attach_name, status, group_name, material_url_in_email, fit_limits, template_short)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',?,?,?,?)`).run(me(req).id, c.name + " のコピー", c.sender_id, c.mode, c.subject_text, c.template_text, c.ai_instruction, c.daily_limit, c.send_window_start, c.send_window_end, c.weekdays_only, c.channel, c.email_daily_limit, c.resend_days, c.ignore_refusal, c.material_url, c.attach_path, c.attach_name, c.group_name, c.material_url_in_email ?? 0, c.fit_limits ?? 1, c.template_short ?? ""); // 複製は同じグループのまま
   redirectWith(res, `/campaigns/${Number(r.lastInsertRowid)}`, "キャンペーンを複製しました。会社リストは空なので、CSVを取り込んでください");
 });
 

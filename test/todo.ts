@@ -286,6 +286,60 @@ const server = http.createServer(async (req, res) => {
 <tr><th>会社名</th><td><input type="text" name="co"></td></tr><tr><th>お名前</th><td><input type="text" name="nm"></td></tr><tr><th>メールアドレス</th><td><input type="email" name="em"></td></tr></table>
 <textarea name="g-recaptcha-response" id="g-recaptcha-response" style="display:none"></textarea><button type="submit">送信する</button></form>`));
 
+  // ---- 4周目: Windows の利用先（ブリッジハッチ）で「判定不能」「入力エラー」になっていた型 ----
+  const filledForm = (action: string, v: Record<string, string>, note = "", extra = "") => page("お問い合わせ", `<h1>お問い合わせ</h1>${note}<form method="post" action="${action}">${fields("<th>電話番号</th>", v)}${extra}<button type="submit">送信する</button></form>`);
+  // 37) 本文の文字数の上限（300文字）。超えると赤字で「300文字以内で入力してください」。改行は CR LF で届くので2文字に数える
+  if (p === "/lenlim") {
+    if (!post) return send(filledForm("/lenlim", {}));
+    if ((b.msg ?? "").length > 300) return send(filledForm("/lenlim", b, `<p style="color:red">お問い合わせ内容は300文字以内で入力してください。</p>`));
+    return done("lenlim");
+  }
+  // 38) 本文に URL を入れられない（miyama-seiko.co.jp の実例）
+  if (p === "/nourl") {
+    if (!post) return send(filledForm("/nourl", {}));
+    if (/https?:\/\//.test(b.msg ?? "")) return send(filledForm("/nourl", b, "", `<span style="color:#d00">入力内容にURLを含める事はできません。</span>`));
+    return done("nourl");
+  }
+  // 39) URL を入れるとスパム扱い（サイト側の拒否）。URL を外せば通る
+  if (p === "/nourlspam") {
+    if (!post) return send(filledForm("/nourlspam", {}));
+    if (/https?:\/\//.test(b.msg ?? "")) return send(filledForm("/nourlspam", b, `<div class="wpcf7-response-output">お問い合わせ内容がスパムと判定されました。お問い合わせ本文にURLを入力することはできません。</div>`));
+    return done("nourlspam");
+  }
+  // 40) Contact Form 7 の「入力内容に問題があります。確認して再度お試しください。」（towaprint.com の実例）。欄ごとのエラーは出ない
+  if (p === "/cf7prob") {
+    if (!post) return send(filledForm("/cf7prob", {}));
+    hit("cf7prob_post", b);
+    return send(filledForm("/cf7prob", b, "", `<div class="wpcf7-response-output" style="border:2px solid orange">入力内容に問題があります。確認して再度お試しください。</div>`));
+  }
+  // 41) 送信を押すと、class も z-index も無い固定表示の確認ポップアップ（「よくご確認ください」）。中の「送信する」で送る
+  //     （mpatakara.com・ryomalife.com・yamasake.com の実例）。後ろの元の「送信する」は重なりで押せない
+  if (p === "/modal") return post ? done("modal") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post" id="f">${fields("<th>電話番号</th>")}<button type="button" onclick="document.getElementById('ov').style.display='block'">送信する</button>
+<div id="ov" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6)"><div style="background:#fff;width:420px;margin:120px auto;padding:20px"><h3>よくご確認ください</h3><p>この内容で送信します。</p><button type="button" onclick="document.getElementById('ov').style.display='none'">キャンセル</button> <button type="button" onclick="document.getElementById('f').submit()">送信する</button></div></div></form>`));
+  // 42) 入力欄（読み取り専用）が残ったままの確認画面（skm-net.co.jp の実例）。最初のボタンの名前は「送信」
+  if (p === "/confkeep") {
+    if (!post) return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号</th>")}<button type="submit">送信</button></form>`));
+    return send(page("お問い合わせ", `<h1>お問い合わせ</h1><p>以下の内容でよろしければ送信ボタンをクリックしてください。</p><form method="post" action="/confkeep/send"><input type="text" name="nm" value="${esc(b.nm)}" readonly><input type="text" name="em" value="${esc(b.em)}" readonly><textarea name="msg" readonly>${esc(b.msg)}</textarea><button type="submit">送信</button></form>`));
+  }
+  if (p === "/confkeep/send" && post) return done("confkeep");
+  // 43) ページを開いてから12秒たつまでは「送信前にもう少しお待ちください」（conrad.co.jp の実例）
+  if (p === "/waitchk") {
+    if (!post) return send(filledForm("/waitchk", {}, "", `<input type="hidden" name="ts" value="${Date.now()}">`));
+    if (Date.now() - Number(b.ts) < 12000) return send(filledForm("/waitchk", b, "", `<input type="hidden" name="ts" value="${esc(b.ts)}"><p style="color:red">送信前にもう少しお待ちください。簡単なセキュリティチェックを行っています。</p>`));
+    return done("waitchk");
+  }
+  // 44) 送信の仕組み（JS）が読み込みの3秒後にやっと動くフォーム。早く押すと素の GET で読み直されるだけ（Wix の実例）
+  if (p === "/getecho") {
+    if (post) { hit("getecho", b); res.writeHead(200, { "content-type": "application/json" }); return res.end("{}"); }
+    return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form id="f">${fields("<th>電話番号</th>")}<button type="submit">送信</button></form><p id="ok"></p>
+<script>setTimeout(function(){document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();fetch('/getecho',{method:'POST',body:new URLSearchParams(new FormData(e.target))}).then(function(){document.getElementById('ok').textContent='送信が完了しました。';e.target.reset();});});},3000);</script>`));
+  }
+  // 45) 「お問い合わせ」ページに、ブログのコメント欄しかない（eco-station.jp の実例）。コメントを書き込まない
+  if (p === "/cmtonly") return send(page("お問い合わせ", `<h1>お問い合わせ</h1><p>お電話でどうぞ: 03-0000-0000</p><div id="respond" class="comment-respond"><h3>コメントを残す</h3><form id="commentform" class="comment-form" action="/wp-comments-post.php" method="post"><p><label>コメント</label><textarea name="comment"></textarea></p><p><label>名前</label><input name="author"></p><p><label>メール</label><input name="email"></p><input type="submit" value="コメントを送信"></form></div>`));
+  if (p === "/wp-comments-post.php") { hit("comment", b); return send(page("コメント", "<p>コメントを受け付けました</p>")); }
+  // 46) 相手のメールサーバーの失敗（shinseiko.tech の実例）
+  if (p === "/smtpfail") return post ? send(filledForm("/smtpfail", b, "", `<p>Failed to send mail. Error:SMTP connect() failed. https://github.com/PHPMailer/PHPMailer/wiki/Troubleshooting</p>`)) : send(filledForm("/smtpfail", {}));
+
   if (p === "/search") { hit("search", Object.fromEntries(url.searchParams)); return send(page("検索", "<p>検索結果</p>")); }
   send("not found", 404);
 });
@@ -307,7 +361,10 @@ try {
     ...["cta", "ifr", "ifrcap", "customer-success/contact", "weak", "sel", "telfmt", "spin"].map((k): [string, string, string] => [k.split("/")[0], `/${k}`, ""]),
     ...["ajaxa", "ajaxb", "ajaxc", "stepconf", "ovl", "twota", "nf", "nf2", "hang", "quiz"].map((k): [string, string, string] => [k, `/${k}`, ""]),
     ...["gform", "numtel", "pick", "unk", "numerr", "capterr", "refusechk", "rcta"].map((k): [string, string, string] => [k, `/${k}`, ""]),
-    ["refusechk2", "/refusechk", ""]];
+    ["refusechk2", "/refusechk", ""],
+    ...["lenlim", "nourl", "nourlspam", "cf7prob", "modal", "confkeep", "waitchk", "getecho", "cmtonly", "smtpfail"].map((k): [string, string, string] => [k, `/${k}`, ""])];
+  // 文字数・URL の制限を試すサイトには、長くて URL の入った本文を送る（先頭の名乗りと最後の署名は残ること）
+  const LONG = ["株式会社テスト 御中", "はじめまして。サンプル商事の山田です。", "中略の説明です。".repeat(30), "詳しい資料はこちらです。\nhttps://example.com/doc", "山田 太郎\nsales@example.com"].join("\n\n");
   for (const [k, formPath, sitePath] of cases) {
     n++;
     if (only && !only.includes(k)) continue;
@@ -315,7 +372,7 @@ try {
     if (k === "hang") process.env.FO_SUBMIT_LIMIT_MS = "40000"; else delete process.env.FO_SUBMIT_LIMIT_MS;
     // 会社ごとに別のホスト名にする（同じドメインへの連続送信の扱いに引っかからないように）
     const host = `http://t${n}.localhost:${port}`;
-    const r = await submitToCompany(browser, { jobId: 9000 + n, formUrl: formPath ? host + formPath : "", siteUrl: sitePath ? host + sitePath : "", sender, subject: "ご案内", message: "はじめまして。サービスのご案内です。\nよろしくお願いいたします。", ignoreRefusal: k === "refusechk2" });
+    const r = await submitToCompany(browser, { jobId: 9000 + n, formUrl: formPath ? host + formPath : "", siteUrl: sitePath ? host + sitePath : "", sender, subject: "ご案内", message: ["lenlim", "nourl", "nourlspam"].includes(k) ? LONG : "はじめまして。サービスのご案内です。\nよろしくお願いいたします。", ignoreRefusal: k === "refusechk2" });
     out[k] = { status: r.status, detail: r.detail, log: r.log };
     console.log(`- ${k}: ${r.status} | ${r.detail.split("\n")[0]}`);
     if (process.env.FO_DEBUG) console.log(r.log.join("\n"));
@@ -442,6 +499,26 @@ if (has("capterr")) { assert.equal(out.capterr.status, "skip_captcha", `capterr:
 for (const k of ["refusechk", "refusechk2"]) if (has(k)) { assert.equal(out[k].status, "skip_refused", `${k}: ${out[k].detail}`); }
 if (has("refusechk") || has("refusechk2")) assert.equal(got.refusechk, undefined, "refusechk: 送らない");
 if (has("rcta")) { assert.equal(got.rcta, undefined, `rcta: 本文欄の無いフォームを送らない → ${out.rcta.detail}\n${out.rcta.log.join("\n")}`); assert.notEqual(out.rcta.status, "sent"); }
+
+// ---- 4周目: 判定不能・入力エラーだったものを正しく扱う ----
+if (has("lenlim")) {
+  sentOnce("lenlim", "「300文字以内」で弾かれたら本文を短くして送り直す");
+  const m = got.lenlim[0].msg;
+  assert.ok(m.length <= 300, `lenlim: 300文字以内（${m.length}）`);
+  assert.ok(m.includes("はじめまして") && m.includes("sales@example.com"), `lenlim: 先頭の名乗りと最後の署名は残す\n${m}`);
+}
+if (has("nourl")) { sentOnce("nourl", "「URLを含める事はできません」で URL を外して送り直す"); assert.ok(!/https?:/.test(got.nourl[0].msg), "nourl: URL を外す"); assert.ok(got.nourl[0].msg.includes("sales@example.com"), "nourl: 署名は残す"); }
+if (has("nourlspam")) { sentOnce("nourlspam", "URL でスパム扱いされたら URL を外して送り直す"); assert.ok(!/https?:/.test(got.nourlspam[0].msg)); }
+if (has("cf7prob")) {
+  assert.equal(out.cf7prob.status, "failed"); assert.ok(out.cf7prob.detail.startsWith("入力エラー") && out.cf7prob.detail.includes("入力内容に問題"), `cf7prob: 判定不能ではなく入力エラー → ${out.cf7prob.detail}`);
+  assert.ok((got.cf7prob_post?.length ?? 0) <= 2, `cf7prob: 押し直しは1回まで（${got.cf7prob_post?.length}回）`);
+}
+if (has("modal")) sentOnce("modal", "class も z-index も無い確認ポップアップの中の「送信する」を押す");
+if (has("confkeep")) sentOnce("confkeep", "入力欄が残ったままの確認画面で、最後の「送信」を押す");
+if (has("waitchk")) sentOnce("waitchk", "「送信前にもう少しお待ちください」で待ってから押し直す");
+if (has("getecho")) sentOnce("getecho", "入力内容がアドレス欄に付いて読み直されただけなら、待って入れ直す");
+if (has("cmtonly")) { assert.equal(got.comment, undefined, `cmtonly: ブログのコメント欄に書き込まない → ${out.cmtonly.detail}`); assert.equal(out.cmtonly.status, "skip_no_form", `cmtonly: ${out.cmtonly.detail}`); }
+if (has("smtpfail")) { assert.equal(out.smtpfail.status, "failed"); assert.ok(out.smtpfail.detail.startsWith("サイト側"), `smtpfail: ${out.smtpfail.detail}`); }
 
 console.log("todo: ALL OK");
 process.exit(0);
