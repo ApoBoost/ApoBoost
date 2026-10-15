@@ -1314,6 +1314,31 @@ ok("applog: 書いて読める", recentLogs(5).some((r) => r.text === "テスト
   }
 }
 
+// ---- 固まらない: サイトの読み取りが返らなくても・1社分が終わらなくても、送信の1本が止まり続けない ----
+// （Windows の利用先で、正式名称を探すホームページの読み取りが返らず、2本とも止まって13時間進まなかった）
+{
+  const { fetchSiteTextLite } = await import("../src/company.js");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (() => new Promise(() => {})) as typeof fetch; // 打ち切りの合図にも応えない、返らない fetch
+  const t0 = Date.now();
+  const r = await fetchSiteTextLite("https://stall.example/", 200);
+  globalThis.fetch = realFetch;
+  ok("固まらない: 返らない fetch でも、決めた時間で諦めて空を返す", r.text === "" && Date.now() - t0 < 6000, `${Date.now() - t0}ms`);
+
+  const { withJobLimit, JOB_LIMIT_TEXT } = await import("../src/worker.js");
+  const db = getDb();
+  const sid = Number(db.prepare("INSERT INTO sender_profiles(label, company, person, email) VALUES('lim','テスト社','担当','lim@example.jp')").run().lastInsertRowid);
+  const cid = Number(db.prepare("INSERT INTO form_campaigns(name,sender_id,mode,subject_text,template_text) VALUES('見張り',?,'template','件','本')").run(sid).lastInsertRowid);
+  const jid = Number(db.prepare("INSERT INTO form_jobs(campaign_id,company_name,site_url,domain,status) VALUES(?,'見張り商店','https://stall.example/','stall.example','sending')").run(cid).lastInsertRowid);
+  process.env.FO_JOB_LIMIT_MS = "300";
+  const j = await withJobLimit(new Promise<never>(() => {}), jid);
+  delete process.env.FO_JOB_LIMIT_MS;
+  ok("固まらない: 1社分が終わらなければ打ち切って失敗にする", j.status === "failed" && j.result_text.startsWith(JOB_LIMIT_TEXT), `${j.status} ${j.result_text}`);
+  ok("固まらない: 打ち切った会社は自動の再試行に回さない（送れたか分からないため）", !/(例外|timeout|Timeout|net::|ECONN|socket|接続)/.test(j.result_text.split("\n")[0]));
+  const done = { ...j, status: "sent" } as typeof j;
+  eq("固まらない: 時間内に終われば、その結果をそのまま返す", (await withJobLimit(Promise.resolve(done), jid)).status, "sent");
+}
+
 // ---- Windows の .bat: Shift_JIS で配る（UTF-8 ＋ chcp 65001 だと cmd が読み位置を数え間違えて、説明書きの途中を命令として実行した）----
 {
   // @ts-expect-error 配布版を作るスクリプト（.mjs）の部品をそのまま使う

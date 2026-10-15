@@ -51,6 +51,18 @@ function htmlToText(html: string): { title: string; text: string } {
 
 /** URL の HTML を取得して文字にする（文字コードは HTTP ヘッダ → meta charset の順で判定。Shift_JIS の古いサイト対策）。失敗時は空 */
 export async function fetchSiteTextLite(url: string, timeoutMs = 7000): Promise<{ title: string; text: string }> {
+  // AbortSignal の打ち切りとは別に、必ず諦める時刻を置く。Windows の利用先で、応答の止まるサイトに対して打ち切りが効かず、
+  // この fetch が返らないまま送信の1本が丸ごと止まっていた（2本とも止まって、画面は「送信中」のまま13時間進まなかった）
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<{ title: string; text: string }>((resolve) => { timer = setTimeout(() => resolve({ title: "", text: "" }), timeoutMs + 3000); });
+  try {
+    return await Promise.race([fetchSiteTextLiteInner(url, timeoutMs), deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function fetchSiteTextLiteInner(url: string, timeoutMs: number): Promise<{ title: string; text: string }> {
   try {
     const r = await fetch(url, { headers: { "User-Agent": LITE_UA, Accept: "text/html,*/*", "Accept-Language": "ja" }, redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
     if (!r.ok || !/html|text/i.test(r.headers.get("content-type") || "text/html")) return { title: "", text: "" };

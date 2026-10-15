@@ -576,6 +576,35 @@ async function processJobInner(browser: Browser, jobId: number, opts: { dryRun?:
   return finish(status, detail, { message_used: message, screenshot_path: r.screenshot, form_url: r.finalUrl && r.status !== "skip_no_form" ? r.finalUrl : undefined, pending_questions: r.pendingQuestions ? JSON.stringify(r.pendingQuestions) : undefined });
 }
 
+/** 1社分の処理全体の見張り。フォーム入力には submitToCompany の見張り（4分）があるが、その前後で待つ処理
+ *  （正式名称を探すためのホームページの読み取りなど）が返らないと、送信の1本が永久に止まっていた
+ *  （実例: Windows の利用先で2本とも止まり、画面は「送信中」のまま13時間進まなかった）。
+ *  時間を過ぎたらその会社を打ち切って次へ進む。送れたかどうか分からないので、自動では送り直さない */
+const JOB_LIMIT_MS = () => Number(process.env.FO_JOB_LIMIT_MS) || 10 * 60_000;
+export const JOB_LIMIT_TEXT = "処理が止まったため打ち切りました";
+export async function withJobLimit(work: Promise<Job>, jobId: number): Promise<Job> {
+  const limit = JOB_LIMIT_MS();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // 打ち切ったあとで元の処理が失敗しても、未処理のエラーとしてアプリを落とさない
+  work.catch(() => {});
+  const over = new Promise<Job>((resolve) => {
+    timer = setTimeout(() => {
+      const db = getDb();
+      const span = limit >= 60_000 ? `${Math.round(limit / 60_000)}分` : `${Math.round(limit / 1000)}秒`;
+      db.prepare("UPDATE form_jobs SET status='failed', result_text=?, updated_at=datetime('now') WHERE id=? AND status='sending'")
+        .run(`${JOB_LIMIT_TEXT}（1社分が${span}たっても終わりませんでした）\n送れたかどうか確認できないため、自動では送り直しません`, jobId);
+      const j = db.prepare("SELECT * FROM form_jobs WHERE id=?").get(jobId) as Job;
+      logError("worker", `1社分の処理が${span}で終わらないため打ち切り、次の会社に進みました`, j?.company_name);
+      resolve(j);
+    }, limit);
+  });
+  try {
+    return await Promise.race([work, over]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** キャンペーンのキューを回す。停止要求・送信時間帯・日次上限を守る */
 export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boolean; onProgress?: (j: Job) => void } = {}): Promise<{ processed: number; reason: string }> {
   if (running.has(campaignId)) return { processed: 0, reason: "already running" };
@@ -638,7 +667,7 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
         if (!claimed) continue;
         inFlight++;
         try {
-          const j = await processJob(browser, next.id);
+          const j = await withJobLimit(processJob(browser, next.id), next.id);
           processed++;
           opts.onProgress?.(j);
           // 続けて失敗していないか見る（10件続いたら知らせる。設定ミスや回線不調に早く気づけるように）
