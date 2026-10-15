@@ -1368,6 +1368,17 @@ ok("applog: 書いて読める", recentLogs(5).some((r) => r.text === "テスト
   ok("読み直しだけ: 自分のアドレスが無いクエリは違う", !formEchoedInUrl("https://a.jp/contact", "https://a.jp/contact?sent=1", "sales@example.com"));
 }
 
+// ---- フォーム探し: 相手の会社のサイトの外に出ない ----
+{
+  const { siteKeyOf, urlVariants: uv } = await import("../src/formFinder.js");
+  eq("サイトの見分け: www とサブドメインは同じ会社", [siteKeyOf("https://www.ideacon.co.jp/contact/"), siteKeyOf("https://form.ideacon.jp/x")], ["ideacon", "ideacon"]);
+  eq("サイトの見分け: .com から .jp への引っ越しは同じ名前", siteKeyOf("http://housen-ss.com/"), siteKeyOf("https://housen-ss.jp/contact/"));
+  ok("サイトの見分け: 別の会社のドメインは違う", siteKeyOf("https://tamura-fudosan.co.jp/") !== siteKeyOf("https://fx-deposit-bonus.co.jp/contact/"));
+  ok("サイトの見分け: 誰でも持てるサービスはサブドメインで分ける", siteKeyOf("https://abc.wixsite.com/x") !== siteKeyOf("https://def.wixsite.com/y"));
+  eq("サイトの見分け: Jimdo の旧ドメインと新ドメインは同じ", siteKeyOf("https://nkenso.jimdo.com/"), siteKeyOf("https://nkenso.jimdofree.com/contact/"));
+  ok("言い換え: Jimdo の旧ドメインは jimdofree.com も試す（2番目に）", uv("https://nkenso.jimdo.com/")[1] === "https://nkenso.jimdofree.com/");
+}
+
 // ---- Windows の .bat: Shift_JIS で配る（UTF-8 ＋ chcp 65001 だと cmd が読み位置を数え間違えて、説明書きの途中を命令として実行した）----
 {
   // @ts-expect-error 配布版を作るスクリプト（.mjs）の部品をそのまま使う

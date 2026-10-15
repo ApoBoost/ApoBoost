@@ -1399,7 +1399,7 @@ export async function clickNextButton(target: Page | Frame, page: Page, log: str
 // ---- 結果判定 ----
 // 「お問い合わせいただきありがとうございます。担当者より、追ってご連絡いたします。」（aidas.co.jp の実例）のように
 // 「〜いただき／頂きありがとう」「担当者より追ってご連絡」の形を知らず判定不能→失敗扱いになっていたため追加
-const SUCCESS_RE = /((お問い?合わ?せ|ご連絡|ご送信|送信|ご応募|ご依頼|ご相談|ご登録|お申し?込み)(を)?(いただき|頂き)(まして)?[、,]?(誠に|大変|本当に)?(ありがとう|有難う|有り難う)|(担当(者)?|スタッフ|係)(より|から)[、,]?(追って|改めて|折り返し|後ほど|のちほど)?[、,]?(ご?連絡|ご?返信|ご?回答)(いた|致|させていただ|を差し上げ)|追って(ご?連絡|ご?返信)(いた|致|させていただ)|送信(が|は)?(完了|されました|いたしました|しました|致しました)|送信ありがとう|(ご|お)?回答(を)?(いただき|頂き)?(まして)?[、,]?(誠に|大変)?(ありがとう|有難う|有り難う)|お問い?合わ?せ(を)?(ありがとう|受け付け|承り|受付)|ありがとうございま(す|した)。?(お問い?合わ?せ|送信|受付)|受け付けました|受付(が)?完了|承りました|thank you for (contacting|your (message|inquiry|submission))|(message|inquiry|form)( has been| was)? (sent|submitted|received)|submitted successfully|successfully sent|自動返信(の)?メール(を)?(お送り|送付|送信|送らせて)|確認(の)?メール(を)?(お送り|送付|送信)|正常に(送信|受け付け|受付|完了)|(送信|受付|受け付け|お申し?込み|申込)(が|を)?(完了|終了)(いたし|致)?(ました)?|ご入力(いただき)?(誠に)?ありがとう|受付番号|お問い?合わ?せ番号|送信(に|が)成功|thanks for (contacting|your (message|inquiry|submission))|お問い?合わ?せ(の)?完了)/i;
+const SUCCESS_RE = /((お問い?合わ?せ|ご連絡|ご送信|送信|ご応募|ご依頼|ご相談|ご登録|お申し?込み)(を)?(いただき|頂き)(まして)?[、,]?(誠に|大変|本当に)?(ありがとう|有難う|有り難う)|(担当(者)?|スタッフ|係)(より|から)[、,]?(追って|改めて|折り返し|後ほど|のちほど)?[、,]?(ご?連絡|ご?返信|ご?回答)(いた|致|させていただ|を差し上げ)|追って(ご?連絡|ご?返信)(いた|致|させていただ)|送信(が|は)?(完了|されました|いたしました|しました|致しました)|送信ありがとう|(ご|お)?回答(を)?(いただき|頂き)?(まして)?[、,]?(誠に|大変)?(ありがとう|有難う|有り難う)|お問い?合わ?せ(を)?(ありがとう|受け付け|承り|受付)|ありがとうございま(す|した)。?(お問い?合わ?せ|送信|受付)|受け付けました|受付(が)?完了|承りました|thank you for (contacting|your (message|inquiry|submission))|(message|inquiry|form)( has been| was)? (sent|submitted|received)|submitted successfully|successfully sent|自動返信(の)?メール(を)?(お送り|送付|送信|送らせて)|確認(の)?メール(を)?(お送り|送付|送信)|正常に(送信|受け付け|受付|完了)|(送信|受付|受け付け|お申し?込み|申込)(が|を)?(完了|終了)(いたし|致)?(ました)?|ご入力(いただき)?(誠に)?ありがとう|受付番号|お問い?合わ?せ番号|送信(に|が)成功|thanks for (contacting|your (message|inquiry|submission))|お問い?合わ?せ(の|が|は)?完了)/i;
 // 完了ページのURL。「customer-success」「representative」（sent）「presentation」（sent）のように、単語の一部に当たって
 // 確認ボタンを押しただけで送信済みにしていたので、他の語に埋もれにくい語（thanks 等）以外は区切り文字（/ _ - .）で囲まれたときだけ採用する
 const SUCCESS_URL_RE = /(thanks|thank-?you|kanryo|kanryou|touroku_kanryo|(^|[/_.-])(complete|completed|done|sent|success|finish|finished)([/_.-]|$))/i;
@@ -1421,7 +1421,7 @@ const countOf = (hay: string, needle: string) => (needle ? hay.split(needle).len
 export type Outcome = { status: "sent" | "failed" | "unsure"; detail: string };
 
 /** 送信ボタン（「送信」「この内容で」等の名前の button / input）がまだ画面に見えているか。確認画面かどうかの手がかり */
-async function submitButtonRemains(target: Page | Frame): Promise<boolean> {
+export async function submitButtonRemains(target: Page | Frame): Promise<boolean> {
   return timed(target.evaluate(([submitSrc, backSrc, notSrc]) => {
     const submitRe = new RegExp(submitSrc, "i"), backRe = new RegExp(backSrc, "i"), notRe = new RegExp(notSrc, "i");
     // 確認画面の送信が <a href="#" onclick> や <div role="button"> のサイトもある。実URLで別ページへ移るリンク（ナビの「お申し込み」等）は数えない

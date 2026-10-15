@@ -2,7 +2,7 @@
 import type { Page } from "playwright";
 
 // 表記ゆれ対応（#3）: 送り仮名違い・英語・ローマ字・「メールフォーム」等も拾う
-const CONTACT_LINK_RE = /(お問い?合わ?せ|お問合せ|お問い合せ|問合せ|問い合せ|ご相談|ご依頼|ご意見|ご質問|お見積|見積り?依頼|資料請求|メールフォーム|申し?込み?フォーム|contact|inquiry|inquire|enquiry|toiawase|otoiawase|soudan|mail-?form|mailform|form)/i;
+const CONTACT_LINK_RE = /(お問い?合わ?せ|お問合せ|お問い合せ|問い?合わ?せ|問合せ|問い合せ|ご相談|ご依頼|ご意見|ご質問|お見積|見積り?依頼|資料請求|メールフォーム|申し?込み?フォーム|contact|inquiry|inquire|enquiry|toiawase|otoiawase|soudan|mail-?form|mailform|form)/i;
 const NEGATIVE_LINK_RE = /(採用|recruit|entry|求人|新卒|中途|faq|よくある|privacy|プライバシー|sitemap|login|ログイン|mypage|cart|カート|会員|member|ir\/|press|取材)/i;
 const COMMON_PATHS = [
   "/contact/", "/contact", "/contact.html", "/contact.php", "/contact.cgi", "/contact/index.html", "/contact/index.php",
@@ -79,10 +79,14 @@ export const HAS_FORM_SCRIPT = `
 // 「お問い合わせはこちら」等、クリックするとモーダル/パネルでフォームが開くトリガーを探して押す
 const CLICK_TRIGGER_SCRIPT = `
 (() => {
-  const re = /(お問い?合わ?せ(はこちら|する|フォーム)?|問合せ|ご相談|ご依頼|資料請求|contact\\s*(us|form)?|inquiry|メールで(送る|問い合わせ)|フォームを開く|入力フォーム)/i;
+  const re = /(お?問い?合わ?せ(はこちら|する|フォーム)?|問合せ|ご相談|ご依頼|資料請求|contact\\s*(us|form)?|inquiry|メールで(送る|問い合わせ)|フォームを開く|入力フォーム)/i;
   const isVisible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  // ポップアップを開くボタン（Popup Maker・Bootstrap のモーダル等）。ページ内の見出しへ飛ぶだけのリンク（href="#inquiry"）は押しても開かない
+  const popupish = (el) => el.matches('[data-toggle],[data-bs-toggle],[aria-haspopup],[class*="popmake"],[class*="modal"],[class*="popup"]');
   const cands = Array.from(document.querySelectorAll('button, a, [role=button], [onclick], [class*=contact], [class*=btn]'))
-    .filter((el) => isVisible(el) && re.test(((el.innerText || el.getAttribute('aria-label') || el.value || '')).trim().slice(0, 40)) && (el.innerText || '').length < 30);
+    .filter((el) => isVisible(el) && re.test(((el.innerText || el.getAttribute('aria-label') || el.value || '')).trim().slice(0, 40)) && (el.innerText || '').length < 30)
+    .filter((el) => !(el.tagName === 'A' && /^#./.test(el.getAttribute('href') || '') && !popupish(el)));
+  cands.sort((a, b) => (popupish(b) ? 1 : 0) - (popupish(a) ? 1 : 0));
   if (!cands.length) return false;
   cands[0].scrollIntoView({ block: 'center' });
   cands[0].click();
@@ -273,10 +277,20 @@ async function waitOutChallenge(page: Page, url: string): Promise<boolean> {
   return false;
 }
 
-async function safeGoto(page: Page, url: string): Promise<boolean> {
+/** 開けなかった理由（サイトが無くなっているのかを見分けるのに使う）。開けたら ok=true */
+type GotoInfo = { ok?: boolean; err?: string; status?: number };
+
+async function safeGoto(page: Page, url: string, info?: GotoInfo): Promise<boolean> {
   try {
-    const res = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
-    if (res && res.status() >= 400 && !(await waitOutChallenge(page, url))) return false;
+    // 直前に開けなかったページ（https の言い換え等）のブラウザのエラー画面への切り替わりが割り込んで、
+    // 次の読み込みが「interrupted by another navigation」で失敗することがある。そのときは1回だけ読み込み直す
+    const res = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 }).catch(async (e) => {
+      if (!/interrupted by another navigation/i.test(String((e as Error)?.message ?? e))) throw e;
+      await page.waitForTimeout(500);
+      return page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
+    });
+    if (res && res.status() >= 400 && !(await waitOutChallenge(page, url))) { if (info) info.status = res.status(); return false; }
+    if (info) info.ok = true;
     // フォームがもう見えているなら、通信が落ち着くのを待たずに進む（#123）。
     // 以前は必ず最大6秒待っていて、事前チェックで見つけたURLを直接開く場合でも時間がかかっていた
     if (await scanFrames(page)) { await page.waitForTimeout(400); return true; }
@@ -284,7 +298,8 @@ async function safeGoto(page: Page, url: string): Promise<boolean> {
     await page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {});
     await page.waitForTimeout(500);
     return true;
-  } catch {
+  } catch (e) {
+    if (info) info.err = String((e as Error)?.message ?? e).slice(0, 200);
     return false;
   }
 }
@@ -301,6 +316,8 @@ export function urlVariants(url: string): string[] {
   try {
     const u = new URL(normalize(url));
     const hosts = u.hostname.startsWith("www.") ? [u.hostname, u.hostname.slice(4)] : [u.hostname, `www.${u.hostname}`];
+    // Jimdo の旧ドメイン（*.jimdo.com）は今は開けず、同じサイトが *.jimdofree.com にある（lifelinekk・nkenso の実例）
+    if (/\.jimdo\.com$/i.test(u.hostname)) hosts.splice(1, 0, u.hostname.replace(/\.jimdo\.com$/i, ".jimdofree.com")); // 先頭（元のURL）は呼び出し側が飛ばすので2番目に
     for (const proto of [u.protocol, u.protocol === "https:" ? "http:" : "https:"]) {
       for (const h of hosts) {
         const v = new URL(u.toString());
@@ -348,30 +365,117 @@ async function urlsFromSitemap(page: Page, origin: string): Promise<string[]> {
     .slice(0, 5);
 }
 
-/** フォームのあるページへ遷移する。見つかれば最終URL、無ければ null */
-export async function findContactForm(page: Page, formUrl: string, siteUrl: string, note: { reason?: string } = {}): Promise<string | null> {
+// ---- 相手の会社のサイトの外に出ない ----
+// 他のドメインへのリンクや転送を辿ると、無関係の相手に営業文を送るおそれがある（実例: 会社の旧ドメインが海外FXの宣伝サイトに
+// 転送されていて、そこの /contact/ を開いていた。PR TIMES の企業登録フォーム・サイト制作会社のフォームにも辿り着いていた）。
+// 辿ってよいのは、同じ会社のドメイン（サブドメインや .com→.jp の引っ越しを含む）と、外部フォームサービスだけ
+// 誰でもサイトを持てるサービス。ドメインが同じでも別の会社なので、サブドメインまで（xxx.jimdofree.com）で見分ける
+const SHARED_HOST_RE = /(^|\.)(jimdo\.com|jimdofree\.com|jimdosite\.com|wixsite\.com|mystrikingly\.com|strikingly\.com|studio\.site|webnode\.(jp|com)|wordpress\.com|blogspot\.com|fc2\.com|xsrv\.jp|sakura\.ne\.jp|lolipop\.jp|amebaownd\.com|crayonsite\.(net|info|com)|goope\.jp|shopinfo\.jp|on\.omisenomikata\.jp|weebly\.com|square\.site|base\.shop|thebase\.in|hp\.peraichi\.com|peraichi\.com|wix\.com|ameblo\.jp|hatenablog\.com|note\.com|facebook\.com|instagram\.com)$/i;
+const SLD_RE = /^(co|or|ne|ac|go|gr|ed|lg|ad|com|net|org|gov|edu)$/;
+/** サイトを見分ける名前。普通のドメインは「名前の部分」（www.tamura.co.jp → tamura、form.ideacon.jp → ideacon）、
+ *  誰でも持てるサービスは、そのサブドメインまで（abc.jimdo.com と abc.jimdofree.com は同じ扱い） */
+export function siteKeyOf(urlOrHost: string): string {
+  let host = urlOrHost;
+  try { host = new URL(urlOrHost).hostname; } catch { /* host のまま */ }
+  host = host.toLowerCase().replace(/^www\./, "");
+  if (SHARED_HOST_RE.test(host)) return host.replace(/\.jimdo(free|site)?\.com$/, ".jimdo");
+  const parts = host.split(".");
+  if (parts.length >= 3 && SLD_RE.test(parts[parts.length - 2]) && parts[parts.length - 1].length === 2) return parts[parts.length - 3];
+  return parts.length >= 2 ? parts[parts.length - 2] : host;
+}
+const isFormService = (u: string) => FORM_SERVICE_RE.some(([, re]) => re.test(u));
+/** 社名から法人格・空白を除いて比べやすくする */
+const coreName = (s: string) => s.normalize("NFKC").toLowerCase()
+  .replace(/(株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|一般財団法人|社団法人|医療法人(社団)?|社会福祉法人|学校法人|特定非営利活動法人|npo法人|\(株\)|\(有\)|㈱|㈲|co\.?,?\s*ltd\.?|inc\.?|corp(oration)?\.?)/g, "")
+  .replace(/[\s・,.、。'"’]/g, "");
+
+/** 開けなかったときの説明（利用者に見せる） */
+function deadReason(info: GotoInfo): string {
+  const e = info.err ?? "";
+  if (/ERR_NAME_NOT_RESOLVED/.test(e)) return "ドメインが見つかりません。サイトが無くなっている可能性があります";
+  if (/ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|ERR_ADDRESS_UNREACHABLE|ERR_CONNECTION_TIMED_OUT|Timeout/i.test(e)) return "サイトが応答しません";
+  if (/ERR_TOO_MANY_REDIRECTS/.test(e)) return "転送がくり返されて開けません";
+  if (/ERR_(SSL|CERT)/.test(e)) return "暗号化の設定が古く開けません";
+  if (info.status) return `サイトがエラーを返します（HTTP ${info.status}）`;
+  return e ? `開けません（${e.replace(/\s+/g, " ").slice(0, 60)}）` : "開けません";
+}
+
+type Link = { href: string; text: string; footer: boolean };
+/** ページの中のリンク。画像だけのリンクは画像の alt も文字として読む（「お問い合わせはこちらをクリックして下さい。」の画像ボタン） */
+async function linksOn(page: Page): Promise<Link[]> {
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll("a[href]")).map((a) => {
+      const el = a as HTMLAnchorElement;
+      const img = a.querySelector("img[alt]");
+      return {
+        href: el.href,
+        text: [el.innerText, a.getAttribute("title"), a.getAttribute("aria-label"), img ? img.getAttribute("alt") : ""].filter(Boolean).join(" ").trim(),
+        // フッター（またはページ下部）のリンクは、問い合わせページである確率が高い
+        footer: Boolean(el.closest("footer, [class*='footer'], [id*='footer']")),
+      };
+    })
+  ).catch(() => [] as Link[]);
+}
+
+/** フォームのあるページへ遷移する。見つかれば最終URL、無ければ null。
+ *  note.reason: 問い合わせ以外のフォームだった／note.dead: サイトが開けない／note.foreign: 別の会社のサイトに転送された
+ *  companyName: 転送で別のドメインに着いたとき、同じ会社のサイトかを確かめるのに使う */
+export async function findContactForm(page: Page, formUrl: string, siteUrl: string, note: { reason?: string; dead?: string; foreign?: string } = {}, opts: { companyName?: string } = {}): Promise<string | null> {
   const tried = new Set<string>();
   // 開いた結果のURL（リダイレクト後）で、もう調べたページ。どのパスでもトップへ転送するサイトだと、
   // よくあるパス約40本で毎回同じトップページをスクロールして調べ直し、1社に何分もかかっていた
   const examined = new Set<string>();
   const keyOf = (u: string) => u.split("#")[0].replace(/\/(index\.(html?|php))?$/i, "");
-  const tryUrl = async (u: string) => {
+  const site = normalize(siteUrl || formUrl);
+  // 辿ってよいサイト（同じ会社のサイト）。社名を確かめられた転送先は、あとから足す
+  const allowed = new Set<string>(site ? [siteKeyOf(site)] : []);
+  const name = coreName(opts.companyName ?? "");
+  const allowedUrl = (u: string) => allowed.has(siteKeyOf(u)) || isFormService(u);
+  /** いま開いているページが、辿ってよいサイトか。別のサイトに転送されていたら、社名が載っているときだけ認める。
+   *  report: 会社のサイト（トップ・リストのフォームURL）そのものが転送された場合だけ、理由として残す（途中のリンクやボタンの行き先は残さない） */
+  const onOwnSite = async (report = false): Promise<boolean> => {
+    const u = page.url();
+    if (allowedUrl(u)) return true;
+    const text = name.length >= 2 ? await page.evaluate(() => document.title + " " + (document.body?.innerText ?? "").slice(0, 30000)).catch(() => "") : "";
+    if (name.length >= 2 && coreName(text).includes(name)) { allowed.add(siteKeyOf(u)); return true; }
+    if (report && !note.foreign) { let h = u; try { h = new URL(u).hostname; } catch { /* そのまま */ } note.foreign = `${h} に転送されました`; }
+    return false;
+  };
+  // 開いたのにフォームが無かったページの、問い合わせらしいリンク（「お問い合わせ」の案内ページ → 本物のフォーム、の2段目）
+  const stage2: Link[] = [];
+  const reach: GotoInfo = {};
+  const firstFail: GotoInfo = {};
+  const goto = async (u: string) => {
+    const info: GotoInfo = {};
+    const ok = await safeGoto(page, u, info);
+    if (ok) reach.ok = true; else if (!firstFail.err && !firstFail.status) Object.assign(firstFail, info);
+    return ok;
+  };
+  const tryUrl = async (u: string, report = false) => {
     if (!u || tried.has(u)) return false;
     tried.add(u);
-    if (!(await safeGoto(page, u))) return false;
+    if (!(await goto(u))) return false;
+    if (!(await onOwnSite(report))) return false;
     const k = keyOf(page.url());
     if (examined.has(k)) return false;
     examined.add(k);
-    return usableContactPage(page, note);
+    if (await usableContactPage(page, note)) return true;
+    for (const l of pickContactLinks(await linksOn(page), 3)) if (!stage2.some((x) => x.href === l.href)) stage2.push(l);
+    return false;
   };
+  const pickContactLinks = (links: Link[], n: number) => links
+    .filter((l) => l.href.startsWith("http") && allowedUrl(l.href) && !NEGATIVE_LINK_RE.test(l.href + " " + l.text))
+    .filter((l) => CONTACT_LINK_RE.test(l.text) || CONTACT_LINK_RE.test(l.href))
+    .sort((a, b) => score(b) - score(a))
+    .slice(0, n);
 
-  if (formUrl && (await tryUrl(normalize(formUrl)))) return page.url();
+  if (formUrl && (await tryUrl(normalize(formUrl), true))) return page.url();
   // フォームURLが開けなかった場合、https/http・www有無を言い換えて試す（#2）
   if (formUrl) {
-    for (const v of urlVariants(formUrl).slice(1, 4)) if (await tryUrl(v)) return page.url();
+    for (const v of urlVariants(formUrl).slice(1, 4)) if (await tryUrl(v, true)) return page.url();
   }
+  if (note.foreign && !reach.ok) return null;
 
-  const site = normalize(siteUrl || formUrl);
   if (!site) return null;
   let origin: string;
   try {
@@ -380,43 +484,47 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
     return null;
   }
 
-  // トップページを開く。開けなければ https/http・www有無を言い換えて試す（#2）
-  let opened = await safeGoto(page, site);
+  // トップページを開く。開けなければ https/http・www有無を言い換えて試す（#2）。
+  // 営業リストのURLが奥のページ（/index.html 等）で、そこだけ消えているサイトもあるので、トップ（/）も試す
+  let opened = await goto(site);
   if (!opened) {
-    for (const v of urlVariants(site).slice(1, 4)) {
-      if (await safeGoto(page, v)) { opened = true; origin = new URL(v).origin; break; }
+    const tops = [...urlVariants(site).slice(1, 4), ...(new URL(site).pathname.length > 1 ? urlVariants(origin + "/") : [])];
+    for (const v of tops) {
+      if (await goto(v)) { opened = true; break; }
     }
   }
+  // どこも開けなかった（ドメインが無い・応答しない・エラーしか返さない）。よくあるパスを何十本も試しても無駄なので、ここで終える
+  if (!reach.ok) { note.dead = deadReason(firstFail); return null; }
+  if (opened && !(await onOwnSite(true))) return null;
+  // 転送されて着いた先（.com → .jp への引っ越し等）を、よくあるパスを試す起点にする
+  if (opened) { try { origin = new URL(page.url()).origin; } catch { /* そのまま */ } }
+
   // トップページ内のリンクから探す（フッターのリンクを優先: #1）
   if (opened) {
     examined.add(keyOf(page.url()));
     if (await usableContactPage(page, note)) return page.url();
-    const links: { href: string; text: string; footer: boolean }[] = await page.evaluate(() =>
-      Array.from(document.querySelectorAll("a[href]")).map((a) => {
-        const el = a as HTMLAnchorElement;
-        return {
-          href: el.href,
-          text: (el.innerText || a.getAttribute("title") || a.getAttribute("aria-label") || "").trim(),
-          // フッター（またはページ下部）のリンクは、問い合わせページである確率が高い
-          footer: Boolean(el.closest("footer, [class*='footer'], [id*='footer']")),
-        };
-      })
-    );
-    const candidates = links
-      .filter((l) => l.href.startsWith("http") && !NEGATIVE_LINK_RE.test(l.href + " " + l.text))
-      .filter((l) => CONTACT_LINK_RE.test(l.text) || CONTACT_LINK_RE.test(l.href))
-      .sort((a, b) => score(b) - score(a))
-      .slice(0, 5);
-    for (const c of candidates) {
+    for (const c of pickContactLinks(await linksOn(page), 5)) {
       if (await tryUrl(c.href.split("#")[0])) return page.url();
     }
   }
+  // 開いたのにフォームが無かったページ（「お問い合わせ」の案内ページ等）の中のリンク（2段目）。3本まで
+  for (const c of stage2.sort((a, b) => score(b) - score(a)).slice(0, 3)) {
+    if (await tryUrl(c.href.split("#")[0])) return page.url();
+  }
 
-  // よくあるパス。存在しないパスにも 200 で同じ「見つかりません」ページを返すサイトで時間がかかりすぎないよう、全体で90秒まで
+  // よくあるパス。存在しないパスにも 200 で同じ「見つかりません」ページを返すサイトで時間がかかりすぎないよう、全体で90秒まで。
+  // 先に状態コードだけ聞いて（描画しない）、無いページ（404 等）は開かない。1社で50回近くページを描画していて遅く、相手のサーバーにも重かった
   const pathsUntil = Date.now() + 90_000;
   for (const p of COMMON_PATHS) {
     if (Date.now() > pathsUntil) break;
-    if (await tryUrl(origin + p)) return page.url();
+    const u = origin + p;
+    if (tried.has(u)) continue;
+    const head = await page.request.get(u, { timeout: 8000, failOnStatusCode: false, maxRedirects: 5 }).then((r) => ({ status: r.status(), url: r.url() })).catch(() => null);
+    if (!head) continue;
+    // 403 / 429 / 503 はブラウザ確認（Cloudflare 等）のことがあるので、ブラウザで開いて確かめる
+    if (head.status >= 400 && ![403, 429, 503].includes(head.status)) continue;
+    if (examined.has(keyOf(head.url))) continue;
+    if (await tryUrl(u)) return page.url();
   }
 
   // sitemap.xml / robots.txt のサイトマップから探す（#1）。
@@ -433,28 +541,25 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
         .filter((h) => /(company|about|corporate|profile|outline|会社)/i.test(h))
         .slice(0, 6)
     ).catch(() => []);
-    for (const u of sub.slice(0, 2)) {
+    for (const u of sub.filter(allowedUrl).slice(0, 2)) {
       if (!(await safeGoto(page, u))) continue;
+      if (!(await onOwnSite())) continue;
       if (await usableContactPage(page, note)) return page.url();
-      const link: string | null = await page.evaluate((reSrc) => {
-        const re = new RegExp(reSrc, "i");
-        const a = Array.from(document.querySelectorAll("a[href]")).find((x) => re.test(((x as HTMLAnchorElement).innerText || "") + " " + (x as HTMLAnchorElement).href));
-        return a ? (a as HTMLAnchorElement).href : null;
-      }, CONTACT_LINK_RE.source).catch(() => null);
-      if (link && (await tryUrl(link.split("#")[0]))) return page.url();
+      const link = pickContactLinks(await linksOn(page), 1)[0];
+      if (link && (await tryUrl(link.href.split("#")[0]))) return page.url();
     }
   }
 
   // 最後の手段: トップに戻り「お問い合わせはこちら」等を押してモーダル/パネルを開く
   if (await safeGoto(page, site)) {
-    // 押した先が登録・応募フォーム（「お問い合わせ・ご登録」のようなリンク）だったら使わない
-    if ((await tryClickTrigger(page)) && !(await nonInquiryReason(page).then((why) => { if (why && !note.reason) note.reason = `${why}: ${page.url()}`; return why; }))) return page.url();
+    // 押した先が登録・応募フォーム（「お問い合わせ・ご登録」のようなリンク）や、別の会社のサイトだったら使わない
+    if ((await tryClickTrigger(page)) && (await onOwnSite()) && !(await nonInquiryReason(page).then((why) => { if (why && !note.reason) note.reason = `${why}: ${page.url()}`; return why; }))) return page.url();
   }
   return null;
 
-  function score(l: { href: string; text: string; footer: boolean }) {
+  function score(l: Link) {
     let s = 0;
-    if (/お問い?合わ?せ|お問合せ|contact/i.test(l.text)) s += 3;
+    if (/お?問い?合わ?せ|お問合せ|contact/i.test(l.text)) s += 3;
     if (/contact|inquiry|toiawase/i.test(l.href)) s += 2;
     if (l.href.startsWith(origin)) s += 2;
     if (l.footer) s += 2;

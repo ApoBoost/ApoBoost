@@ -39,6 +39,41 @@ const server = http.createServer(async (req, res) => {
   const b: Record<string, string> = Object.fromEntries(new URLSearchParams(raw));
   const done = (k: string) => { hit(k, b); return send(page("完了", "<h1>送信完了</h1><p>お問い合わせを受け付けました。</p>")); };
 
+  // ---- 4周目（フォームの探し方）: フォーム無しの調査で分かった型 ----
+  const hostName = String(req.headers.host ?? "").split(":")[0];
+  const simpleForm = (k: string, extra = "") => page("お問い合わせ", `<h1>お問い合わせ</h1>${extra}<form method="post" action="/${k}/post">${fields("<th>電話番号</th>")}<button type="submit">送信する</button></form>`);
+  // 47) 会社の旧ドメインが、別の業者のサイトに転送される（社名はどこにも無い）。転送先のフォームに送らない
+  if (p === "/moved") { res.writeHead(302, { location: `http://fxspam.localhost:${(server.address() as { port: number }).port}/` }); return res.end(); }
+  if (hostName === "fxspam.localhost") {
+    if (p === "/fxspam/post") { hit("fxspam", b); return send(page("完了", "<p>送信が完了しました</p>")); }
+    return send(simpleForm("fxspam", "<p>海外FXの口座開設ボーナス</p>"));
+  }
+  // 48) 引っ越し先のドメインでも、社名が載っていれば同じ会社のサイトとして使う
+  if (p === "/moved2") { res.writeHead(302, { location: `http://newhome.localhost:${(server.address() as { port: number }).port}/` }); return res.end(); }
+  if (hostName === "newhome.localhost") {
+    if (p === "/newhome/post") return done("newhome");
+    return send(simpleForm("newhome", "<p>サンプル工業株式会社 公式サイト</p>"));
+  }
+  // 49) トップの「お問い合わせ」が別の会社（掲載・制作サービス）のフォームを指している。辿らない
+  if (p === "/extlink") return send(page("トップ", `<h1>ようこそ</h1><a href="http://prsvc.localhost:${(server.address() as { port: number }).port}/contact">お問い合わせ</a>`));
+  if (hostName === "prsvc.localhost") {
+    if (p === "/prsvc/post") { hit("prsvc", b); return send(page("完了", "<p>送信が完了しました</p>")); }
+    return send(simpleForm("prsvc"));
+  }
+  // 50) 「お問い合わせ」の案内ページ（フォーム無し）の先に、本物のフォーム（2段目）
+  if (p === "/top2") return send(page("トップ", `<h1>ようこそ</h1><nav><a href="/guide">お問い合わせ</a></nav>`));
+  if (p === "/guide") return send(page("お問い合わせ", `<h1>お問い合わせ</h1><p>お電話またはフォームでどうぞ。</p><p><a href="/guide/sales_inquiry">営業・サービスのご案内の窓口</a> / <a href="/guide/support">製品のお問い合わせ</a></p>`));
+  if (p === "/guide/sales_inquiry") return post ? done("stage2") : send(simpleForm("guide/sales_inquiry").replace('action="/guide/sales_inquiry/post"', 'action="/guide/sales_inquiry"'));
+  // 51) 文字の無い画像だけの「お問い合わせ」リンク（alt はある）。URL にも手がかりが無い
+  if (p === "/imgtop") return send(page("トップ", `<h1>ようこそ</h1><a href="/x7"><img alt="お問い合わせはこちら" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="80" height="20"></a>`));
+  if (p === "/x7") return post ? done("imglink") : send(simpleForm("x7").replace('action="/x7/post"', 'action="/x7"'));
+  // 52) 営業リストのURLが奥のページ（/old/index.html）で、そこだけ消えている。トップ（/）には問い合わせのリンクがある
+  if (hostName === "d404.localhost") {
+    if (p === "/") return send(page("トップ", `<h1>ようこそ</h1><a href="/toi">お問い合わせ</a>`));
+    if (p === "/toi") return post ? done("d404") : send(simpleForm("toi").replace('action="/toi/post"', 'action="/toi"'));
+    return send("not found", 404);
+  }
+
   // 1) 必須の印が「※」（電話番号※）。最初から電話番号を入れる
   if (p === "/kome") return post ? done("kome") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><p>※は必須項目です。</p><form method="post">${fields("<th>電話番号<span style='color:red'>※</span></th>")}<button type="submit">送信する</button></form>`));
 
@@ -340,6 +375,13 @@ const server = http.createServer(async (req, res) => {
   // 46) 相手のメールサーバーの失敗（shinseiko.tech の実例）
   if (p === "/smtpfail") return post ? send(filledForm("/smtpfail", b, "", `<p>Failed to send mail. Error:SMTP connect() failed. https://github.com/PHPMailer/PHPMailer/wiki/Troubleshooting</p>`)) : send(filledForm("/smtpfail", {}));
 
+
+  // 53) 確認画面に「以下の内容で」の文言が無く、入力内容を表で見せるだけ（SPIRAL の実例）。入力欄が消えても送信済みにせず、最後の「送信」を押す
+  if (p === "/spiral") {
+    if (!post) return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号</th>")}<button type="submit">送信</button></form>`));
+    return send(page("お問い合わせ", `<h1>お問い合わせ</h1><table><tr><th>お名前</th><td>${esc(b.nm)}</td></tr><tr><th>メールアドレス</th><td>${esc(b.em)}</td></tr><tr><th>内容</th><td>${esc(b.msg)}</td></tr></table><form method="post" action="/spiral/send">${hidden(b)}<input type="submit" value="戻る" formaction="/spiral"><input type="submit" value="送信"></form>`));
+  }
+  if (p === "/spiral/send" && post) return done("spiral");
   if (p === "/search") { hit("search", Object.fromEntries(url.searchParams)); return send(page("検索", "<p>検索結果</p>")); }
   send("not found", 404);
 });
@@ -362,9 +404,14 @@ try {
     ...["ajaxa", "ajaxb", "ajaxc", "stepconf", "ovl", "twota", "nf", "nf2", "hang", "quiz"].map((k): [string, string, string] => [k, `/${k}`, ""]),
     ...["gform", "numtel", "pick", "unk", "numerr", "capterr", "refusechk", "rcta"].map((k): [string, string, string] => [k, `/${k}`, ""]),
     ["refusechk2", "/refusechk", ""],
-    ...["lenlim", "nourl", "nourlspam", "cf7prob", "modal", "confkeep", "waitchk", "getecho", "cmtonly", "smtpfail"].map((k): [string, string, string] => [k, `/${k}`, ""])];
+    ...["lenlim", "nourl", "nourlspam", "cf7prob", "modal", "confkeep", "waitchk", "getecho", "cmtonly", "smtpfail", "spiral"].map((k): [string, string, string] => [k, `/${k}`, ""])];
   // 文字数・URL の制限を試すサイトには、長くて URL の入った本文を送る（先頭の名乗りと最後の署名は残ること）
   const LONG = ["株式会社テスト 御中", "はじめまして。サンプル商事の山田です。", "中略の説明です。".repeat(30), "詳しい資料はこちらです。\nhttps://example.com/doc", "山田 太郎\nsales@example.com"].join("\n\n");
+  // フォームの探し方の型（4周目）。サイトのURLを丸ごと指定するものと、社名を渡すもの
+  const pp = port;
+  cases.push(["moved", "", "/moved"], ["moved2", "", "/moved2"], ["extlink", "", "/extlink"], ["top2", "", "/top2"], ["imgtop", "", "/imgtop"],
+    ["dead", "", "http://nx-apoboost-test.invalid/"], ["d404", "", `http://d404.localhost:${pp}/old/index.html`]);
+  const companyOf: Record<string, string> = { moved2: "サンプル工業株式会社" };
   for (const [k, formPath, sitePath] of cases) {
     n++;
     if (only && !only.includes(k)) continue;
@@ -372,7 +419,7 @@ try {
     if (k === "hang") process.env.FO_SUBMIT_LIMIT_MS = "40000"; else delete process.env.FO_SUBMIT_LIMIT_MS;
     // 会社ごとに別のホスト名にする（同じドメインへの連続送信の扱いに引っかからないように）
     const host = `http://t${n}.localhost:${port}`;
-    const r = await submitToCompany(browser, { jobId: 9000 + n, formUrl: formPath ? host + formPath : "", siteUrl: sitePath ? host + sitePath : "", sender, subject: "ご案内", message: ["lenlim", "nourl", "nourlspam"].includes(k) ? LONG : "はじめまして。サービスのご案内です。\nよろしくお願いいたします。", ignoreRefusal: k === "refusechk2" });
+    const r = await submitToCompany(browser, { jobId: 9000 + n, formUrl: formPath ? host + formPath : "", siteUrl: sitePath ? (sitePath.startsWith("http") ? sitePath : host + sitePath) : "", company: companyOf[k], sender, subject: "ご案内", message: ["lenlim", "nourl", "nourlspam"].includes(k) ? LONG : "はじめまして。サービスのご案内です。\nよろしくお願いいたします。", ignoreRefusal: k === "refusechk2" });
     out[k] = { status: r.status, detail: r.detail, log: r.log };
     console.log(`- ${k}: ${r.status} | ${r.detail.split("\n")[0]}`);
     if (process.env.FO_DEBUG) console.log(r.log.join("\n"));
@@ -518,7 +565,18 @@ if (has("confkeep")) sentOnce("confkeep", "入力欄が残ったままの確認�
 if (has("waitchk")) sentOnce("waitchk", "「送信前にもう少しお待ちください」で待ってから押し直す");
 if (has("getecho")) sentOnce("getecho", "入力内容がアドレス欄に付いて読み直されただけなら、待って入れ直す");
 if (has("cmtonly")) { assert.equal(got.comment, undefined, `cmtonly: ブログのコメント欄に書き込まない → ${out.cmtonly.detail}`); assert.equal(out.cmtonly.status, "skip_no_form", `cmtonly: ${out.cmtonly.detail}`); }
+if (has("spiral")) sentOnce("spiral", "入力内容を表で見せる確認画面で、最後の「送信」を押す");
 if (has("smtpfail")) { assert.equal(out.smtpfail.status, "failed"); assert.ok(out.smtpfail.detail.startsWith("サイト側"), `smtpfail: ${out.smtpfail.detail}`); }
+
+// ---- 4周目（フォームの探し方）----
+const sentAs = (k: string, g: string, why: string) => { assert.equal(out[k].status, "sent", `${k}: ${why} → ${out[k].detail}\n${out[k].log.join("\n")}`); assert.equal(got[g]?.length, 1, `${k}: 送信は1回だけ（${got[g]?.length ?? 0}回）`); };
+if (has("moved")) { assert.equal(got.fxspam, undefined, `moved: 別の業者のサイトのフォームに送らない → ${out.moved.detail}`); assert.ok(out.moved.detail.includes("会社のサイトではない"), `moved: ${out.moved.detail}`); }
+if (has("moved2")) sentAs("moved2", "newhome", "社名が載っている引っ越し先のサイトでは送る");
+if (has("extlink")) { assert.equal(got.prsvc, undefined, `extlink: 別の会社（掲載サービス）のフォームに送らない → ${out.extlink.detail}`); assert.notEqual(out.extlink.status, "sent"); }
+if (has("top2")) sentAs("top2", "stage2", "案内ページの先の本物のフォーム（2段目）に送る");
+if (has("imgtop")) sentAs("imgtop", "imglink", "画像だけのリンクの alt から問い合わせページを見つける");
+if (has("dead")) { assert.equal(out.dead.status, "skip_no_form"); assert.ok(out.dead.detail.startsWith("サイトにアクセスできない"), `dead: ${out.dead.detail}`); }
+if (has("d404")) sentOnce("d404", "奥のページが消えていたらトップから探す");
 
 console.log("todo: ALL OK");
 process.exit(0);

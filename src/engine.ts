@@ -6,7 +6,7 @@ import os from "node:os";
 import { SCREENSHOT_DIR, type SenderProfile, type JobStatus } from "./db.js";
 import { detectRefusal, CAPTCHA_CHECK_SCRIPT, CHALLENGE_RE } from "./detect.js";
 import { findContactForm, detectFormService } from "./formFinder.js";
-import { collectFields, fillFields, clickNextButton, judgeOutcome, classify, hasHiddenTextarea, pageText, collectUnknownQuestions, toPendingQuestions, aiAnswerUnknownFields, allSubmitButtonsDisabled, fillRequiredLeftovers, fillAriaChoices, describeInvalidFields, clickBackButton, checkConfirmAgreements, timed, snapshotFilled, filledWereCleared, dialogSaysSent, fitMessageToSite, WAIT_DETAIL, type PendingQuestion, type FieldInfo, type ClickNet } from "./formFiller.js";
+import { collectFields, fillFields, clickNextButton, judgeOutcome, classify, hasHiddenTextarea, pageText, collectUnknownQuestions, toPendingQuestions, aiAnswerUnknownFields, allSubmitButtonsDisabled, fillRequiredLeftovers, fillAriaChoices, describeInvalidFields, clickBackButton, checkConfirmAgreements, timed, snapshotFilled, filledWereCleared, dialogSaysSent, fitMessageToSite, WAIT_DETAIL, submitButtonRemains, type PendingQuestion, type FieldInfo, type ClickNet } from "./formFiller.js";
 import { extractLegalName } from "./company.js";
 import { llm } from "./message.js";
 
@@ -212,10 +212,14 @@ async function submitOnce(browser: Browser, input: SubmitInput, w: Watch): Promi
   };
 
   try {
-    const note: { reason?: string } = {};
-    const formPage = await findContactForm(page, input.formUrl, input.siteUrl, note);
+    const note: { reason?: string; dead?: string; foreign?: string } = {};
+    const formPage = await findContactForm(page, input.formUrl, input.siteUrl, note, { companyName: input.company });
+    // 会社のサイトが別のドメイン（社名の載っていないサイト）に転送された。ドメインが他人の手に渡っていることがあり、そこへは送らない
+    if (!formPage && note.foreign) return done("skip_no_form", `会社のサイトではない可能性があるため送らず（${note.foreign}。社名が見当たりません）\nURLが古くなっていないか確認してください`);
     // 登録・応募フォームしか見つからなかった（人材会社の「スタッフ登録」など）。入力すると勝手に登録したことになるので送らない
     if (!formPage && note.reason) return done("skip_no_form", `問い合わせ以外のフォームのため送らず（${note.reason}）`);
+    // サイトが開けない（ドメインが無い・応答しない）。「フォームが見つからない」と同じ表示だと、見落としと区別がつかなかった
+    if (!formPage && note.dead) return done("skip_no_form", `サイトにアクセスできない: ${note.dead}\nURLが古くなっていないか確認してください`);
     if (!formPage) return done("skip_no_form", "問い合わせフォームが見つからない");
     log.push(`form: ${formPage}`);
     // Wix のサイトは、フォームの送信の仕組み（JS）が読み込み終わる前に送信を押すと、入力内容がアドレス欄に付いて
@@ -456,6 +460,15 @@ async function submitOnce(browser: Browser, input: SubmitInput, w: Watch): Promi
       let outcome = await judge(kind === "submit");
       if (outcome.status === "unsure" && warned) outcome = { status: "failed", detail: `入力エラー: ${warned}` };
       log.push(`judge[${round}]: ${outcome.status} ${outcome.detail}`);
+      // 完了文言の無い「送信済み（要確認）」でも、入力した内容（自分のメールアドレス）を一覧で見せていて、送信ボタンが残っていれば確認画面。
+      // 入力欄が消えたのを送信済みと読んで、最後の「送信」を押していなかった（SPIRAL（smp.ne.jp）のフォームの実例）
+      if (((outcome.status === "sent" && /要確認/.test(outcome.detail)) || (outcome.status === "unsure" && /完了もエラーも検知できず/.test(outcome.detail))) && round < 4 && input.sender.email
+        && (await pageText(page)).toLowerCase().includes(input.sender.email.toLowerCase()) && (await submitButtonRemains(target))) {
+        log.push("入力内容の一覧と送信ボタンが出ている → 確認画面として送信ボタンを押す");
+        advanced = true;
+        await confirmPageChecks();
+        continue;
+      }
       if (outcome.status === "sent") return done("sent", outcome.detail);
       // 「送信前にもう少しお待ちください」（ページを開いてからの時間でロボットかを見分ける仕組み）。まだ送られていないので、待って押し直す
       if (outcome.status === "unsure" && outcome.detail.startsWith(WAIT_DETAIL) && waitTries < 2) {
@@ -670,9 +683,11 @@ export async function scanCompany(browser: Browser, input: { formUrl: string; si
         r.note = "サイトにアクセスできない";
       }
     }
-    const note: { reason?: string } = {};
-    const formPage = await findContactForm(page, input.formUrl, input.siteUrl, note);
-    if (!formPage && note.reason) r.note = `問い合わせ以外のフォーム（${note.reason}）`;
+    const note: { reason?: string; dead?: string; foreign?: string } = {};
+    const formPage = await findContactForm(page, input.formUrl, input.siteUrl, note, { companyName: input.companyName });
+    if (!formPage && note.foreign) r.note = `会社のサイトではない可能性（${note.foreign}）`;
+    else if (!formPage && note.reason) r.note = `問い合わせ以外のフォーム（${note.reason}）`;
+    else if (!formPage && note.dead) r.note = `サイトにアクセスできない（${note.dead}）`;
     if (formPage) {
       r.formUrl = formPage;
       const text: string = await page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
