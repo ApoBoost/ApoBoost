@@ -385,6 +385,52 @@ const server = http.createServer(async (req, res) => {
   // 54) リストのフォームURLのページにフォームが無く、問い合わせらしいリンクが2本ある（並べ替えが走る）。v1.0.27 はここで落ちていた
   if (p === "/oldform") return send(page("お問い合わせ", `<h1>お問い合わせ</h1><p>窓口をお選びください。</p><a href="/oldform/inquiry">お問い合わせフォーム</a> <a href="/oldform/contact">製品のお問い合わせ</a>`));
   if (p === "/oldform/inquiry") return post ? done("oldform") : send(simpleForm("x").replace('action="/x/post"', 'action="/oldform/inquiry"'));
+  // 55) リストのURLがブログの記事（livedoor の実例）。記事の下のコメント欄（送り先に comment、ボタン「投稿する」）には書き込まず、
+  //     ナビの「お問い合わせ」から本物のフォーム（本文欄の name が comment）に送る
+  if (p === "/blogpost") return send(page("記事", `<h1>今日の出来事</h1><p>本文です。</p><nav><a href="/blogcontact">お問い合わせ</a></nav><div id="comment-form-body"><h3>コメントする</h3><form method="post" action="/comment.blogcms/post"><p>名前<input name="author"></p><p>メール<input name="mail"></p><p>本文<textarea name="body"></textarea></p><input type="submit" value="投稿する"></form></div>`));
+  if (p === "/comment.blogcms/post") { hit("blogcomment", b); return send(page("投稿", "<p>コメントを投稿しました</p>")); }
+  if (p === "/blogcontact") return post ? done("blogcontact") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post"><p>お名前<input name="nm"></p><p>メールアドレス<input name="em"></p><p>お問い合わせ内容<textarea name="comment"></textarea></p><button type="submit">送信する</button></form>`));
+  // ---- 5周目: Windows の利用先（2回目のデータ）で分かった型 ----
+  // 56) Mail Form Pro の確認窓（#mfp_overlay は position:absolute。送信ボタンはフォームの外）
+  if (p === "/mfp") return post ? done("mfp") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post" id="f">${fields("<th>電話番号</th>")}<input type="submit" value="submit" onclick="return false" style="display:none"><button type="button" onclick="var o=document.createElement('div');o.id='mfp_overlay';o.style.cssText='position:absolute;top:0;left:0;width:100%;height:3000px;z-index:10001;background:rgba(0,0,0,.6)';o.innerHTML='<div style=&quot;background:#fff;width:400px;margin:150px auto;padding:20px&quot;><p>入力内容をご確認ください</p><button type=button onclick=&quot;document.getElementById(\\'mfp_overlay\\').remove()&quot;>キャンセル</button> <button type=button id=mfp_button_send onclick=&quot;document.getElementById(\\'f\\').submit()&quot;>送信する</button></div>';document.body.appendChild(o)">確認画面へ</button></form>`));
+  // 57) 同じページの中で確認表示に切り替わる（欄が読み取り専用になり「送信」「戻る」が出る。contact-form-7-add-confirm の形）
+  if (p === "/inpage") return post ? done("inpage") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post" id="f">${fields("<th>電話番号</th>")}<button type="button" id="cf" onclick="var f=document.getElementById('f');f.querySelectorAll('input,textarea').forEach(function(e){e.readOnly=true});this.style.display='none';document.getElementById('sb').style.display='inline';document.getElementById('bk').style.display='inline'">確認</button><button type="button" id="bk" style="display:none">戻る</button><button type="submit" id="sb" style="display:none">送信</button></form>`));
+  // 58) ボタン名の字間に空白（「確 認」「戻 る」「送　信」）。確認画面で「戻る」を押さない
+  if (p === "/spaced") {
+    if (!post) return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号</th>")}<button type="submit">確 認</button></form>`));
+    return send(page("確認", `<h1>入力内容の確認</h1><p>${esc(b.nm)} / ${esc(b.em)}</p><form method="post" action="/spaced/send">${hidden(b)}<input type="submit" value="戻 る" formaction="/spaced/back"><input type="submit" value="送　信"></form>`));
+  }
+  if (p === "/spaced/send" && post) return done("spaced");
+  if (p === "/spaced/back" && post) { hit("spaced_back", b); return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post" action="/spaced">${fields("<th>電話番号</th>", b)}<button type="submit">確 認</button></form>`)); }
+  // 59) Contact Form 7 の状態（data-status="sent"）だけで結果が分かる。完了の文言は出さない
+  if (p === "/cf7state") {
+    if (post) { hit("cf7state", b); res.writeHead(200, { "content-type": "application/json" }); return res.end('{"status":"mail_sent"}'); }
+    return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form class="wpcf7-form init" data-status="init" id="f">${fields("<th>電話番号</th>")}<button type="submit">送信する</button><div class="wpcf7-response-output"></div></form><script>document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();var f=e.target;fetch('/cf7state',{method:'POST',body:new URLSearchParams(new FormData(f))}).then(function(){f.setAttribute('data-status','sent');f.className='wpcf7-form sent';});});</script>`));
+  }
+  // 60) 押しても何も起きないボタン（JS が動かない）。どこにも送られていないので「送れていません」と確定する
+  if (p === "/nothing") return post ? done("nothing") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form id="f" onsubmit="return false">${fields("<th>電話番号</th>")}<button type="submit">送信する</button></form>`));
+  // 61) 確認ボタンがそのまま送信し、空のフォームに読み直す（dahai.jp の実例）。入れ直して二度送らない
+  if (p === "/resetreload") {
+    if (post) { hit("resetreload", b); res.writeHead(200, { "content-type": "application/json" }); return res.end("{}"); }
+    return send(page("お問い合わせ", `<h1>お問い合わせ</h1><form id="f">${fields("<th>電話番号</th>")}<button type="button" onclick="fetch('/resetreload',{method:'POST',body:new URLSearchParams(new FormData(document.getElementById('f')))}).then(function(){location.reload()})">内容を確認</button></form>`));
+  }
+  // 62) HTTP 500 なのに「受け付けました」と出る（g-advance の実例）
+  if (p === "/http500ok") { if (post) { hit("http500ok", b); res.writeHead(500, { "content-type": "text/html; charset=utf-8" }); return res.end(page("完了", "<p>お問合せを受け付けました。</p>")); } return send(simpleForm("x").replace('action="/x/post"', 'action="/http500ok"')); }
+  // 63) 同意欄のラベルの中に、プライバシーポリシーへのリンク（押してページが移っていた）
+  if (p === "/privlink") return post ? done("privlink") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号</th>")}<p><label><input type="checkbox" name="agree" value="1" required><span><a href="/privacy2" style="display:inline-block;padding:20px 80px">プライバシーポリシー</a>に同意する</span></label></p><button type="submit">送信する</button></form>`));
+  if (p === "/privacy2") { hit("privacy2", b); return send(page("ポリシー", "<p>個人情報保護方針</p>")); }
+  // 64) baserCMS の欄の名前（data[MailMessage][name_1]）。外側の Mail に当たって、名前欄にメールアドレスを入れていた
+  if (p === "/basercms") return post ? done("basercms") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post"><table><tr><th>お名前</th><td><input type="text" name="data[MailMessage][name_1]"></td></tr><tr><th>メールアドレス</th><td><input type="text" name="data[MailMessage][email_1]"></td></tr><tr><th>お問い合わせ内容</th><td><textarea name="data[MailMessage][message]"></textarea></td></tr></table><button type="submit">送信する</button></form>`));
+  // 65) 計算問題のロボット対策。解かずに飛ばす
+  if (p === "/mathcap") return post ? done("mathcap") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post">${fields("<th>電話番号</th>")}<p>スパム対策：次の計算の答えを入力してください 3+4=<input name="ans"></p><button type="submit">送信する</button></form>`));
+  // 66) 来店予約のフォーム。営業文を送らない
+  if (p === "/reserve") return post ? done("reserve") : send(page("ご来店予約", `<h1>ご来店予約フォーム</h1><form method="post">${fields("<th>電話番号</th>")}<button type="submit">予約する</button></form>`));
+  // 67) 日本語でないサイト（ドメインが他人の手に渡った）。社名も無い
+  if (p === "/foreign") return post ? done("foreign") : send(`<!doctype html><html lang="ms"><head><meta charset="utf-8"><title>Casino</title></head><body><h1>Hubungi kami</h1><form method="post"><p>Nama <input name="nm"></p><p>E-mel <input name="em"></p><p>Mesej <textarea name="msg"></textarea></p><button type="submit">Hantar</button></form></body></html>`);
+  // 68) スクロール演出で、読み込み直後はフォームが visibility:hidden（wow.js 等）。スクロールして待ってから集め直す
+  if (p === "/fadein") return post ? done("fadein") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><div id="w" style="visibility:hidden"><form method="post">${fields("<th>電話番号</th>")}<button type="submit">送信する</button></form></div><script>window.addEventListener('scroll',function(){setTimeout(function(){document.getElementById('w').style.visibility='visible'},300)});</script><div style="height:1500px"></div>`));
+  // 69) メルマガ配信登録のフォーム（備考欄あり）。問い合わせではないので送らない
+  if (p === "/mailmag") return post ? done("mailmag") : send(page("メルマガ配信登録", `<h1>メルマガ配信登録</h1><form method="post"><p>会社名<input name="co"></p><p>お名前<input name="nm"></p><p>メールアドレス<input name="em"></p><p>備考<textarea name="note"></textarea></p><button type="submit">登録する</button></form>`));
   if (p === "/search") { hit("search", Object.fromEntries(url.searchParams)); return send(page("検索", "<p>検索結果</p>")); }
   send("not found", 404);
 });
@@ -407,14 +453,14 @@ try {
     ...["ajaxa", "ajaxb", "ajaxc", "stepconf", "ovl", "twota", "nf", "nf2", "hang", "quiz"].map((k): [string, string, string] => [k, `/${k}`, ""]),
     ...["gform", "numtel", "pick", "unk", "numerr", "capterr", "refusechk", "rcta"].map((k): [string, string, string] => [k, `/${k}`, ""]),
     ["refusechk2", "/refusechk", ""],
-    ...["lenlim", "nourl", "nourlspam", "cf7prob", "modal", "confkeep", "waitchk", "getecho", "cmtonly", "smtpfail", "spiral", "oldform"].map((k): [string, string, string] => [k, `/${k}`, ""])];
+    ...["lenlim", "nourl", "nourlspam", "cf7prob", "modal", "confkeep", "waitchk", "getecho", "cmtonly", "smtpfail", "spiral", "oldform", "blogpost", "mfp", "inpage", "spaced", "cf7state", "nothing", "resetreload", "http500ok", "privlink", "basercms", "mathcap", "reserve", "foreign", "fadein", "mailmag"].map((k): [string, string, string] => [k, `/${k}`, ""])];
   // 文字数・URL の制限を試すサイトには、長くて URL の入った本文を送る（先頭の名乗りと最後の署名は残ること）
   const LONG = ["株式会社テスト 御中", "はじめまして。サンプル商事の山田です。", "中略の説明です。".repeat(30), "詳しい資料はこちらです。\nhttps://example.com/doc", "山田 太郎\nsales@example.com"].join("\n\n");
   // フォームの探し方の型（4周目）。サイトのURLを丸ごと指定するものと、社名を渡すもの
   const pp = port;
   cases.push(["moved", "", "/moved"], ["moved2", "", "/moved2"], ["extlink", "", "/extlink"], ["top2", "", "/top2"], ["imgtop", "", "/imgtop"],
     ["dead", "", "http://nx-apoboost-test.invalid/"], ["d404", "", `http://d404.localhost:${pp}/old/index.html`]);
-  const companyOf: Record<string, string> = { moved2: "サンプル工業株式会社" };
+  const companyOf: Record<string, string> = { moved2: "サンプル工業株式会社", foreign: "テスト商事株式会社" };
   for (const [k, formPath, sitePath] of cases) {
     n++;
     if (only && !only.includes(k)) continue;
@@ -439,6 +485,7 @@ try {
 }
 
 const sentOnce = (k: string, why: string) => { assert.equal(out[k].status, "sent", `${k}: ${why} → ${out[k].detail}\n${out[k].log.join("\n")}`); assert.equal(got[k]?.length, 1, `${k}: 送信は1回だけ（${got[k]?.length ?? 0}回）`); };
+const sentAs = (k: string, g: string, why: string) => { assert.equal(out[k].status, "sent", `${k}: ${why} → ${out[k].detail}\n${out[k].log.join("\n")}`); assert.equal(got[g]?.length, 1, `${k}: 送信は1回だけ（${got[g]?.length ?? 0}回）`); };
 if (!only) {
 sentOnce("kome", "※ を必須の印として読む"); assert.equal(got.kome[0].tel, "03-1234-5678");
 assert.ok(!out.kome.log.some((l) => l.includes("電話は任意")), "kome: 最初から電話番号を入れる");
@@ -529,7 +576,8 @@ if (has("nf2")) {
   assert.equal(got.nf2?.length, 1, `nf2: 送信は1回だけ（${got.nf2?.length ?? 0}回）`);
 }
 if (has("hang")) {
-  assert.equal(out.hang.status, "failed"); assert.ok(out.hang.detail.startsWith("送信後の判定不能"), `hang: ${out.hang.detail}`); noRetry("hang");
+  // 押すとページの中で固まり、何も送られない。入力内容を含む通信が1つも出ていないので「送られていない（再試行してよい）」と確定できる
+  assert.equal(out.hang.status, "failed"); assert.ok(/送られていません/.test(out.hang.detail), `hang: ${out.hang.detail}`); assert.equal(got.hang, undefined, "hang: 実際に何も届いていない");
 }
 
 if (has("quiz")) { assert.equal(out.quiz.status, "skip_captcha", `quiz: ${out.quiz.detail}`); assert.equal(got.quiz, undefined, "quiz: 送信しない"); }
@@ -568,12 +616,12 @@ if (has("confkeep")) sentOnce("confkeep", "入力欄が残ったままの確認�
 if (has("waitchk")) sentOnce("waitchk", "「送信前にもう少しお待ちください」で待ってから押し直す");
 if (has("getecho")) sentOnce("getecho", "入力内容がアドレス欄に付いて読み直されただけなら、待って入れ直す");
 if (has("cmtonly")) { assert.equal(got.comment, undefined, `cmtonly: ブログのコメント欄に書き込まない → ${out.cmtonly.detail}`); assert.equal(out.cmtonly.status, "skip_no_form", `cmtonly: ${out.cmtonly.detail}`); }
+if (has("blogpost")) { assert.equal(got.blogcomment, undefined, `blogpost: ブログのコメント欄に書き込まない → ${out.blogpost.detail}\n${out.blogpost.log.join("\n")}`); sentAs("blogpost", "blogcontact", "コメント欄ではなく、本文欄の name が comment の問い合わせフォームに送る"); }
 if (has("oldform")) sentOnce("oldform", "リストのフォームURLにフォームが無ければ、そのページのリンクから探す（落ちない）");
 if (has("spiral")) sentOnce("spiral", "入力内容を表で見せる確認画面で、最後の「送信」を押す");
 if (has("smtpfail")) { assert.equal(out.smtpfail.status, "failed"); assert.ok(out.smtpfail.detail.startsWith("サイト側"), `smtpfail: ${out.smtpfail.detail}`); }
 
 // ---- 4周目（フォームの探し方）----
-const sentAs = (k: string, g: string, why: string) => { assert.equal(out[k].status, "sent", `${k}: ${why} → ${out[k].detail}\n${out[k].log.join("\n")}`); assert.equal(got[g]?.length, 1, `${k}: 送信は1回だけ（${got[g]?.length ?? 0}回）`); };
 if (has("moved")) { assert.equal(got.fxspam, undefined, `moved: 別の業者のサイトのフォームに送らない → ${out.moved.detail}`); assert.ok(out.moved.detail.includes("会社のサイトではない"), `moved: ${out.moved.detail}`); }
 if (has("moved2")) sentAs("moved2", "newhome", "社名が載っている引っ越し先のサイトでは送る");
 if (has("extlink")) { assert.equal(got.prsvc, undefined, `extlink: 別の会社（掲載サービス）のフォームに送らない → ${out.extlink.detail}`); assert.notEqual(out.extlink.status, "sent"); }
@@ -581,6 +629,22 @@ if (has("top2")) sentAs("top2", "stage2", "案内ページの先の本物のフ�
 if (has("imgtop")) sentAs("imgtop", "imglink", "画像だけのリンクの alt から問い合わせページを見つける");
 if (has("dead")) { assert.equal(out.dead.status, "skip_no_form"); assert.ok(out.dead.detail.startsWith("サイトにアクセスできない"), `dead: ${out.dead.detail}`); }
 if (has("d404")) sentOnce("d404", "奥のページが消えていたらトップから探す");
+
+// ---- 5周目 ----
+if (has("mfp")) sentOnce("mfp", "Mail Form Pro の確認窓（フォームの外）の「送信する」を押す");
+if (has("inpage")) sentOnce("inpage", "同じページの中の確認表示で、入れ直さずに「送信」を押す");
+if (has("spaced")) { sentOnce("spaced", "字間に空白のあるボタン名を読む"); assert.equal(got.spaced_back, undefined, "spaced: 「戻 る」を押さない"); }
+if (has("cf7state")) sentOnce("cf7state", "Contact Form 7 の状態（sent）で送信済みと分かる");
+if (has("nothing")) { assert.equal(out.nothing.status, "failed"); assert.ok(out.nothing.detail.startsWith("送れていません"), `nothing: ${out.nothing.detail}`); assert.equal(got.nothing, undefined); }
+if (has("resetreload")) { assert.equal(got.resetreload?.length, 1, `resetreload: 二度送らない（${got.resetreload?.length}回）\n${out.resetreload.log.join("\n")}`); assert.ok(out.resetreload.detail.startsWith("送信後の判定不能"), `resetreload: ${out.resetreload.detail}`); }
+if (has("http500ok")) { assert.equal(out.http500ok.status, "sent", `http500ok: ${out.http500ok.detail}`); assert.equal(got.http500ok?.length, 1); }
+if (has("privlink")) { sentOnce("privlink", "同意欄の中のリンクを押さずにチェックする"); assert.equal(got.privacy2, undefined, "privlink: ポリシーのページへ移らない"); }
+if (has("basercms")) { sentOnce("basercms", "data[MailMessage][…] の内側の名前で判定する"); assert.equal(got.basercms[0]["data[MailMessage][name_1]"], "山田 太郎", "basercms: 名前欄に名前"); }
+if (has("mathcap")) { assert.equal(out.mathcap.status, "skip_captcha", `mathcap: ${out.mathcap.detail}`); assert.equal(got.mathcap, undefined); }
+if (has("reserve")) { assert.equal(got.reserve, undefined, `reserve: 来店予約に送らない → ${out.reserve.detail}`); assert.equal(out.reserve.status, "skip_no_form"); }
+if (has("fadein")) sentOnce("fadein", "スクロールで現れるフォームを、スクロールして待ってから見つける");
+if (has("mailmag")) { assert.equal(got.mailmag, undefined, `mailmag: メルマガ登録に送らない → ${out.mailmag.detail}`); assert.notEqual(out.mailmag.status, "sent"); }
+if (has("foreign")) { assert.equal(got.foreign, undefined, `foreign: ${out.foreign.detail}`); assert.equal(out.foreign.status, "skip_no_form"); }
 
 console.log("todo: ALL OK");
 process.exit(0);

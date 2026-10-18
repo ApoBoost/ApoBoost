@@ -72,12 +72,20 @@ export const CAPTCHA_SELECTORS = [
   "img[src*='captcha']",
   "input[name*='captcha' i]",
   "input[name*='securimage' i]",
+  ".pera1-captcha-wrap", // ペライチ独自の「私はロボットではありません」
+];
+/** 見えない要素でも、あれば人の確認が要るしるし。Cloudflare Turnstile は応答欄が隠し欄で、iframe も shadow DOM の中にあって見えない。
+ *  Shopify の問い合わせフォームは送信時に hCaptcha の確認が出る（Windows の利用先で18件が送れていなかった） */
+export const CAPTCHA_HIDDEN_MARKERS = [
+  "input[name='cf-turnstile-response']",
+  "form input[name='form_type'][value='contact']",
 ];
 
 /** 目に見える（=人の操作を要求する）CAPTCHAがあるか。reCAPTCHA v3 / invisible は送信者に負担が無いので許容 */
 export const CAPTCHA_CHECK_SCRIPT = `
 (() => {
   const sels = ${JSON.stringify(CAPTCHA_SELECTORS)};
+  for (const s of ${JSON.stringify(CAPTCHA_HIDDEN_MARKERS)}) if (document.querySelector(s)) return s;
   for (const s of sels) {
     for (const el of document.querySelectorAll(s)) {
       const r = el.getBoundingClientRect();

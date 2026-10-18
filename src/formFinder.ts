@@ -1,9 +1,10 @@
 // 問い合わせフォームのページを見つける。DBのフォームURL → 企業URL内のリンク → よくあるパス の順。
 import type { Page } from "playwright";
+import { COMMENT_FORM_JS } from "./formFiller.js";
 
 // 表記ゆれ対応（#3）: 送り仮名違い・英語・ローマ字・「メールフォーム」等も拾う
 const CONTACT_LINK_RE = /(お問い?合わ?せ|お問合せ|お問い合せ|問い?合わ?せ|問合せ|問い合せ|ご相談|ご依頼|ご意見|ご質問|お見積|見積り?依頼|資料請求|メールフォーム|申し?込み?フォーム|contact|inquiry|inquire|enquiry|toiawase|otoiawase|soudan|mail-?form|mailform|form)/i;
-const NEGATIVE_LINK_RE = /(採用|recruit|entry|求人|新卒|中途|faq|よくある|privacy|プライバシー|sitemap|login|ログイン|mypage|cart|カート|会員|member|ir\/|press|取材)/i;
+const NEGATIVE_LINK_RE = /(apply|応募|contest|コンテスト|subscribe|newsletter|メルマガ|catalog|カタログ|採用|recruit|entry|求人|新卒|中途|faq|よくある|privacy|プライバシー|sitemap|login|ログイン|mypage|cart|カート|会員|member|ir\/|press|取材)/i;
 const COMMON_PATHS = [
   "/contact/", "/contact", "/contact.html", "/contact.php", "/contact.cgi", "/contact/index.html", "/contact/index.php",
   "/inquiry/", "/inquiry", "/inquiry.html", "/inquiry.php", "/inquiry/index.html", "/enquiry/",
@@ -17,7 +18,8 @@ const COMMON_PATHS = [
 // 本体のHTMLだけを見ると「フォーム無し」に見える
 const FORM_SERVICE_RE: [string, RegExp][] = [
   ["Googleフォーム", /docs\.google\.com\/forms|forms\.gle/i],
-  ["formrun", /formrun\.(app|io)/i],
+  ["formrun", /formrun\.(app|io)|(^|\/\/)form\.run\//i],
+  ["SmoothContact", /smoothcontact\.jp/i],
   ["HubSpot", /(hsforms\.(net|com)|js\.hs-scripts\.com|hubspot)/i],
   ["Typeform", /typeform\.com/i],
   ["formzu", /formzu\.(com|net|jp)/i],
@@ -27,14 +29,23 @@ const FORM_SERVICE_RE: [string, RegExp][] = [
   ["Zoho", /zohopublic|forms\.zohopublic/i],
   ["SurveyMonkey", /surveymonkey/i],
   ["kintone", /kintoneapp\.com|form\.kintone/i],
-  ["Shopify/Wix等のフォーム", /wix\.com\/form|shopify.*contact/i],
+  ["Wixのフォーム", /wix\.com\/form/i],
 ];
+
+/** フォームサービスの URL か（ホストとパスだけを見る。ログイン画面は除く） */
+export function serviceUrl(u: string): [string, RegExp] | undefined {
+  let hp = u;
+  try { const x = new URL(u); hp = x.host + x.pathname; } catch { /* そのまま */ }
+  if (/(^|\.)accounts\.google\.com|ServiceLogin|\/signin|\/login/i.test(hp)) return undefined;
+  return FORM_SERVICE_RE.find(([, re]) => re.test(hp));
+}
 
 /** 外部フォームサービスが埋め込まれていれば、その名前と（あれば）フレームのURLを返す */
 export async function detectFormService(page: Page): Promise<{ name: string; frameUrl: string } | null> {
   for (const fr of page.frames()) {
     const u = fr.url() || "";
-    const hit = FORM_SERVICE_RE.find(([, re]) => re.test(u));
+    if (/conversations|chat|messages-iframe/i.test(u)) continue; // HubSpot 等のチャット窓（フォームと読んで入力していた）
+    const hit = serviceUrl(u);
     if (hit) return { name: hit[0], frameUrl: u };
   }
   const html = await page.evaluate(() => {
@@ -49,7 +60,9 @@ export async function detectFormService(page: Page): Promise<{ name: string; fra
 
 export const HAS_FORM_SCRIPT = `
 (() => {
-  const forms = Array.from(document.querySelectorAll('form'));
+  ${COMMENT_FORM_JS}
+  // ブログのコメント欄は問い合わせフォームではない（ここで「ある」としていたので、記事ページで探すのをやめていた）
+  const forms = Array.from(document.querySelectorAll('form')).filter((f) => !isCommentForm(f));
   const isVisible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   for (const f of forms) {
     const ta = f.querySelector('textarea');
@@ -63,7 +76,7 @@ export const HAS_FORM_SCRIPT = `
     if (vis.length >= 3 && hasMail && btn && !/search|検索|login|ログイン|newsletter|メルマガ/i.test(f.outerHTML.slice(0, 2000))) return true;
   }
   // formタグ無しでもtextarea + 送信ボタンがあれば（SPA系）
-  const ta = document.querySelector('textarea');
+  const ta = Array.from(document.querySelectorAll('textarea')).find((t) => !isCommentForm(t));
   if (ta && isVisible(ta)) {
     const btn = Array.from(document.querySelectorAll('button, input[type=submit]')).find(b => /送信|確認|submit|send|次へ/i.test((b.innerText || b.value || '')));
     if (btn) return true;
@@ -152,9 +165,11 @@ type FormPurpose = { url: string; title: string; heading: string; heads: string;
 // 求職者向けの入力欄。企業からの問い合わせでは聞かれない項目
 const JOBSEEKER_FIELD_RE = /(生年月日|年齢|性別|希望(職種|勤務地|給与|時給|月給|年収|勤務|業種|エリア|の働き方)|最寄(り)?駅|履歴書|職務経歴|職歴|保有資格|資格|学歴|就業(状況|形態|中)|現在の(職業|状況|お仕事)|雇用形態|勤務可能|扶養|国籍|在留|志望(動機)?|経験(職種|年数)|勤務開始)/g;
 // 登録・応募を表す言葉（見出し・URL・ボタン）
-const REGISTER_RE = /(人材登録|スタッフ登録|派遣登録|登録スタッフ|求職|お仕事(を)?(お)?(探|さが)し|仕事(を)?(お)?(探|さが)し|お仕事情報|登録フォーム|仮登録|本登録|web登録|エントリー|ご応募|応募(フォーム|する|はこちら|受付)|求人(へ|に)?(の)?応募|採用(エントリー|応募|フォーム|へのお問い?合わ?せ)|会員登録|新規登録|アカウント(登録|作成)|登録説明会|キャリア(相談|登録)|転職(相談|支援|サポート)|マイページ|entry|regist|recruit|jobseeker|signup|sign-up|apply)/i;
+const REGISTER_RE = /(人材登録|スタッフ登録|派遣登録|登録スタッフ|求職|お仕事(を)?(お)?(探|さが)し|仕事(を)?(お)?(探|さが)し|お仕事情報|登録フォーム|仮登録|本登録|web登録|エントリー|ご応募|応募(フォーム|する|はこちら|受付)|求人(へ|に)?(の)?応募|採用(エントリー|応募|フォーム|へのお問い?合わ?せ)|会員登録|新規登録|アカウント(登録|作成)|登録説明会|キャリア(相談|登録)|転職(相談|支援|サポート)|マイページ|entry|regist|recruit|jobseeker|signup|sign-up|apply|メルマガ|メールマガジン|配信登録|購読|subscribe|newsletter|subscription)/i;
 // 「求職者向け」と断定できる言葉。「お問い合わせ」と並んでいても、こちらを優先する（「求職者の方のお問い合わせ」等）
 const JOBSEEKER_RE = /(求職者|お仕事(を)?(お)?(探|さが)し|仕事(を)?(お)?(探|さが)しの方|スタッフ登録|人材登録|派遣登録|働きたい方|転職をお考え|お仕事をご希望)/;
+// 問い合わせではない申込（予約・セミナー・カタログ・サンプル・物件）
+const RESERVE_RE = /(来店予約|ご来店の?予約|予約フォーム|ご予約(フォーム|内容|希望日|日時)|予約する|見学(予約|のお申し?込み)|セミナー(の)?(申込|お申し?込み|参加)|カタログ(請求|のご請求|申込|のお申し?込み)|サンプル(請求|のご請求|申込|のお申し?込み)|物件(へ|について|に関する)?の?お問い?合わ?せ)/;
 // 企業向け・問い合わせを表す言葉
 const INQUIRY_RE = /(お問い?合わ?せ|お問合せ|問合せ|問い合せ|inquiry|contact|toiawase|ご相談|ご質問|ご依頼|お見積|見積)/i;
 const CORPORATE_RE = /(企業(の|ご)?(方|様|担当|向け)|法人(の|ご)?(方|様|向け)|採用(ご)?担当|人材(を)?(お)?探し|ご利用(企業|法人)|発注|お取引|求人(を)?(ご)?掲載|求人(の)?ご依頼|スタッフ(を)?(お)?探し)/;
@@ -183,6 +198,9 @@ export async function nonInquiryReason(page: Page): Promise<string | null> {
   // 2) 見出し・URLが「求職者向け」と言っていて、企業向けの言葉が無い
   const js = JOBSEEKER_RE.exec(around) ?? JOBSEEKER_RE.exec(path);
   if (js && !CORPORATE_RE.test(around)) return `求職者向けのページ（「${js[0]}」）`;
+  // 2.5) 予約・セミナー・カタログ・サンプル・物件の申込フォーム（来店予約・物件の問い合わせに営業文を送っていた）
+  const rs = RESERVE_RE.exec(`${info.heading} ${info.btns} ${info.title}`);
+  if (rs && !/(一般|総合|その他|企業|法人)の?お問い?合わ?せ/.test(around)) return `予約・申込のフォーム（「${rs[0]}」）`;
   // 3) 登録・応募の言葉があり、問い合わせの言葉が無い
   const rg = REGISTER_RE.exec(around) ?? REGISTER_RE.exec(path);
   if (rg && !INQUIRY_RE.test(context) && !CORPORATE_RE.test(around)) return `登録・応募フォーム（「${rg[0]}」）`;
@@ -203,7 +221,7 @@ export async function pageHasContactForm(page: Page): Promise<boolean> {
   if (await scanFrames(page)) return true;
   // 外部フォームサービスを iframe で埋め込んでいるページ（#4）。
   // 中身を読み取れないことがあるが、このURLが入っている時点で入力フォームとみなしてよい
-  if (page.frames().some((fr) => FORM_SERVICE_RE.some(([, re]) => re.test(fr.url() || "")))) return true;
+  if (page.frames().some((fr) => serviceUrl(fr.url() || ""))) return true;
   // JSで後から描画されるフォーム: 少し待って再スキャン
   for (let i = 0; i < 2; i++) {
     await page.waitForTimeout(1000);
@@ -227,7 +245,7 @@ export async function pageHasContactForm(page: Page): Promise<boolean> {
     await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
     await page.waitForTimeout(800);
     if (await scanFrames(page)) return true;
-    if (page.frames().some((fr) => FORM_SERVICE_RE.some(([, re]) => re.test(fr.url() || "")))) return true;
+    if (page.frames().some((fr) => serviceUrl(fr.url() || ""))) return true;
   } catch {
     /* 遷移中・閉じたページ等は無視 */
   }
@@ -383,9 +401,9 @@ export function siteKeyOf(urlOrHost: string): string {
   if (parts.length >= 3 && SLD_RE.test(parts[parts.length - 2]) && parts[parts.length - 1].length === 2) return parts[parts.length - 3];
   return parts.length >= 2 ? parts[parts.length - 2] : host;
 }
-const isFormService = (u: string) => FORM_SERVICE_RE.some(([, re]) => re.test(u));
+const isFormService = (u: string) => !!serviceUrl(u);
 /** 社名から法人格・空白を除いて比べやすくする */
-const coreName = (s: string) => s.normalize("NFKC").toLowerCase()
+export const coreName = (s: string) => s.normalize("NFKC").toLowerCase()
   .replace(/(株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|一般財団法人|社団法人|医療法人(社団)?|社会福祉法人|学校法人|特定非営利活動法人|npo法人|\(株\)|\(有\)|㈱|㈲|co\.?,?\s*ltd\.?|inc\.?|corp(oration)?\.?)/g, "")
   .replace(/[\s・,.、。'"’]/g, "");
 
@@ -468,6 +486,9 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
     return false;
   };
   const pickContactLinks = (links: Link[], n: number) => links
+    .map((l) => ({ ...l, href: l.href.split("#")[0] }))
+    // 同じページへのアンカー（/#contact 等）・調べ済みのページ・重複を外す（5枠が埋まって、本物のフォームへのリンクが選ばれなかった）
+    .filter((l, i, a) => a.findIndex((x) => x.href === l.href) === i && keyOf(l.href) !== keyOf(page.url()) && !examined.has(keyOf(l.href)))
     .filter((l) => l.href.startsWith("http") && allowedUrl(l.href) && !NEGATIVE_LINK_RE.test(l.href + " " + l.text))
     .filter((l) => CONTACT_LINK_RE.test(l.text) || CONTACT_LINK_RE.test(l.href))
     .sort((a, b) => score(b) - score(a))

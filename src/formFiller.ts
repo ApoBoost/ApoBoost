@@ -88,6 +88,21 @@ export function classify(f: FieldInfo): Category {
 }
 
 // ページ内の入力項目を収集し、各要素に data-fo-idx を振る
+/** ブログのコメント欄か（ページの中で動かす文字列。COLLECT_SCRIPT と formFinder の HAS_FORM_SCRIPT で使う）。
+ *  コメント欄に書き込むと営業文が公開のコメントとして載ってしまう（eco-station.jp＝WordPress・blog.livedoor.jp の実例）。
+ *  送り先・名前・入れ物に comment が入っているか、ボタンが「コメント」かで見分ける。
+ *  本文欄の name が comment なだけの問い合わせフォームはよくあるので、それだけでは決めない */
+export const COMMENT_FORM_JS = `const isCommentForm = (el) => {
+    if (el.closest('#comments, #respond, .comment-respond, .comment-form, #commentform, [id*="comment-form"], [class*="comment-form"], [id*="commentform"], [class*="commentform"], [class*="comments-area"]')) return true;
+    const f = el.closest('form');
+    if (!f) return false;
+    const sig = (f.getAttribute('action') || '') + ' ' + (f.id || '') + ' ' + (typeof f.className === 'string' ? f.className : '') + ' ' + (f.getAttribute('name') || '');
+    if (/comment|blogcms|trackback/i.test(sig)) return true;
+    const b = f.querySelectorAll('button, input[type=submit]');
+    for (let k = 0; k < b.length; k++) if (/コメント|comment/i.test((b[k].innerText || b[k].value || ''))) return true;
+    return false;
+  };`;
+
 const COLLECT_SCRIPT = `
 (() => {
   const isVisible = (el) => {
@@ -116,7 +131,7 @@ const COLLECT_SCRIPT = `
     if (docLeft < -1000 || docTop < -1000 || docLeft > document.documentElement.scrollWidth + 1000) return false;
     // 親が画面外・高さゼロで隠しているケース
     let p = el.parentElement; let hops = 0;
-    while (p && hops < 4) { const pr = p.getBoundingClientRect(); const ps = getComputedStyle(p); if (ps.display === 'none' || ps.visibility === 'hidden' || (pr.width === 0 && pr.height === 0 && ps.overflow === 'hidden') || (pr.left + window.scrollX) < -1000) return false; p = p.parentElement; hops++; }
+    while (p && hops < 4) { const pr = p.getBoundingClientRect(); const ps = getComputedStyle(p); if (ps.display === 'none' || ps.visibility === 'hidden' || ((pr.width <= 1 || pr.height <= 1) && ps.overflow === 'hidden') || /rect\\(0(px)?,? 0(px)?,? 0(px)?,? 0(px)?\\)/.test(ps.clip) || (pr.left + window.scrollX) < -1000) return false; p = p.parentElement; hops++; }
     if (el.type === 'radio' || el.type === 'checkbox') return r.width > 0 || r.height > 0;
     return r.width > 0 && r.height > 0;
   };
@@ -131,6 +146,11 @@ const COLLECT_SCRIPT = `
     if (el.getAttribute('aria-labelledby')) { el.getAttribute('aria-labelledby').split(/\\s+/).forEach((lid) => { const l = lid ? document.getElementById(lid) : null; if (l && (l.innerText || '').trim()) parts.push(l.innerText); }); }
     let prev = el.previousSibling; let hops = 0;
     while (prev && hops < 3) { const t = (prev.textContent || '').trim(); if (t) { if (t.length <= 12) parts.push(t); break; } prev = prev.previousSibling; hops++; }
+    // チェックボックス・ラジオは文字が後ろにあることが多い（同意欄が「同意」と分からず、チェックしていなかった: yellowtails の実例）
+    if ((el.type === 'checkbox' || el.type === 'radio') && !el.closest('label')) {
+      let next = el.nextSibling; let h2 = 0;
+      while (next && h2 < 3) { const t = (next.textContent || '').trim(); if (t) { if (t.length <= 30) parts.push(t); break; } next = next.nextSibling; h2++; }
+    }
     // labelに包まれていないカスタム選択肢（Jicoo等）: 選択肢の文字が親コンテナ側にあるので、短いテキストなら拾う
     if (!parts.length && (el.type === 'radio' || el.type === 'checkbox')) {
       let anc = el.parentElement;
@@ -198,6 +218,7 @@ const COLLECT_SCRIPT = `
   document.querySelectorAll('[data-fo-idx]').forEach((e) => e.removeAttribute('data-fo-idx'));
   // Array.from は使わない: 古い prototype.js を読み込むサイトは Array.from を書き換えていて、要素でないものが返り
   // 「el.getBoundingClientRect is not a function」で落ちていた（sow-net.com / asensa.co.jp の実例）
+  ${COMMENT_FORM_JS}
   const toArr = (list) => { const a = []; for (let k = 0; k < list.length; k++) a.push(list[k]); return a; };
   const forms = toArr(document.querySelectorAll('form'));
   const els = toArr(document.querySelectorAll('input, textarea, select'));
@@ -211,9 +232,10 @@ const COLLECT_SCRIPT = `
     if (/honeypot|honey_pot|hp_field|_hp\b|bot-?field|botcheck|nospam|do-?not-?fill|leave-?blank|website2|url2/.test(nm)) continue;
     // ブログのコメント欄（WordPress の #commentform など）は問い合わせではない。書き込むと営業文が公開のコメントとして載る
     // （eco-station.jp の実例: 「お問い合わせ」ページの下のコメント欄に送っていた）
-    if (el.closest('#commentform, #respond, .comment-respond, .comment-form, form[action*="wp-comments-post"]')) continue;
+    if (isCommentForm(el)) continue;
     el.setAttribute('data-fo-idx', String(i));
-    const own = [ownText(el), el.getAttribute('placeholder'), el.getAttribute('name'), el.id, el.getAttribute('autocomplete'), el.getAttribute('title')].filter(Boolean).join(' | ').replace(/\\s+/g, ' ').slice(0, 200);
+    // name が data[MailMessage][name_1] の形（baserCMS）は、いちばん内側だけで判定する（外側の Mail に当たって全欄をメールと読み、名前・電話にもメールアドレスを入れていた）
+    const own = [ownText(el), el.getAttribute('placeholder'), (el.getAttribute('name') || '').replace(/^.*\\[([^\\[\\]]+)\\]$/, '$1'), el.id, el.getAttribute('autocomplete'), el.getAttribute('title')].filter(Boolean).join(' | ').replace(/\\s+/g, ' ').slice(0, 200);
     const sig = own + ' || ' + labelText(el).replace(/\\s+/g, ' ').slice(0, 200);
     const required = el.required || el.getAttribute('aria-required') === 'true' || /必須|required|\\*/.test(labelText(el).slice(0, 60)) || /required|必須/i.test(String(el.className || '')) || reqMark(el);
     const options = el.tagName === 'SELECT' ? toArr(el.options).map(o => ({ value: o.value, text: (o.textContent || '').trim(), disabled: !!o.disabled })) : [];
@@ -253,7 +275,16 @@ const COLLECT_SCRIPT = `
 export async function hasHiddenTextarea(target: Page | Frame): Promise<boolean> {
   // reCAPTCHA / hCaptcha の隠し textarea（g-recaptcha-response / h-captcha-response）は本文欄ではない。
   // これを数えると本文欄の無いフォームを「段階式」と読み、埋めて「送信」を押していた
-  return timed(target.evaluate(() => Array.from(document.querySelectorAll("form textarea")).some((t) => { if (/(g-recaptcha-response|h-captcha-response)/i.test(`${t.getAttribute("name") || ""} ${t.id || ""} ${t.className || ""}`)) return false; const r = t.getBoundingClientRect(); return r.width === 0 || r.height === 0; }))).catch(() => false);
+  // 本文欄が段階の先にある、と読めるのは「見えている入力欄と同じフォームの中の、隠れた textarea」だけ。
+  // 「ほしい物リストを共有」などの隠れたフォームを段階式と読み、トップページで「次へ」を押していた
+  return timed(target.evaluate(() => Array.from(document.querySelectorAll("form textarea")).some((t) => {
+    if (/(g-recaptcha-response|h-captcha-response)/i.test(`${t.getAttribute("name") || ""} ${t.id || ""} ${t.className || ""}`)) return false;
+    const r = t.getBoundingClientRect();
+    if (!(r.width === 0 || r.height === 0)) return false;
+    const f = t.closest("form");
+    if (!f || /(share|wishlist|ほしい物|欲しいもの|お気に入り)/i.test((f.getAttribute("action") || "") + " " + (f.id || "") + " " + (typeof f.className === "string" ? f.className : "") + " " + ((f as HTMLElement).innerText || "").slice(0, 200))) return false;
+    return Array.from(f.querySelectorAll("input:not([type=hidden]):not([type=submit]):not([type=button])")).some((i) => { const q = i.getBoundingClientRect(); return q.width > 0 && q.height > 0; });
+  }))).catch(() => false);
 }
 
 /** ページ内の処理（evaluate）に時間制限をつける。時間切れは例外（"timeout: …"）にする。
@@ -442,7 +473,7 @@ function cutAtSentence(text: string, max: number): string {
 export function limitFromError(detail: string): number | null {
   const t = detail.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).replace(/[,，]/g, "");
   const zen = /全角\s*(\d{2,5})\s*(文字|字)/.exec(t);
-  const any = zen ?? /(\d{2,5})\s*(文字|字)\s*(以内|まで|以下|を超え|をこえ|未満)/.exec(t);
+  const any = zen ?? /(\d{2,5})\s*(文字|字)\s*[）)]?\s*(以内|まで|以下|を超え|をこえ|未満)/.exec(t);
   if (!any) return null;
   // 「半角1000文字以下」だけが書いてあれば、日本語（全角）はその半分しか入らない
   const n = !zen && /半角\s*\d/.test(t) ? Math.floor(Number(any[1]) / 2) : Number(any[1]);
@@ -451,7 +482,9 @@ export function limitFromError(detail: string): number | null {
 
 /** エラー文が「本文に URL を入れられない」と言っているか */
 export function urlBanned(detail: string): boolean {
-  return /(URL|ＵＲＬ|ｕｒｌ|リンク|https?)/i.test(detail) && /((でき|出来)ません|禁止|含め|入れないで|使用し?ないで|お控え)/.test(detail);
+  // 「URLは入力できません」「リンクの記述は認められていません」「内容にアドレスを含めることはできません」も（Windows の利用先で計8社）
+  return /(URL|ＵＲＬ|ｕｒｌ|リンク|https?|アドレス)/i.test(detail) && /((でき|出来)ません|禁止|含め|入れないで|使用し?ないで|お控え|認められ)/.test(detail)
+    && !/メールアドレス(を|が|は)?(正しく|入力|ご入力|確認)/.test(detail);
 }
 
 /** 本文から URL を外す。URL だけの行と、その直前の案内（「▼資料はこちら」等）も外す */
@@ -472,6 +505,11 @@ export function stripUrls(message: string): string {
 /** 入力エラー・拒否の文言に合わせて本文を作り直す。直す必要が無い（直せない）ときは null。
  *  short: キャンペーンに登録された「短い文面」（あれば、収まるときはそれを使う） */
 export function fitMessageToSite(message: string, detail: string, short = ""): { message: string; why: string } | null {
+  // 「機種依存文字は使用できません」「扱えない文字」: Shift_JIS に無い字（〜 U+301C など）を、見た目の同じ字に替える
+  if (/(機種依存|扱えない文字|使用できない文字|ご使用になれません)/.test(detail)) {
+    const fixed = message.replace(/〜/g, "～").replace(/−/g, "－").replace(/‐/g, "-").replace(/―/g, "－").replace(/[①-⑳]/g, (c) => `(${c.charCodeAt(0) - 0x245f})`).replace(/[\u{1F000}-\u{1FFFF}\u2600-\u27BF]/gu, "");
+    if (fixed !== message) return { message: fixed, why: "使えない文字を替えました" };
+  }
   const banned = urlBanned(detail) && /(https?:\/\/|www\.)/i.test(message);
   const limit = limitFromError(detail);
   const tooLong = limit !== null && formLength(message) > limit;
@@ -601,10 +639,27 @@ export async function fillFields(target: Page | Frame, fields: FieldInfo[], v: F
         await l.click({ timeout: 3000 }).catch(() => {});
         await l.press("ControlOrMeta+a").catch(() => {});
         await l.press("Delete").catch(() => {});
-        await l.pressSequentially(value, { delay: 5, timeout: 20000 });
+        // 長い文（本文 約870文字）を1文字ずつ打つと20秒の上限を超え、途中で切れた本文が残っていた（「…■ 資」で切れたまま）。
+        // 長い文は fill で入れてから、空白を1文字打って消し、キー入力のイベントだけを起こす
+        if (value.length > 120) {
+          await l.fill(value, { timeout: 8000 });
+          await l.press("End").catch(() => {});
+          await l.pressSequentially(" ", { delay: 5 });
+          await l.press("Backspace");
+        } else await l.pressSequentially(value, { delay: 5, timeout: 20000 });
         await l.evaluate((e) => (e as HTMLElement).blur()).catch(() => {});
       } else {
-        await loc(f).fill(value, { timeout: 4000 });
+        // パソコンが重いと4秒で終わらないことがあり、名前が空のまま送信済みになっていた会社がある（Windows の利用先で5社）
+        try { await loc(f).fill(value, { timeout: 4000 }); }
+        catch {
+          try { await loc(f).fill(value, { timeout: 15000 }); }
+          catch {
+            await loc(f).evaluate((e, v) => { const i = e as HTMLInputElement; i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); i.dispatchEvent(new Event("change", { bubbles: true })); }, value, { timeout: 5000 });
+            report.log.push(`fill を JS で入れ直し idx=${f.idx}`);
+          }
+        }
+        // 入ったか確かめる（読めない種類の欄は確かめない）
+        if ((await loc(f).inputValue({ timeout: 3000 }).catch(() => null)) === "") throw new Error("値が入っていない");
       }
       return true;
     } catch (e) {
@@ -839,7 +894,8 @@ export async function fillAriaChoices(target: Page | Frame, log: string[], opts:
       // チェックボックスの設問（同じ listitem の中の role=checkbox をひとまとまりとみなす）
       const seen = new Set<Element>();
       document.querySelectorAll('[role="checkbox"]').forEach((cb) => {
-        const box = cb.closest('[role="list"], [role="group"], [role="listitem"], fieldset');
+        // Googleフォームは選択肢1つずつを role=listitem で包むので、先に選択肢をまとめた role=list を探す（listitem に先に当たり、必須の設問を飛ばしていた）
+        const box = cb.closest('[role="list"]') ?? cb.closest('[role="group"], fieldset') ?? cb.closest('[role="listitem"]');
         if (!box || seen.has(box)) return;
         seen.add(box);
         const opts = Array.from(box.querySelectorAll('[role="checkbox"]')).filter(vis);
@@ -916,6 +972,16 @@ export async function clickBackButton(target: Page | Frame, page: Page): Promise
 
 /** チェックボックス／ラジオを確実にONにする（カスタムデザインで本体が隠れている場合はラベルクリック→JS） */
 async function ensureChecked(target: Page | Frame, f: FieldInfo): Promise<boolean> {
+  const r = await ensureCheckedInner(target, f);
+  // ラベルの中の「プライバシーポリシー」のリンクに当たって、ページが移っていたら戻る（weroll・eff 等の実例: 最後の URL がポリシーのページ）
+  const page = "page" in target ? target.page() : target;
+  if (await target.locator(`[data-fo-idx="${f.idx}"]`).count().catch(() => 0) === 0) {
+    await page.goBack({ waitUntil: "domcontentloaded", timeout: 10000 }).catch(() => {});
+    return false;
+  }
+  return r;
+}
+async function ensureCheckedInner(target: Page | Frame, f: FieldInfo): Promise<boolean> {
   const el = target.locator(`[data-fo-idx="${f.idx}"]`).first();
   const isOn = () => el.evaluate((e) => (e as HTMLInputElement).checked).catch(() => false);
   // まず label / label[for] の実クリック（React系はこれでないと状態が更新されない）
@@ -929,7 +995,8 @@ async function ensureChecked(target: Page | Frame, f: FieldInfo): Promise<boolea
       let a: Element = e;
       for (let p = e.parentElement, i = 0; i < 3 && p; i++, p = p.parentElement) {
         const r = p.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0) { a = p; break; }
+        // リンクを含む箱（「<a>プライバシーポリシー</a>に同意する」）の真ん中を押すとリンクに当たるので使わない
+        if (r.width > 0 && r.height > 0 && !p.querySelector("a[href]")) { a = p; break; }
       }
       return a;
     });
@@ -1137,9 +1204,9 @@ const NEXT_ONLY_RE = /(次へ|進む|すすむ|next)/i;
 // 「内容を確認して送信」のように文末が送信のものは送信ボタンのまま
 const CONFIRM_END_RE = /(確認(する|します|画面へ|画面に進む|へ進む|へ)?|confirm)[\s>＞»→▶]*$/i;
 // 押したあとに出る確認画面の文言（ボタン名で見分けられなかったときの保険）
-const CONFIRM_PAGE_RE = /(下記の?内容で送信|以下の内容で送信|下記の内容でよろしければ|以下の内容でよろしければ|入力内容(を|の)?(ご)?確認|内容を(ご)?確認(の(上|うえ)|下さい|ください)|[「『]送信(する)?[」』]\s*(ボタン)?を(押|クリック)|送信内容(を|の)(ご)?確認|よくご確認(ください|下さい))/;
+const CONFIRM_PAGE_RE = /(下記の?内容で送信|以下の内容で送信|下記の内容でよろしければ|以下の内容でよろしければ|入力内容(を|の)?(ご)?確認|内容を(ご)?確認(の(上|うえ)|下さい|ください)|[「『]送信(する)?[」』]\s*(ボタン)?を(押|クリック)|送信内容(を|の)(ご)?確認|よくご確認(ください|下さい)|(間違い|誤り)(が)?(ない|無い)か(を)?(ご)?確認)/;
 // ページ内ポップアップの確認文言（入力欄は後ろに残ったままなので「フォームが消えた」判定とは別に見る）
-const CONFIRM_MODAL_RE = /(送信|この内容で|以下の内容で|下記の内容で|お問い?合わ?せ).{0,25}(よろしいですか|よろしいでしょうか)/;
+const CONFIRM_MODAL_RE = /(送信|この内容で|以下の内容で|下記の内容で|お問い?合わ?せ).{0,25}(よろしいですか|よろしいでしょうか)|(送信|送付)(しますか|して(も)?よろしいですか)/;
 
 const BUTTONS_SCRIPT = `
 (() => {
@@ -1185,7 +1252,10 @@ const BUTTONS_SCRIPT = `
     let hint = '';
     if (tag === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'image') hint = ((el.getAttribute('src') || '').split('/').pop() || '') + ' ' + (el.getAttribute('name') || '') + ' ' + (el.id || '');
     const cls = typeof el.className === 'string' ? el.className : ''; // SVG は className が文字列でない（.trim で落ちていた: tokyu-bs.co.jp の実例）
-    const text = String(el.innerText || el.value || el.getAttribute('alt') || alt || el.getAttribute('aria-label') || el.getAttribute('title') || hint || cls || '').trim().replace(/\\s+/g,' ').slice(0, 60);
+    // 字間の空白（「送　信」「確 認」「戻 る」）は詰める。詰めないと送信・戻るのどちらとも読めず、確認ボタンを送信として押したり、
+    // 最後の submit 型＝「戻る」を押したりしていた（確認画面で止まったまま送信済みと記録された会社が6社）。
+    // 表示文字の無いボタン（Mail Form Pro の id="button_mfp_goconfirm"）は id と name を手がかりにする
+    const text = String(el.innerText || el.value || el.getAttribute('alt') || alt || el.getAttribute('aria-label') || el.getAttribute('title') || hint || el.id || el.getAttribute('name') || cls || '').trim().replace(/\\s+/g,' ').replace(/([^\\x00-\\x7f]) (?=[^\\x00-\\x7f])/g, '$1').replace(/　/g, '').slice(0, 60);
     // ただのリンク（class も onclick も無い <a>）は、短い文言で、ページを移らないもの（# / javascript: / フォームの中）だけをボタン候補にする
     if (tag === 'A' && !el.getAttribute('role') && !el.getAttribute('onclick') && !/btn|button|submit/i.test(cls + ' ' + (el.id || ''))) {
       const href = (el.getAttribute('href') || '').trim();
@@ -1226,7 +1296,8 @@ const BUTTONS_SCRIPT = `
     if (!search && el.closest('[role=search]')) search = true;
     el.setAttribute('data-fo-btn', String(i));
     // ページ内ポップアップ（確認ダイアログ等）の中のボタンか。明示的なダイアログ要素か、画面に固定表示された重なり（position:fixed で z-index が高い）の中
-    let inDialog = !!el.closest('dialog[open],[role=dialog],[role=alertdialog],[aria-modal=true],[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],[class*="popup"],[class*="lightbox"]') || (!!topLayer && topLayer.contains(el));
+    // Mail Form Pro の確認窓（#mfp_overlay・position:absolute）も。送信ボタンがフォームの外にあり、後ろの「確認画面へ」を押し続けていた（23社）
+    let inDialog = !!el.closest('dialog[open],[role=dialog],[role=alertdialog],[aria-modal=true],[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],[class*="popup"],[class*="lightbox"],#mfp_overlay,[id*="overlay"],[class*="overlay"]') || (!!topLayer && topLayer.contains(el));
     // 固定表示のヘッダー・追従する案内ボタン（「お申し込み」等の実URLの <a>）はポップアップではない
     const fixedOk = !inChrome('header, nav, [class*="header"], [id*="header"]') && !leavesReal;
     for (let a = el.parentElement; fixedOk && !inDialog && a && a !== document.body; a = a.parentElement) {
@@ -1237,6 +1308,8 @@ const BUTTONS_SCRIPT = `
         else inDialog = true;
       }
     }
+    // パンくず・ヘッダー・ナビ（「お問い合わせ内容確認」のパンくず、「お申込み」のメニュー）は、ポップアップの中でなければ押さない
+    if (!inDialog && !form && el.closest('[class*="breadcrumb"],[class*="pankuzu"],[class*="topicpath"],header,nav')) { el.removeAttribute('data-fo-btn'); continue; }
     out.push({ idx: i, text, type: (el.getAttribute('type') || tag).toLowerCase(), inForm: !!form, disabled: !!el.disabled, inDialog, search, near: !!scope && scope.contains(el), leaves });
     i++;
   }
@@ -1254,7 +1327,7 @@ export async function allSubmitButtonsDisabled(target: Page | Frame): Promise<bo
       const cands = Array.from(document.querySelectorAll("button, input[type=submit]")).filter((el) => {
         const r = el.getBoundingClientRect();
         if (r.width === 0 || r.height === 0) return false;
-        const text = ((el as HTMLElement).innerText || (el as HTMLInputElement).value || "").trim();
+        const text = ((el as HTMLElement).innerText || (el as HTMLInputElement).value || "").trim().replace(/[\s　]+/g, "");
         if (backRe.test(text)) return false;
         return (el.getAttribute("type") || "").toLowerCase() === "submit" || submitRe.test(text);
       });
@@ -1372,8 +1445,9 @@ export async function clickNextButton(target: Page | Frame, page: Page, log: str
         await timed(target.locator(`[data-fo-btn="${target_.idx}"]`).first().evaluate((el: Element) => {
           const b = el as HTMLButtonElement;
           const t = (b.getAttribute("type") || (b.tagName === "BUTTON" ? "submit" : "")).toLowerCase();
-          if (b.form && (t === "submit" || t === "image")) { if (b.form.requestSubmit) { try { b.form.requestSubmit(b); } catch (err) { b.form.requestSubmit(); } } else b.form.submit(); }
-          else b.click();
+          // 以前は submit 型ならフォームを直接送っていたが、ボタンに付いた JS（トークン・reCAPTCHA の処理・確認窓）が動かず
+          // 「不正」と弾かれたり、素の送信で読み直されたりしていた。ボタン自身のクリックを起こす
+          void t; b.click();
         }), 5000, "送信");
       } catch {}
     }
@@ -1400,7 +1474,7 @@ export async function clickNextButton(target: Page | Frame, page: Page, log: str
 // ---- 結果判定 ----
 // 「お問い合わせいただきありがとうございます。担当者より、追ってご連絡いたします。」（aidas.co.jp の実例）のように
 // 「〜いただき／頂きありがとう」「担当者より追ってご連絡」の形を知らず判定不能→失敗扱いになっていたため追加
-const SUCCESS_RE = /((お問い?合わ?せ|ご連絡|ご送信|送信|ご応募|ご依頼|ご相談|ご登録|お申し?込み)(を)?(いただき|頂き)(まして)?[、,]?(誠に|大変|本当に)?(ありがとう|有難う|有り難う)|(担当(者)?|スタッフ|係)(より|から)[、,]?(追って|改めて|折り返し|後ほど|のちほど)?[、,]?(ご?連絡|ご?返信|ご?回答)(いた|致|させていただ|を差し上げ)|追って(ご?連絡|ご?返信)(いた|致|させていただ)|送信(が|は)?(完了|されました|いたしました|しました|致しました)|送信ありがとう|(ご|お)?回答(を)?(いただき|頂き)?(まして)?[、,]?(誠に|大変)?(ありがとう|有難う|有り難う)|お問い?合わ?せ(を)?(ありがとう|受け付け|承り|受付)|ありがとうございま(す|した)。?(お問い?合わ?せ|送信|受付)|受け付けました|受付(が)?完了|承りました|thank you for (contacting|your (message|inquiry|submission))|(message|inquiry|form)( has been| was)? (sent|submitted|received)|submitted successfully|successfully sent|自動返信(の)?メール(を)?(お送り|送付|送信|送らせて)|確認(の)?メール(を)?(お送り|送付|送信)|正常に(送信|受け付け|受付|完了)|(送信|受付|受け付け|お申し?込み|申込)(が|を)?(完了|終了)(いたし|致)?(ました)?|ご入力(いただき)?(誠に)?ありがとう|受付番号|お問い?合わ?せ番号|送信(に|が)成功|thanks for (contacting|your (message|inquiry|submission))|お問い?合わ?せ(の|が|は)?完了)/i;
+const SUCCESS_RE = /((お問い?合わ?せ|ご連絡|ご送信|送信|ご応募|ご依頼|ご相談|ご登録|お申し?込み)(を)?(いただき|頂き)(まして)?[、,]?(誠に|大変|本当に)?(ありがとう|有難う|有り難う)|(担当(者)?|スタッフ|係)(より|から)[、,]?(追って|改めて|折り返し|後ほど|のちほど)?[、,]?(ご?連絡|ご?返信|ご?回答)(いた|致|させていただ|を差し上げ)|追って(ご?連絡|ご?返信)(いた|致|させていただ)|送信(が|は)?(完了|されました|いたしました|しました|致しました)|送信ありがとう|(ご|お)?回答(を)?(いただき|頂き)?(まして)?[、,]?(誠に|大変)?(ありがとう|有難う|有り難う)|お問い?合わ?せ(を)?(ありがとう|受け付け|承り|受付)|ありがとうございま(す|した)。?(お問い?合わ?せ|送信|受付)|受け付けました|受付(が)?完了|承りました|thank you for (contacting|your (message|inquiry|submission))|(message|inquiry|form)( has been| was)? (sent|submitted|received)|submitted successfully|successfully sent|自動返信(の)?メール(を)?(お送り|送付|送信|送らせて)|確認(の)?メール(を)?(お送り|送付|送信)|正常に(送信|受け付け|受付|完了)|(送信|受付|受け付け|お申し?込み|申込)(が|を)?(完了|終了)(いたし|致)?(ました)?|ご入力(いただき)?(誠に)?ありがとう|受付番号|お問い?合わ?せ番号|送信(に|が)成功|thanks for (contacting|your (message|inquiry|submission))|お問い?合わ?せ(の|が|は)?完了|(メッセージ|フォーム|お問い?合わ?せ)(内容)?(を|が|は)?(受信|受領)(いた|致)?しました|thanks? ?(you)? ?for (submitting|reaching out|getting in touch)|(details|message|form|inquiry|enquiry|submission|request)s? (has been|have been|were|was) (sent|submitted|received)|フォーム送信成功|送信成功|succeeded to submit|(送信|送付)処理(を|が)?(完了|終了)|(内容|メッセージ)(は|が).{0,8}(送られ|届き)ました|心より感謝申し上げ|改めて(ご?連絡|ご?返信)(いた|致|させていただ))/i;
 // 完了ページのURL。「customer-success」「representative」（sent）「presentation」（sent）のように、単語の一部に当たって
 // 確認ボタンを押しただけで送信済みにしていたので、他の語に埋もれにくい語（thanks 等）以外は区切り文字（/ _ - .）で囲まれたときだけ採用する
 const SUCCESS_URL_RE = /(thanks|thank-?you|kanryo|kanryou|touroku_kanryo|(^|[/_.-])(complete|completed|done|sent|success|finish|finished)([/_.-]|$))/i;
@@ -1408,11 +1482,72 @@ const SUCCESS_URL_RE = /(thanks|thank-?you|kanryo|kanryou|touroku_kanryo|(^|[/_.
 const WEAK_SUCCESS_RE = /^(自動返信|確認(の)?メール|ご入力(いただき)?(誠に)?ありがとう|受付番号|お問い?合わ?せ番号)/;
 // 「下さい」表記、「未入力です」「入力されていません」「は必須です」「カタカナ以外の文字が…」なども拾う。
 // これらを知らず、エラーが出ているのに「判定不能」「確認画面を抜けられない」になっていた（hightouch-haken.com / fs224.formasp.jp / tac21 の実例）
-const ERROR_RE = /((入力|記入|選択|指定|チェック)して(ください|下さい)|ご(入力|記入|選択)(ください|下さい)|必須項目|未入力|未記入|未選択|(入力|選択|記入)されていません|(入力|選択)が必須|は必須です|必須入力|正しく(入力|ありません)|形式が|不正|以外の文字|エラーが|エラーです|入力に(エラー|誤り|不備)|入力漏れ|error(s)? (occurred|found)|is required|invalid|入力内容に誤り|確認して(ください|下さい)|入力内容に問題|(含め|使用|入力|記載|記入)(る)?(事|こと)(は|が)?(でき|出来)ません|[0-9０-９]+\s*(文字|字)(以内|まで|以下))/i;
+const ERROR_RE = /((入力|記入|選択|指定|チェック)して(ください|下さい)|ご(入力|記入|選択)(ください|下さい)|必須項目|未入力|未記入|未選択|(入力|選択|記入)されていません|(入力|選択)が必須|は必須です|必須入力|正しく(入力|ありません)|形式が|不正|以外の文字|エラーが|エラーです|入力に(エラー|誤り|不備)|入力漏れ|error(s)? (occurred|found)|is required|invalid|入力内容に誤り|確認して(ください|下さい)|入力内容に問題|入力必須|含めないで(ください|下さい)|(貼り?付け|貼りつけ)(は|を)?禁止|URL.{0,10}禁止|入力項目をご?確認|ご?修正(して)?(ください|下さい)|select a choice|choose your option|please (select|choose)|文字数.{0,20}(超え|オーバー)|使用できない文字|ご使用になれません|チェックされていません|記入(もれ|漏れ)|入力(内容)?に(不備|問題|誤り|エラー)|(含め|使用|入力|記載|記入)(る)?(事|こと)(は|が)?(でき|出来)ません|[0-9０-９]+\s*(文字|字)(以内|まで|以下))/i;
 // サイトの側で受け付けを断られたときの文言。入力を直しても通らないので、入力エラーとは分けて扱う。
 //   ・Contact Form 7 の「メッセージの送信に失敗しました」（スパム判定・メールサーバーの不調）
 //   ・「スパム送信の可能性があります」、403 Forbidden、PHP の Fatal error、前の画面の内容が引き継がれない（Please fill out the form on the previous page）
-const REJECT_RE = /(エラーが発生しました。?\s*(後ほど|時間をおいて|しばらく)|Failed to send mail|SMTP connect\(\) failed|Mailer Error|メッセージの送信に失敗しました|送信に失敗しました|送信できませんでした|スパム(送信|メール|と判定|の可能性)|spam|403\s*Forbidden|Access\s*Denied|アクセスが拒否|不正な(アクセス|送信|リクエスト|操作)|Fatal error|Internal Server Error|Please fill out the form on the previous page|セッション(が|の)?(切れ|タイムアウト|有効期限|無効)|時間をおいて(から)?(再度|もう一度)|しばらく(たって|経って)から|404\s*Not\s*Found|405\s*Not\s*Allowed|Method\s*Not\s*Allowed|Service\s*Unavailable|ページが見つかりません)/i;
+const REJECT_RE = /(error occur+ed while sending|submission failed|送信エラー|サーバー(に|で)エラーが発生|エラーが発生しました。?\s*(後ほど|時間をおいて|しばらく)|Failed to send mail|SMTP connect\(\) failed|Mailer Error|メッセージの送信に失敗しました|送信に失敗しました|送信できませんでした|スパム(送信|メール|と判定|の可能性)|spam|403\s*Forbidden|Access\s*Denied|アクセスが拒否|不正な(アクセス|送信|リクエスト|操作)|Fatal error|Internal Server Error|Please fill out the form on the previous page|セッション(が|の)?(切れ|タイムアウト|有効期限|無効)|時間をおいて(から)?(再度|もう一度)|しばらく(たって|経って)から|404\s*Not\s*Found|405\s*Not\s*Allowed|Method\s*Not\s*Allowed|Service\s*Unavailable|ページが見つかりません)/i;
+/** 同じページの中で確認表示に切り替わったかを見るためのしるし（見えている送信系ボタンの名前と、読み取り専用・無効の欄の数）。
+ *  URL も入力欄の数も変わらないので「先へ進めない」と読み、読み取り専用の欄に入れ直そうとしていた（contact-form-7-add-confirm 等で13社） */
+export async function confirmMarkers(target: Page | Frame): Promise<{ btns: string[]; ro: number }> {
+  return timed(target.evaluate((src) => {
+    const re = new RegExp(src, "i");
+    const btns: string[] = [];
+    document.querySelectorAll("button, input[type=submit], input[type=button], input[type=image], a.wpcf7-back, .wpcf7-back").forEach((b) => {
+      const r = b.getBoundingClientRect();
+      const t = (((b as HTMLElement).innerText || (b as HTMLInputElement).value || b.getAttribute("alt") || "") + "").replace(/[\s　]+/g, "");
+      if (r.width > 0 && r.height > 0 && (re.test(t) || (b as HTMLElement).classList.contains("wpcf7-back"))) btns.push(t);
+    });
+    let ro = 0;
+    document.querySelectorAll("input:not([type=hidden]), textarea").forEach((e) => { const i = e as HTMLInputElement; if (i.readOnly || i.disabled) ro++; });
+    return { btns, ro };
+  }, "(送信|送る|戻る|修正|confirm|send|submit)"), 4000, "確認表示の確認").catch(() => ({ btns: [] as string[], ro: 0 }));
+}
+
+/** 文字欄・本文欄が全部空か（ページが読み直されて空のフォームに戻った） */
+export async function allTextFieldsEmpty(target: Page | Frame): Promise<boolean> {
+  return timed(target.evaluate(() => {
+    const els = Array.from(document.querySelectorAll("textarea, input[type=text], input[type=email], input[type=tel], input:not([type])")).filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+    return els.length > 0 && els.every((e) => ((e as HTMLInputElement).value || "").trim() === "");
+  }), 4000, "空欄の確認").catch(() => false);
+}
+
+/** 送っている最中の表示（この間は判定しない） */
+const BUSY_RE = /(送信中です|送信しています|送信中\.\.\.|送信中…|sending\.\.\.|処理中です|しばらくお待ちください。?送信)/i;
+/** 人の確認で止められた文言（押したあとに出る） */
+const CAPTCHA_FAIL_RE = /(「?私はロボットではありません」?(の内容)?を?(回答|確認|チェック)|認証(を)?完了して(ください|下さい)|認証に失敗|スパム対策の確認が完了していません|CAPTCHA\s*トークン|無効な\s*CAPTCHA|自動送信の疑い|送信確認がチェックされていません)/i;
+
+type WidgetStatus = { kind: "sent" | "invalid" | "spam" | "failed" | "busy"; text: string };
+/** Contact Form 7・Elementor のフォームが持っている結果。無ければ null。
+ *  CF7 5.4 以降は form の data-status / class（sent・invalid・spam・failed・submitting）、それより前は結果欄の class で分かる */
+async function widgetStatus(where: Page | Frame): Promise<WidgetStatus | null> {
+  return timed(where.evaluate(() => {
+    const f = document.querySelector("form.wpcf7-form");
+    const out = document.querySelector(".wpcf7-response-output");
+    const msg = out ? ((out as HTMLElement).innerText || out.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100) : "";
+    if (f) {
+      const st = (f.getAttribute("data-status") || "") + " " + (typeof f.className === "string" ? f.className : "");
+      if (/\bsubmitting\b/.test(st)) return { kind: "busy", text: "" };
+      if (/\bsent\b/.test(st)) return { kind: "sent", text: msg };
+      if (/\b(invalid|unaccepted|payment_required)\b/.test(st)) return { kind: "invalid", text: msg };
+      if (/\bspam\b/.test(st)) return { kind: "spam", text: msg };
+      if (/\b(failed|aborted|mail_failed)\b/.test(st)) return { kind: "failed", text: msg };
+    }
+    if (out) {
+      const c = typeof out.className === "string" ? out.className : "";
+      if (/wpcf7-mail-sent-ok/.test(c)) return { kind: "sent", text: msg };
+      if (/wpcf7-(validation-errors|acceptance-missing)/.test(c)) return { kind: "invalid", text: msg };
+      if (/wpcf7-spam-blocked/.test(c)) return { kind: "spam", text: msg };
+      if (/wpcf7-(mail-sent-ng|aborted)/.test(c)) return { kind: "failed", text: msg };
+    }
+    const ok = document.querySelector(".elementor-message-success");
+    if (ok) return { kind: "sent", text: ((ok as HTMLElement).innerText || "").trim().slice(0, 100) };
+    const ng = document.querySelector(".elementor-message-danger");
+    if (ng) return { kind: "invalid", text: ((ng as HTMLElement).innerText || "").trim().slice(0, 100) };
+    return null;
+  }) as Promise<WidgetStatus | null>, 3000, "フォーム部品の状態").catch(() => null);
+}
+
 /** 送信の前に時間をおくよう求める文言（ロボット対策）。「送信中です。しばらくお待ちください」は送っている最中なので含めない（押し直すと二重送信） */
 const WAIT_RE = /送信前に(もう少し|少々|しばらく)お待ち(ください|下さい)|セキュリティ(の)?チェックを(行|おこな)って(い|お)/;
 export const WAIT_DETAIL = "送信前の確認待ち";
@@ -1429,7 +1564,7 @@ export async function submitButtonRemains(target: Page | Frame): Promise<boolean
     return Array.from(document.querySelectorAll("button, input[type=submit], input[type=image], input[type=button], a, [role=button]")).some((el) => {
       const r = el.getBoundingClientRect();
       if (r.width === 0 || r.height === 0) return false;
-      const t = ((el as HTMLElement).innerText || (el as HTMLInputElement).value || el.getAttribute("alt") || "").trim();
+      const t = ((el as HTMLElement).innerText || (el as HTMLInputElement).value || el.getAttribute("alt") || el.getAttribute("src")?.split("/").pop() || el.id || "").trim().replace(/[\s　]+/g, "");
       if (el.tagName === "A") {
         const href = (el.getAttribute("href") || "").trim();
         if ((href && href.charAt(0) !== "#" && !/^javascript:/i.test(href) && !el.getAttribute("onclick") && !el.getAttribute("role")) || t.length > 20) return false;
@@ -1497,6 +1632,26 @@ export async function pageText(page: Page): Promise<string> {
  *  親ページだけを見ると、iframe の送信が止まっていても「入力欄が無い＝フォームが消えた」で送信済みにしていた */
 export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSubmit = true, beforeText = "", beforeUrl = "", target?: Page | Frame): Promise<Outcome> {
   const where: Page | Frame = target ?? page;
+  // 送っている最中（Contact Form 7 の submitting、ボタンや画面の「送信中…」）なら、終わるまで最大20秒待つ。
+  // 途中で判定すると判定不能になっていた（くるくるが出たままのスクリーンショットが4件）
+  for (let i = 0; i < 20; i++) {
+    const busyWidget = (await widgetStatus(where))?.kind === "busy" || (await timed(where.evaluate(() => Array.from(document.querySelectorAll("button, input[type=submit], input[type=button]")).some((b) => {
+      const r = b.getBoundingClientRect();
+      return r.width > 0 && /(送信中|処理中|sending)/i.test(((b as HTMLElement).innerText || (b as HTMLInputElement).value || ""));
+    })), 3000, "送信中の確認").catch(() => false));
+    const busyText = BUSY_RE.test((await pageText(page)).replace(/\s+/g, "")) && !BUSY_RE.test(beforeText.replace(/\s+/g, ""));
+    if (!busyWidget && !busyText) break;
+    await page.waitForTimeout(1000);
+  }
+  // フォーム部品が持っている結果（Contact Form 7・Elementor）。サーバーの返事そのものなので、文言より確か。
+  // 完了文言を知らない・結果の表示が隠れている・入力が消えた、などで判定不能や読み違いになっていた
+  const widget = await widgetStatus(where);
+  if (widget && widget.kind !== "busy") {
+    if (widget.kind === "sent" && afterSubmit) return { status: "sent", detail: `完了を検知（フォームの状態: 送信済み）${widget.text ? `「${widget.text.slice(0, 40)}」` : ""}` };
+    if (widget.kind === "invalid") return { status: "failed", detail: `入力エラー: ${widget.text || "入力内容に不備があります（フォームの状態）"}` };
+    if (widget.kind === "spam") return { status: "failed", detail: `サイト側で受け付けられませんでした: スパムと判定されました${widget.text ? `（${widget.text.slice(0, 50)}）` : ""}` };
+    if (widget.kind === "failed") return { status: "failed", detail: `サイト側で受け付けられませんでした: ${widget.text || "送信に失敗しました（フォームの状態）"}` };
+  }
   // 本体＋埋め込みフレームの文章をまとめて見る（完了文言が iframe の中に出ることがある）
   const text = await pageText(page);
   const compact = text.replace(/\s+/g, "");
@@ -1527,6 +1682,14 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
   // 「入力してください」のような短い言葉は注意書きとして最初から載っていることが多く、新しく出たエラーまで捨てていた
   // （jhn.co.jp の実例: 電話番号の下に赤字で「入力してください。」が出ているのに判定不能）。回数が増えたかで見る
   const isFresh = (phrase: string) => { const k = phrase.replace(/\s+/g, ""); return !beforeCompact || countOf(compact, k) > countOf(beforeCompact, k); };
+  // 人の確認（画像認証・Turnstile・スパム対策のチェック）で止められた。自動では通らないので、画像認証として飛ばす
+  const cap = CAPTCHA_FAIL_RE.exec(text);
+  if (cap && isFresh(cap[0])) return { status: "failed", detail: `画像認証で止められ未送信: ${(text.split("\n").find((l) => l.includes(cap[0])) ?? cap[0]).trim().slice(0, 70)}` };
+  // アドレス欄にエラーの印（?status=captcha_failed・?mode=error 等）。送る前の段階で弾かれている
+  const urlErr = /[?&](mode|status|result|error)=([\w-]*(error|fail|invalid|captcha)[\w-]*)/i.exec(url);
+  if (afterSubmit && urlErr && !beforeUrl.includes(urlErr[0])) {
+    return /captcha/i.test(urlErr[2]) ? { status: "failed", detail: `画像認証で止められ未送信（アドレス欄: ${urlErr[0].slice(1)}）` } : { status: "failed", detail: `入力エラー: 送信できませんでした（アドレス欄: ${urlErr[0].slice(1)}）` };
+  }
   // 送信の前に、サイトが時間をおくよう求めている（「送信前にもう少しお待ちください。簡単なセキュリティチェックを行っています。」）。
   // ページを開いてからの時間でロボットかを見分ける仕組みで、まだ何も送られていない。少し待って押し直せば通る（conrad.co.jp の実例）
   const wait = WAIT_RE.exec(text);
@@ -1535,7 +1698,11 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
   const rj = REJECT_RE.exec(text.slice(0, 6000));
   if (rj && isFresh(rj[0])) {
     const line = (text.split("\n").find((l) => l.includes(rj[0])) ?? rj[0]).replace(/\s+/g, " ").trim().slice(0, 70);
-    return { status: "failed", detail: `サイト側で受け付けられませんでした: ${line}` };
+    if (/(必須|入力エラー|入力内容|ご確認の上|再度確認ボタン)/.test(line)) return { status: "failed", detail: `入力エラー: ${line}` };
+    // 拒否の理由が次の行に書かれていることがある（「SPAM BLOCK」→「送信内容にURLを含める事はできません」）。本文を直す手がかりに続けて残す
+    const idx = text.indexOf(rj[0]);
+    const near = text.slice(idx, idx + 300).replace(/\s+/g, " ").trim();
+    return { status: "failed", detail: `サイト側で受け付けられませんでした: ${line}${near.length > line.length + 5 ? `（${near.slice(0, 160)}）` : ""}` };
   }
   // 実際にフォーム上に赤字で出ているバリデーションメッセージだけを拾う。
   // ページ本文の無関係なテキスト（「License is GPL」など）を拾わないよう、
@@ -1553,7 +1720,7 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
       return r > 120 && g < 110 && b < 110; // 赤〜オレンジ系
     };
     const cand = new Set<Element>();
-    document.querySelectorAll("[class*='error'],[class*='invalid'],[class*='err'],[id*='error'],[role='alert'],[aria-live],.wpcf7-not-valid-tip,.wpcf7-response-output,.form-error,.field-error,.help-block,.text-danger,.attention,.caution").forEach((e) => cand.add(e));
+    document.querySelectorAll("[class*='error'],[class*='Error'],[class*='invalid'],[class*='err'],[id*='error'],[role='alert'],[aria-live],.wpcf7-not-valid-tip,.wpcf7-response-output,.form-error,.field-error,.help-block,.text-danger,.attention,.caution").forEach((e) => cand.add(e));
     document.querySelectorAll("[aria-invalid='true']").forEach((f) => { const id = f.getAttribute("aria-describedby"); if (id) id.split(/\s+/).forEach((x) => { const e = document.getElementById(x); if (e) cand.add(e); }); });
     // 赤字で表示されている短いテキスト要素も候補にする
     document.querySelectorAll("span,p,div,dd,dt,li,strong,em,label,font,b,small,td,th").forEach((e) => { const t = (e as HTMLElement).innerText?.trim() || ""; if (t && t.length <= 60 && rx.test(t) && isRed(e)) cand.add(e); });
@@ -1575,7 +1742,7 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
   // 赤字要素として拾えなかった場合の保険: 「◯◯を入力してください」等の強いバリデーション文言だけを、
   // 送信前に無かったものに限って本文から拾う（ページ説明文や無関係な文章は拾わない）
   // 色も class も付かない、サーバーが返す素のエラーページ（「【電話番号】は必須項目です。」「【電話番号】が入力されていません。」）も拾う
-  const STRONG = /([^。\n]{0,20}(を|が)?(入力|記入|選択|指定)(して)?(ください|下さい)|[^。\n]{0,16}は必須(項目)?です|[^。\n]{0,16}(が|は)?未入力|[^。\n]{0,16}(が|は)(入力|選択|記入)されていません|[^。\n]{0,16}を正しく|[^。\n]{0,16}の形式が正しくありません|[^。\n]{0,20}以外の文字が入力されています)/g;
+  const STRONG = /([^。\n]{0,20}(を|が)?(入力|記入|選択|指定)(して)?(ください|下さい)|[^。\n]{0,16}は必須(項目)?です|[^。\n]{0,16}(が|は)?未入力|[^。\n]{0,16}(が|は)(入力|選択|記入)されていません|[^。\n]{0,16}を正しく|[^。\n]{0,16}の形式が正しくありません|[^。\n]{0,20}以外の文字が入力されています|[^。\n]{0,16}(が|は)不正です|[^。\n]{0,16}(が|は)正しくありません|[^。\n]{0,16}形式に誤り|[^。\n]{0,16}いずれも選択されていません)/g;
   for (let sm = STRONG.exec(text); sm; sm = STRONG.exec(text)) {
     const phrase = sm[0].replace(/\s+/g, " ").trim().slice(0, 60);
     if (isFresh(phrase)) return { status: "failed", detail: `入力エラー: ${phrase}` };
