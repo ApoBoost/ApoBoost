@@ -52,7 +52,7 @@ async function captchaIn(page: Page, target: Page | Frame): Promise<string | nul
 }
 
 // 押したあとのエラー文が画像認証・ロボット確認を求めているか
-const CAPTCHA_ERR_RE = /(画像(内)?の(文字|数字|英数字)|画像認証|認証(コード|文字|用の文字|番号)|表示(されている|された)(文字|数字|英数字)|上記の(文字|数字|英数字)|人間であることを確認|ロボットではない|reCAPTCHA|captcha|キャプチャ)/i;
+const CAPTCHA_ERR_RE = /(画像(内)?の(文字|数字|英数字)|画像に表示|画像認証|認証(コード|文字|用の文字|番号)|表示(されている|された)(文字|数字|英数字)|上記の(文字|数字|英数字)|人間であることを確認|ロボットではない|reCAPTCHA|captcha|キャプチャ)/i;
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
@@ -357,8 +357,10 @@ async function submitOnce(browser: Browser, input: SubmitInput, w: Watch): Promi
     };
     // エラー文に合わせた電話・郵便番号の書き方（「ハイフンなしで」「半角数字のみ」／「ハイフンを入れて」）
     // 「数字とハイフンで」はハイフンあり。「半角数値で」「数字でご入力」「数値を入力」「半角数字を入力」は数字だけ
-    const numFormatOf = (detail: string) => /数字(と|及び|および|・)ハイフン/.test(detail) ? "hyphen" as const
-      : /(ハイフン(なし|無し|不要|を?(入れ|含め|付け)(ず|ない))|ハイフン抜き|半角数字のみ|半角数字で|数字のみ|数字以外|半角数値で|数値で|数字でご?入力|数値を(ご)?入力|半角数字を(ご)?入力)/.test(detail) ? "digits" as const
+    // 「XXX-XXXXの形式で半角数字で」は、形を見せているのでハイフンあり（「半角数字で」に先に当たって数字だけにしていた）。
+    // 「7桁の数字」「7～7文字」「10-11桁」は数字だけ
+    const numFormatOf = (detail: string) => /数字(と|及び|および|・)ハイフン|[XＸ×0０〇○]{3}[-－ー][XＸ×0０〇○]{4}|\d{3}-\d{4}の形式/.test(detail) ? "hyphen" as const
+      : /(ハイフン(なし|無し|不要|を?(入れ|含め|付け)(ず|ない))|ハイフン抜き|\d+桁の数字|半角数字\d+[-～~〜]?\d*桁|\d+[～~〜]\d+文字|\d+[-～~〜]\d+桁|半角数字のみ|半角数字で|数字のみ|数字以外|半角数値で|数値で|数字でご?入力|数値を(ご)?入力|半角数字を(ご)?入力)/.test(detail) ? "digits" as const
       : /ハイフン(\s*[（(]?[-－ー]?[）)]?\s*)?(を|も)?(入れ|含め|付け|区切)|ハイフン(あり|付き)/.test(detail) ? "hyphen" as const : undefined;
     let refilled = false; // 入力エラー後の埋め直しは1回だけ
     let advanced = false; // 確認ボタンを押して、確認画面へ進めたか（進めたあとは「送信」を優先して押す）

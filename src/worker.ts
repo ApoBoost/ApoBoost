@@ -629,6 +629,15 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
   }
   // 送信中はパソコンをスリープさせない（スリープで止まる問い合わせが最も多かった）
   const releaseAwake = keepAwake();
+  // ブラウザを起動し直す（2本の送信が同時に気づいても1回だけ）。古いブラウザは待たずに閉じる
+  let stuckInRow = 0;
+  let relaunching: Promise<void> | null = null;
+  const relaunch = (why: string) => relaunching ??= (async () => {
+    logWarn("worker", `フォーム用のブラウザを起動し直します（${why}）`);
+    const old = browser;
+    try { browser = await launchBrowser(); stuckInRow = 0; } catch (e) { logError("worker", `ブラウザを起動し直せませんでした: ${jpError(e)}`); }
+    old.close().catch(() => {});
+  })().finally(() => { relaunching = null; });
   // 続けて失敗しているときに気づけるようにする（設定ミス・サイト側の変化・ネットワーク断）
   let failStreak = 0;
   try {
@@ -667,8 +676,13 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
         if (!claimed) continue;
         inFlight++;
         try {
+          // ブラウザが落ちている・固まっているなら、先に起動し直す
+          if (!browser.isConnected() || stuckInRow >= 2) await relaunch(!browser.isConnected() ? "ブラウザが落ちていた" : `${stuckInRow}社続けて、ページを開く前に固まった`);
           const j = await withJobLimit(processJob(browser, next.id), next.id);
           processed++;
+          // ページを開く前（操作の記録が1行も無いまま）に時間切れになった。ブラウザ自体が固まっているしるし
+          // （実例: Windows の利用先で、ある時刻から全社がこれになり、3時間半で40社しか進まなかった）
+          if (/^例外: timeout/.test(j.result_text) && !/^form: /m.test(j.result_text)) stuckInRow++; else stuckInRow = 0;
           opts.onProgress?.(j);
           // 続けて失敗していないか見る（10件続いたら知らせる。設定ミスや回線不調に早く気づけるように）
           if (j.status === "failed") {

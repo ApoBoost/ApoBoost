@@ -1353,6 +1353,7 @@ ok("applog: 書いて読める", recentLogs(5).some((r) => r.text === "テスト
   eq("上限: 全角の数を優先する", limitFromError("備考は半角255文字（全角127文字）以内で入力してください。"), 127);
   eq("上限: 全角数字・「を超えています」", limitFromError("本文が１，０００文字を超えています"), 1000);
   eq("上限: 数字の無いエラーは null", limitFromError("お名前を入力してください"), null);
+  eq("上限: 「半角1000文字以下」だけなら、日本語はその半分", limitFromError("送信内容は半角1000文字以下で入力してください"), 500);
   ok("URL禁止: 「URLを含める事はできません」", urlBanned("入力内容にURLを含める事はできません。"));
   ok("URL禁止: 関係の無いエラーは違う", !urlBanned("電話番号を正しく入力してください"));
   const nu = stripUrls("資料はこちら\nhttps://example.com/a\n\n詳しくは https://example.com/b をご覧ください\n山田");

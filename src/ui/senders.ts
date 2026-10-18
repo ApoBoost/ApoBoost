@@ -6,11 +6,18 @@ import { esc, layout, n, type NavUser, IC_MAIL, IC_FORM, IC_WARN } from "./layou
 import { post } from "./parts.js";
 import { unreadReplyAddress } from "../email.js";
 
+/** 担当者名が人の名前に見えないとき（英字・「営業担当」など）の注意。
+ *  フォームの「お名前」欄は「漢字またはひらがなのみ」と弾くサイトがあり、送れない原因になっていた（「BRIDGE HATCH 営業担当」で12社） */
+function personLooksOdd(person: string): string {
+  if (!person.trim() || !/[A-Za-zＡ-Ｚａ-ｚ]|担当|営業|部署|チーム|事務局|窓口/.test(person)) return "";
+  return `<p class="small" style="color:var(--ng);margin:4px 0 0">人の名前（例: 田中 太郎）にしてください。英字や「営業担当」が入っていると、「お名前は漢字またはひらがなで」と弾くフォームがあり、送れません。</p>`;
+}
+
 export function senderForm(s?: Partial<SenderProfile>) {
   const v = (k: keyof SenderProfile) => esc(s?.[k] ?? "");
   return `<form method="post" action="/senders${s?.id ? `/${s.id}` : ""}" data-draft="sender-${s?.id ?? "new"}">
 <div class="row"><div><label>ラベル（管理用）</label><input type="text" name="label" value="${v("label")}" placeholder="社内用 / ○○社用" required></div><div><label>会社名 *</label><input type="text" name="company" value="${v("company")}" required></div></div>
-<div class="row"><div><label>業種</label><input type="text" name="industry" value="${v("industry")}"></div><div><label>担当者名 *（姓と名の間にスペース）</label><input type="text" name="person" value="${v("person")}" placeholder="田中 太郎" required></div></div>
+<div class="row"><div><label>業種</label><input type="text" name="industry" value="${v("industry")}"></div><div><label>担当者名 *（姓と名の間にスペース）</label><input type="text" name="person" value="${v("person")}" placeholder="田中 太郎" required>${personLooksOdd(String(v("person")))}</div></div>
 <div class="row"><div><label>担当者名フリガナ</label><input type="text" name="person_kana" value="${v("person_kana")}" placeholder="タナカ タロウ"></div><div><label>メール *（フォームに入力するアドレス）</label><input type="email" name="email" value="${v("email")}" required></div></div>
 <div class="row"><div><label>返信受付メール（本文に載せる。空なら上と同じ）</label><input type="email" name="reply_email" value="${v("reply_email")}"></div><div><label>電話（ハイフン区切り）</label><input type="text" name="tel" value="${v("tel")}" placeholder="03-1234-5678"><p class="muted" style="color:var(--ng)">${IC_WARN} フォームでは電話番号が必須になっていることが多く、未入力のままだとかなりの確率で送信エラーになります。必ず入力してください。</p>
 <label class="inline small" style="display:flex;gap:6px;align-items:flex-start;margin-top:6px;font-weight:400"><input type="checkbox" name="tel_required_only" value="1" ${s?.tel_required_only ? "checked" : ""} style="width:auto;margin-top:3px"> <span><b>電話番号が必須の欄にだけ入力する</b>（任意の欄には書かない）<br><span class="muted">電話番号を相手に伝えたくない場合に。サイト側で必須だった場合は、弾かれた後の埋め直しで入力して再送します。</span></span></label></div></div>

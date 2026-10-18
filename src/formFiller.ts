@@ -444,7 +444,8 @@ export function limitFromError(detail: string): number | null {
   const zen = /全角\s*(\d{2,5})\s*(文字|字)/.exec(t);
   const any = zen ?? /(\d{2,5})\s*(文字|字)\s*(以内|まで|以下|を超え|をこえ|未満)/.exec(t);
   if (!any) return null;
-  const n = Number(any[1]);
+  // 「半角1000文字以下」だけが書いてあれば、日本語（全角）はその半分しか入らない
+  const n = !zen && /半角\s*\d/.test(t) ? Math.floor(Number(any[1]) / 2) : Number(any[1]);
   return n >= 20 ? n : null;
 }
 
@@ -1411,7 +1412,7 @@ const ERROR_RE = /((入力|記入|選択|指定|チェック)して(ください
 // サイトの側で受け付けを断られたときの文言。入力を直しても通らないので、入力エラーとは分けて扱う。
 //   ・Contact Form 7 の「メッセージの送信に失敗しました」（スパム判定・メールサーバーの不調）
 //   ・「スパム送信の可能性があります」、403 Forbidden、PHP の Fatal error、前の画面の内容が引き継がれない（Please fill out the form on the previous page）
-const REJECT_RE = /(Failed to send mail|SMTP connect\(\) failed|Mailer Error|メッセージの送信に失敗しました|送信に失敗しました|送信できませんでした|スパム(送信|メール|と判定|の可能性)|spam|403\s*Forbidden|Access\s*Denied|アクセスが拒否|不正な(アクセス|送信|リクエスト|操作)|Fatal error|Internal Server Error|Please fill out the form on the previous page|セッション(が|の)?(切れ|タイムアウト|有効期限|無効)|時間をおいて(から)?(再度|もう一度)|しばらく(たって|経って)から|404\s*Not\s*Found|405\s*Not\s*Allowed|Method\s*Not\s*Allowed|Service\s*Unavailable|ページが見つかりません)/i;
+const REJECT_RE = /(エラーが発生しました。?\s*(後ほど|時間をおいて|しばらく)|Failed to send mail|SMTP connect\(\) failed|Mailer Error|メッセージの送信に失敗しました|送信に失敗しました|送信できませんでした|スパム(送信|メール|と判定|の可能性)|spam|403\s*Forbidden|Access\s*Denied|アクセスが拒否|不正な(アクセス|送信|リクエスト|操作)|Fatal error|Internal Server Error|Please fill out the form on the previous page|セッション(が|の)?(切れ|タイムアウト|有効期限|無効)|時間をおいて(から)?(再度|もう一度)|しばらく(たって|経って)から|404\s*Not\s*Found|405\s*Not\s*Allowed|Method\s*Not\s*Allowed|Service\s*Unavailable|ページが見つかりません)/i;
 /** 送信の前に時間をおくよう求める文言（ロボット対策）。「送信中です。しばらくお待ちください」は送っている最中なので含めない（押し直すと二重送信） */
 const WAIT_RE = /送信前に(もう少し|少々|しばらく)お待ち(ください|下さい)|セキュリティ(の)?チェックを(行|おこな)って(い|お)/;
 export const WAIT_DETAIL = "送信前の確認待ち";

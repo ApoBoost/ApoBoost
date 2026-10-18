@@ -382,6 +382,9 @@ const server = http.createServer(async (req, res) => {
     return send(page("お問い合わせ", `<h1>お問い合わせ</h1><table><tr><th>お名前</th><td>${esc(b.nm)}</td></tr><tr><th>メールアドレス</th><td>${esc(b.em)}</td></tr><tr><th>内容</th><td>${esc(b.msg)}</td></tr></table><form method="post" action="/spiral/send">${hidden(b)}<input type="submit" value="戻る" formaction="/spiral"><input type="submit" value="送信"></form>`));
   }
   if (p === "/spiral/send" && post) return done("spiral");
+  // 54) リストのフォームURLのページにフォームが無く、問い合わせらしいリンクが2本ある（並べ替えが走る）。v1.0.27 はここで落ちていた
+  if (p === "/oldform") return send(page("お問い合わせ", `<h1>お問い合わせ</h1><p>窓口をお選びください。</p><a href="/oldform/inquiry">お問い合わせフォーム</a> <a href="/oldform/contact">製品のお問い合わせ</a>`));
+  if (p === "/oldform/inquiry") return post ? done("oldform") : send(simpleForm("x").replace('action="/x/post"', 'action="/oldform/inquiry"'));
   if (p === "/search") { hit("search", Object.fromEntries(url.searchParams)); return send(page("検索", "<p>検索結果</p>")); }
   send("not found", 404);
 });
@@ -404,7 +407,7 @@ try {
     ...["ajaxa", "ajaxb", "ajaxc", "stepconf", "ovl", "twota", "nf", "nf2", "hang", "quiz"].map((k): [string, string, string] => [k, `/${k}`, ""]),
     ...["gform", "numtel", "pick", "unk", "numerr", "capterr", "refusechk", "rcta"].map((k): [string, string, string] => [k, `/${k}`, ""]),
     ["refusechk2", "/refusechk", ""],
-    ...["lenlim", "nourl", "nourlspam", "cf7prob", "modal", "confkeep", "waitchk", "getecho", "cmtonly", "smtpfail", "spiral"].map((k): [string, string, string] => [k, `/${k}`, ""])];
+    ...["lenlim", "nourl", "nourlspam", "cf7prob", "modal", "confkeep", "waitchk", "getecho", "cmtonly", "smtpfail", "spiral", "oldform"].map((k): [string, string, string] => [k, `/${k}`, ""])];
   // 文字数・URL の制限を試すサイトには、長くて URL の入った本文を送る（先頭の名乗りと最後の署名は残ること）
   const LONG = ["株式会社テスト 御中", "はじめまして。サンプル商事の山田です。", "中略の説明です。".repeat(30), "詳しい資料はこちらです。\nhttps://example.com/doc", "山田 太郎\nsales@example.com"].join("\n\n");
   // フォームの探し方の型（4周目）。サイトのURLを丸ごと指定するものと、社名を渡すもの
@@ -565,6 +568,7 @@ if (has("confkeep")) sentOnce("confkeep", "入力欄が残ったままの確認�
 if (has("waitchk")) sentOnce("waitchk", "「送信前にもう少しお待ちください」で待ってから押し直す");
 if (has("getecho")) sentOnce("getecho", "入力内容がアドレス欄に付いて読み直されただけなら、待って入れ直す");
 if (has("cmtonly")) { assert.equal(got.comment, undefined, `cmtonly: ブログのコメント欄に書き込まない → ${out.cmtonly.detail}`); assert.equal(out.cmtonly.status, "skip_no_form", `cmtonly: ${out.cmtonly.detail}`); }
+if (has("oldform")) sentOnce("oldform", "リストのフォームURLにフォームが無ければ、そのページのリンクから探す（落ちない）");
 if (has("spiral")) sentOnce("spiral", "入力内容を表で見せる確認画面で、最後の「送信」を押す");
 if (has("smtpfail")) { assert.equal(out.smtpfail.status, "failed"); assert.ok(out.smtpfail.detail.startsWith("サイト側"), `smtpfail: ${out.smtpfail.detail}`); }
 

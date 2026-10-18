@@ -427,6 +427,10 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
   const examined = new Set<string>();
   const keyOf = (u: string) => u.split("#")[0].replace(/\/(index\.(html?|php))?$/i, "");
   const site = normalize(siteUrl || formUrl);
+  // よくあるパスを試す起点。リンクの並べ替え（score）でも使うので、最初のページを開く前に決めておく
+  // （宣言より前に読んで「Cannot access before initialization」で落ち、リストにフォームURLがある会社の多くが失敗していた: v1.0.27）
+  let origin = "";
+  try { origin = new URL(site).origin; } catch { /* 下で null を返す */ }
   // 辿ってよいサイト（同じ会社のサイト）。社名を確かめられた転送先は、あとから足す
   const allowed = new Set<string>(site ? [siteKeyOf(site)] : []);
   const name = coreName(opts.companyName ?? "");
@@ -476,13 +480,7 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
   }
   if (note.foreign && !reach.ok) return null;
 
-  if (!site) return null;
-  let origin: string;
-  try {
-    origin = new URL(site).origin;
-  } catch {
-    return null;
-  }
+  if (!site || !origin) return null;
 
   // トップページを開く。開けなければ https/http・www有無を言い換えて試す（#2）。
   // 営業リストのURLが奥のページ（/index.html 等）で、そこだけ消えているサイトもあるので、トップ（/）も試す
