@@ -3,6 +3,7 @@ import { chromium, type Browser, type BrowserContext, type Page, type Frame } fr
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import { execFile } from "node:child_process";
 import { SCREENSHOT_DIR, type SenderProfile, type JobStatus } from "./db.js";
 import { detectRefusal, CAPTCHA_CHECK_SCRIPT, CHALLENGE_RE } from "./detect.js";
 import { findContactForm, detectFormService, coreName } from "./formFinder.js";
@@ -78,7 +79,67 @@ export function browserExecutablePath(): string | undefined {
   throw new Error("フォーム送信用のブラウザが見つかりません。ターミナルで「npx playwright install chromium」を実行するか、Google Chrome をインストールしてください（macOS 13 以前のMacは Google Chrome が必要です）");
 }
 
+// ---- このアプリが起動したブラウザのプロセスを、確実に終わらせる ----
+// 固まったページを抱えたブラウザは close() に応えないことがあり、裏で動き続けるブラウザが入れ替えのたびに増えて、
+// パソコン全体が重くなっていた（Windows の利用先: ブラウザの起動だけで3分以上かかる・70分ほどで急に止まる）。
+// 起動したときにプロセス番号を控えておき、閉じたあとも残っていれば強制終了する。対象はこのアプリが起動したものだけ
+const browserPid = new WeakMap<Browser, number>();
+const knownPids = new Set<number>();
+
+/** このプロセスの子のうち、ブラウザ本体（chrome-headless-shell / chrome / msedge / chromium）のプロセス番号 */
+export function childBrowserPids(): Promise<number[]> {
+  const me = process.pid;
+  return new Promise((resolve) => {
+    if (process.platform === "win32") {
+      execFile("powershell", ["-NoProfile", "-Command", `Get-CimInstance Win32_Process -Filter "ParentProcessId=${me}" | ForEach-Object { "$($_.ProcessId) $($_.Name)" }`], { timeout: 20000, windowsHide: true }, (err, out) => {
+        if (err) return resolve([]);
+        resolve(String(out).split(/\r?\n/).map((l) => l.trim().split(" ")).filter((a) => a[0] && /chrom|msedge|headless/i.test(a.slice(1).join(" "))).map((a) => Number(a[0])).filter((n) => n > 0));
+      });
+    } else {
+      execFile("ps", ["-A", "-o", "pid=,ppid=,comm="], { timeout: 10000 }, (err, out) => {
+        if (err) return resolve([]);
+        resolve(String(out).split("\n").map((l) => l.trim().split(/\s+/)).filter((a) => Number(a[1]) === me && /chrom|msedge|headless/i.test(a.slice(2).join(" "))).map((a) => Number(a[0])).filter((n) => n > 0));
+      });
+    }
+  });
+}
+const pidAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+/** プロセスとその子をまとめて強制終了する */
+function killTree(pid: number): void {
+  if (process.platform === "win32") execFile("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }, () => {});
+  else { try { process.kill(pid, "SIGKILL"); } catch { /* もう無い */ } }
+}
+
+/** ブラウザを閉じる。15秒で閉じ終わらない・閉じたのにプロセスが残っているときは、強制終了する */
+export async function closeBrowser(b: Browser): Promise<void> {
+  const pid = browserPid.get(b);
+  await Promise.race([b.close().catch(() => {}), new Promise((r) => setTimeout(r, 15000))]);
+  if (pid) {
+    if (pidAlive(pid)) killTree(pid);
+    knownPids.delete(pid);
+  }
+}
+
+/** いま残っている、このアプリが起動したブラウザの数（状態の記録用） */
+export async function browserProcessCount(): Promise<number> {
+  return (await childBrowserPids()).length;
+}
+
 export async function launchBrowser(): Promise<Browser> {
+  const before = new Set(await childBrowserPids());
+  try {
+    const b = await launchBrowserRaw();
+    const pid = (await childBrowserPids()).find((p) => !before.has(p) && !knownPids.has(p));
+    if (pid) { browserPid.set(b, pid); knownPids.add(pid); }
+    return b;
+  } catch (e) {
+    // 起動の途中で時間切れになったブラウザが残っていれば終わらせる（起動に3分以上かかって失敗し、そのまま残っていた）
+    for (const p of await childBrowserPids()) if (!before.has(p) && !knownPids.has(p)) killTree(p);
+    throw e;
+  }
+}
+
+function launchBrowserRaw(): Promise<Browser> {
   return chromium.launch({
     headless: process.env.HEADLESS !== "0",
     executablePath: browserExecutablePath(),

@@ -56,8 +56,25 @@ try {
   for (let i = 1; i <= N; i++) assert.equal(hits[`l${i}.localhost`], 1, `l${i}: 送信は1回だけ（${hits[`l${i}.localhost`] ?? 0}回）`);
   const { browserRelaunches } = await import("../src/worker.js");
   assert.ok(browserRelaunches >= 2, `ブラウザの入れ替えが起きていない（${browserRelaunches}回）`);
+  // 入れ替えたブラウザも最後のブラウザも、プロセスが残っていない（残り続けるとパソコン全体が重くなる）
+  const { childBrowserPids } = await import("../src/engine.js");
+  let left: number[] = [];
+  for (let i = 0; i < 20; i++) { left = await childBrowserPids(); if (!left.length) break; await new Promise((r) => setTimeout(r, 500)); }
+  assert.equal(left.length, 0, `ブラウザのプロセスが残っている: ${left.join(", ")}`);
   const errs = db.prepare("SELECT text FROM app_logs WHERE kind='error'").all() as { text: string }[];
   assert.equal(errs.length, 0, `エラーの記録: ${errs.map((e) => e.text).join(" / ")}`);
+  // 閉じる指示に応えないブラウザ（固まったページを抱えたもの）でも、プロセスを強制終了できる
+  {
+    const { launchBrowser, closeBrowser } = await import("../src/engine.js");
+    const b = await launchBrowser();
+    const pid = (await childBrowserPids())[0];
+    assert.ok(pid, "起動したブラウザのプロセス番号が分かる");
+    (b as unknown as { close: () => Promise<void> }).close = () => new Promise(() => {}); // 返ってこない close
+    await closeBrowser(b);
+    let alive = true;
+    for (let i = 0; i < 20 && alive; i++) { try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 300)); } catch { alive = false; } }
+    assert.equal(alive, false, "close() が返らなくても、ブラウザのプロセスを終わらせる");
+  }
   console.log(`loop: ALL OK（${N}社・ブラウザの入れ替え ${browserRelaunches}回）`);
 } finally {
   server.close();

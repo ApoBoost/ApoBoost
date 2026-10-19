@@ -4,7 +4,8 @@ import fs from "node:fs";
 import { S, setting } from "./settings.js";
 import type { Browser } from "playwright";
 import { getDb, getSetting, setSetting, allowsEmailFallback, findGroupDuplicate, FREE_MAIL_DOMAINS, domainOf, isExcludedDomain, type Campaign, type Job, type SenderProfile, type JobStatus, SENT_TODAY_SQL } from "./db.js";
-import { launchBrowser, submitToCompany, fetchSiteText, scanCompany } from "./engine.js";
+import { launchBrowser, closeBrowser, browserProcessCount, submitToCompany, fetchSiteText, scanCompany } from "./engine.js";
+import { systemStatus } from "./sysinfo.js";
 import { notify } from "./notify.js";
 import { keepAwake } from "./awake.js";
 import { logError, logWarn, logInfo } from "./applog.js";
@@ -643,13 +644,32 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
   let browserSince = Date.now();
   const inUse = new Map<Browser, number>();
   const retired = new Set<Browser>();
-  const retire = (old: Browser) => { if (!inUse.get(old)) old.close().catch(() => {}); else retired.add(old); };
+  const retire = (old: Browser) => { if (!inUse.get(old)) void closeBrowser(old); else retired.add(old); };
+  // 10分ごとに状態を記録する（遅くなったときに、ブラウザが残り続けているのか、パソコンが省電力で止まっているのかを見分けるため）。
+  // あわせて、タイマーが大きく遅れたら「パソコンが止まっていた」と記録する（スリープ・省電力の待機中は、送信も止まる）
+  let lastTick = Date.now();
+  let lastStatus = 0;
+  const watch = setInterval(() => {
+    const now = Date.now();
+    const gap = now - lastTick - 20_000;
+    lastTick = now;
+    if (gap > 90_000) logWarn("worker", `パソコンが約${Math.round(gap / 60_000)}分止まっていました（スリープ・省電力の待機など。止まっている間は送信も止まります）`);
+    if (now - lastStatus >= 10 * 60_000) {
+      lastStatus = now;
+      void Promise.all([browserProcessCount(), systemStatus()]).then(([n, st]) => logInfo("worker", `状態: ブラウザ ${n}個・${st}`)).catch(() => {});
+    }
+  }, 20_000);
+  watch.unref?.();
   let relaunching: Promise<void> | null = null;
   const relaunch = (why: string, warn = true) => relaunching ??= (async () => {
     if (warn) logWarn("worker", `フォーム用のブラウザを起動し直します（${why}）`);
     const old = browser;
     try { browser = await launchBrowser(); stuckInRow = 0; jobsOnBrowser = 0; browserSince = Date.now(); retire(old); browserRelaunches++; }
-    catch (e) { logError("worker", `ブラウザを起動し直せませんでした: ${jpError(e)}`); }
+    catch (e) {
+      logError("worker", `ブラウザを起動し直せませんでした: ${jpError(e)}`);
+      // 起動に失敗したら、しばらく今のブラウザで続ける（毎社ごとに3分かかる起動を試し続けて、さらに遅くなっていた）
+      jobsOnBrowser = 0; browserSince = Date.now();
+    }
   })().finally(() => { relaunching = null; });
   // 続けて失敗しているときに気づけるようにする（設定ミス・サイト側の変化・ネットワーク断）
   let failStreak = 0;
@@ -697,7 +717,7 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
           inUse.set(b, (inUse.get(b) ?? 0) + 1);
           const j = await withJobLimit(processJob(b, next.id), next.id).finally(() => {
             inUse.set(b, (inUse.get(b) ?? 1) - 1);
-            if (retired.has(b) && !inUse.get(b)) { retired.delete(b); b.close().catch(() => {}); }
+            if (retired.has(b) && !inUse.get(b)) { retired.delete(b); void closeBrowser(b); }
           });
           processed++;
           // ページを開く前（操作の記録が1行も無いまま）に時間切れになった。ブラウザ自体が固まっているしるし
@@ -739,8 +759,9 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
     };
     await Promise.all(Array.from({ length: Math.max(1, CONCURRENCY) }, worker));
   } finally {
-    await browser.close().catch(() => {});
-    for (const b of retired) b.close().catch(() => {});
+    clearInterval(watch);
+    await closeBrowser(browser);
+    for (const b of retired) void closeBrowser(b);
     releaseAwake();
     running.delete(campaignId);
     const left = (db.prepare("SELECT COUNT(*) n FROM form_jobs WHERE campaign_id=? AND status='queued' AND is_test=0").get(campaignId) as { n: number }).n;
