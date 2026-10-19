@@ -25,6 +25,11 @@ function parseManualAnswers(json: string): { label: string; answer: string }[] {
   try { const a = JSON.parse(json || "[]"); return Array.isArray(a) ? a.filter((x) => x && typeof x.label === "string" && typeof x.answer === "string") : []; } catch { return []; }
 }
 const CONCURRENCY = Number(process.env.FO_CONCURRENCY ?? 2);
+// フォーム用のブラウザを新しくする間隔（社数・時間）。長く使い続けると重くなって固まるため
+const BROWSER_JOBS = Number(process.env.FO_BROWSER_JOBS ?? 60);
+const BROWSER_MS = 30 * 60_000;
+/** ブラウザを入れ替えた回数（テストで確かめるため） */
+export let browserRelaunches = 0;
 const MIN_WAIT = Number(process.env.FO_MIN_WAIT_MS ?? 8000);
 const MAX_WAIT = Number(process.env.FO_MAX_WAIT_MS ?? 15000);
 
@@ -631,12 +636,20 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
   const releaseAwake = keepAwake();
   // ブラウザを起動し直す（2本の送信が同時に気づいても1回だけ）。古いブラウザは待たずに閉じる
   let stuckInRow = 0;
+  // ブラウザを長く使い続けると重くなる（Windows の利用先: 始めは1時間に約200社 → 丸1日で約50社まで落ち、最後は固まった）。
+  // 一定の社数・時間ごとに新しいブラウザに替える。替える前のブラウザは、それを使っている会社が全部終わってから閉じる
+  // （送信の途中で閉じると、届いたか分からない会社が出る）
+  let jobsOnBrowser = 0;
+  let browserSince = Date.now();
+  const inUse = new Map<Browser, number>();
+  const retired = new Set<Browser>();
+  const retire = (old: Browser) => { if (!inUse.get(old)) old.close().catch(() => {}); else retired.add(old); };
   let relaunching: Promise<void> | null = null;
-  const relaunch = (why: string) => relaunching ??= (async () => {
-    logWarn("worker", `フォーム用のブラウザを起動し直します（${why}）`);
+  const relaunch = (why: string, warn = true) => relaunching ??= (async () => {
+    if (warn) logWarn("worker", `フォーム用のブラウザを起動し直します（${why}）`);
     const old = browser;
-    try { browser = await launchBrowser(); stuckInRow = 0; } catch (e) { logError("worker", `ブラウザを起動し直せませんでした: ${jpError(e)}`); }
-    old.close().catch(() => {});
+    try { browser = await launchBrowser(); stuckInRow = 0; jobsOnBrowser = 0; browserSince = Date.now(); retire(old); browserRelaunches++; }
+    catch (e) { logError("worker", `ブラウザを起動し直せませんでした: ${jpError(e)}`); }
   })().finally(() => { relaunching = null; });
   // 続けて失敗しているときに気づけるようにする（設定ミス・サイト側の変化・ネットワーク断）
   let failStreak = 0;
@@ -678,7 +691,14 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
         try {
           // ブラウザが落ちている・固まっているなら、先に起動し直す
           if (!browser.isConnected() || stuckInRow >= 2) await relaunch(!browser.isConnected() ? "ブラウザが落ちていた" : `${stuckInRow}社続けて、ページを開く前に固まった`);
-          const j = await withJobLimit(processJob(browser, next.id), next.id);
+          else if (jobsOnBrowser >= BROWSER_JOBS || Date.now() - browserSince > BROWSER_MS) await relaunch("定期の入れ替え", false);
+          const b = browser;
+          jobsOnBrowser++;
+          inUse.set(b, (inUse.get(b) ?? 0) + 1);
+          const j = await withJobLimit(processJob(b, next.id), next.id).finally(() => {
+            inUse.set(b, (inUse.get(b) ?? 1) - 1);
+            if (retired.has(b) && !inUse.get(b)) { retired.delete(b); b.close().catch(() => {}); }
+          });
           processed++;
           // ページを開く前（操作の記録が1行も無いまま）に時間切れになった。ブラウザ自体が固まっているしるし
           // （実例: Windows の利用先で、ある時刻から全社がこれになり、3時間半で40社しか進まなかった）
@@ -720,6 +740,7 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
     await Promise.all(Array.from({ length: Math.max(1, CONCURRENCY) }, worker));
   } finally {
     await browser.close().catch(() => {});
+    for (const b of retired) b.close().catch(() => {});
     releaseAwake();
     running.delete(campaignId);
     const left = (db.prepare("SELECT COUNT(*) n FROM form_jobs WHERE campaign_id=? AND status='queued' AND is_test=0").get(campaignId) as { n: number }).n;

@@ -1,6 +1,6 @@
 {
   "name": "apoboost",
-  "version": "1.0.29",
+  "version": "1.0.30",
   "private": true,
   "description": "【フォーム＆メール】ApoBoost — 問い合わせフォーム／メール営業の自動送信ツール（単体版）",
   "type": "module",
@@ -10,7 +10,7 @@
     "worker": "tsx src/worker.ts",
     "cli": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx test/unit.ts && tsx test/replies.ts && tsx test/support.ts && tsx test/smoke.ts && tsx test/todo.ts && tsx test/e2e.ts",
+    "test": "tsx test/unit.ts && tsx test/replies.ts && tsx test/support.ts && tsx test/smoke.ts && tsx test/todo.ts && tsx test/e2e.ts && tsx test/loop.ts",
     "release": "node scripts/release.mjs",
     "license": "node scripts/license.mjs",
     "test:quick": "tsc --noEmit && tsx test/unit.ts && tsx test/replies.ts && tsx test/support.ts && tsx test/smoke.ts"
