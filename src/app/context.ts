@@ -303,13 +303,15 @@ export function groupNames(req: express.Request): string[] {
 /** 「失敗した会社を再送信」の対象＝会社（ドメイン）ごとに最新のジョブが 失敗／フォーム無し のもの。
  *  同じ会社の古い試行（その後に成功・別状態になった行）は含めない。一覧・件数・再送信の3か所で共通に使う。 */
 export function retryTargetJobs(campaignId: number): { id: number; company_name: string; status: string; result_text: string }[] {
-  return db.prepare(`SELECT j.id, j.company_name, j.status, j.result_text FROM form_jobs j
-    WHERE j.campaign_id=? AND j.is_test=0
-      AND j.id = (SELECT x.id FROM form_jobs x WHERE x.campaign_id=j.campaign_id AND x.is_test=0
-                  AND COALESCE(NULLIF(x.domain,''),CAST(x.id AS TEXT)) = COALESCE(NULLIF(j.domain,''),CAST(j.id AS TEXT))
-                  ORDER BY x.updated_at DESC, x.id DESC LIMIT 1)
-      AND j.status IN ('failed','skip_no_form')
-    ORDER BY j.company_name`).all(campaignId) as { id: number; company_name: string; status: string; result_text: string }[];
+  // 会社（ドメイン）ごとの最新の1行を、ウィンドウ関数でまとめて1回で選ぶ。
+  // 以前は1行ごとに表全体を探し直す書き方で、12万社のキャンペーンではこれだけで数秒〜（Windows では）数分かかり、
+  // キャンペーンの画面が開くのに10分以上かかっていた
+  return db.prepare(`SELECT id, company_name, status, result_text FROM (
+      SELECT j.id, j.company_name, j.status, j.result_text,
+        ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(j.domain,''),CAST(j.id AS TEXT)) ORDER BY j.updated_at DESC, j.id DESC) rn
+      FROM form_jobs j WHERE j.campaign_id=? AND j.is_test=0)
+    WHERE rn=1 AND status IN ('failed','skip_no_form')
+    ORDER BY company_name`).all(campaignId) as { id: number; company_name: string; status: string; result_text: string }[];
 }
 
 // ---- 「開始したのに進まない／勝手に止まった」理由（#2周目-5）----

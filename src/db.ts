@@ -309,6 +309,8 @@ function migrate(db: Database.Database) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_form_jobs_outcome ON form_jobs(outcome)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_form_jobs_status_updated ON form_jobs(status, updated_at)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_form_jobs_sent_at ON form_jobs(sent_at)`);
+  // 事前チェックの進み具合（scanned_at）を数えるため。キャンペーン画面が送信中ずっと問い合わせている
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_form_jobs_scanned ON form_jobs(campaign_id, scanned_at)`);
   // 要対応を「見送り」にした日時（#115）。NULL=見送っていない
   addCol("form_jobs", "dismissed_at", "TEXT");
   addCol("form_jobs", "appo_seen_at", "TEXT");                           // アポを「確認した」日時。空＝未確認（メニューの数字に数える）

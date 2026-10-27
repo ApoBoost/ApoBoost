@@ -519,7 +519,7 @@ function foHist(btn){
 }catch(e){}})();
 </script>
 ${extra.scanning || running ? `<script>
-// 実行中: 2.5秒ごとに進捗を取り、バーを動かす。状態が変わったら（完了・停止）ページを更新する。
+// 実行中: 10秒ごとに進捗を取り、バーを動かす。状態が変わったら（完了・停止）ページを更新する。
 const wasScanning=${extra.scanning},wasRunning=${running};
 async function foPoll(){try{
   const r=await fetch("/campaigns/${c.id}/progress");if(!r.ok)return;const p=await r.json();
@@ -529,8 +529,10 @@ async function foPoll(){try{
   if(ef&&p.total){const pct=Math.round(p.processed/p.total*100);ef.style.width=pct+"%";if(et)et.textContent="処理済み "+p.processed+" / "+p.total+" 社（"+pct+"%）";}
   if(p.scanning!==wasScanning||p.running!==wasRunning)location.reload();
 }catch(e){}}
-setInterval(foPoll,2500);
-setTimeout(()=>location.reload(),15000); // 一覧の中身も15秒ごとに更新
+// 画面を見ていないとき（別のタブ・最小化）は問い合わせない。画面を作る集計は重く、その間は送信も止まるため、
+// 一覧の更新は60秒ごとにし、入力中・メニューを開いている間は待つ（以前は15秒ごとで、12万社のキャンペーンでは画面が開き終わらず送信も進まなかった）
+setInterval(()=>{if(!document.hidden)foPoll();},10000);
+setInterval(()=>{const a=document.activeElement;if(document.hidden||(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))||document.querySelector("details.more[open]"))return;location.reload();},60000);
 </script>` : ""}`;
 }
 
