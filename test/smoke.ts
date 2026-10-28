@@ -278,6 +278,37 @@ try {
       if (again.status !== 302) ng("管理者を決めたあとも、初回設定の画面が開けてしまいます");
       const relogin = await form("/login", "username=owner&password=owner-pass-123");
       if (relogin.status !== 302) ng("初回設定で決めたID・パスワードでログインできません");
+      // パスワードを忘れたとき: このPCから、黒い画面（とデータのファイル）に出る番号で作り直せる。番号は画面には出さない
+      const loginHtml = await (await fetch(`${base}/login`)).text();
+      if (!loginHtml.includes('href="/forgot"')) ng("ログイン画面に「パスワードを忘れた」がありません");
+      const fp = await fetch(`${base}/forgot`, { redirect: "manual" });
+      if (fp.status !== 200 || !(await fp.text()).includes("確認の番号を出す")) ng(`パスワードの再設定の画面が開けません（HTTP ${fp.status}）`);
+      const fpProxy = await form("/forgot", "step=code", { "x-forwarded-for": "203.0.113.5" });
+      if (fpProxy.status !== 403) ng(`転送役を通った要求で、パスワードの再設定の番号を出せてしまいます（HTTP ${fpProxy.status}）`);
+      const fpEvil = await form("/forgot", "step=code", { origin: "http://evil.example.test" });
+      if (fpEvil.status !== 403) ng(`別サイトからの送信で、再設定の番号を出せてしまいます（HTTP ${fpEvil.status}）`);
+      const before = log.length;
+      const issue = await form("/forgot", "step=code", { origin: base });
+      const enter = await (await fetch(`${base}${issue.headers.get("location") ?? "/forgot"}`)).text();
+      await new Promise((r) => setTimeout(r, 300));
+      const code = /確認の番号: (\d{6})/.exec(log.slice(before))?.[1];
+      const file = path.join(dir, "パスワード再設定の番号.txt");
+      if (issue.status !== 302 || !enter.includes('name="code"')) ng(`再設定の番号を出したあと、番号を入れる画面になりません（HTTP ${issue.status}）`);
+      if (!code) ng("再設定の番号が黒い画面に出ていません");
+      else {
+        if (enter.includes(code)) ng("再設定の番号がブラウザの画面に出ています（このPCの前にいない人にも見えてしまう）");
+        if (!fs.existsSync(file) || !fs.readFileSync(file, "utf8").includes(code)) ng("再設定の番号が data フォルダのファイルに書かれていません");
+        if (!log.slice(before).includes("owner（管理者）")) ng("再設定の番号と一緒に、ログインIDが黒い画面に出ていません");
+        const wrong = await form("/forgot", `step=reset&code=${code === "000000" ? "111111" : "000000"}&username=owner&password=new-pass-123&password2=new-pass-123`, { origin: base });
+        if (wrong.status !== 400 || !(await wrong.text()).includes("確認の番号が違います")) ng("違う確認の番号で、パスワードを変えられてしまいます");
+        const done = await form("/forgot", `step=reset&code=${encodeURIComponent(code)}&username=Owner&password=new-pass-123&password2=new-pass-123`, { origin: base });
+        if (done.status !== 302 || !(done.headers.get("set-cookie") ?? "").includes("apoboost_sid=")) ng(`正しい確認の番号でパスワードを変えられません（HTTP ${done.status}）`);
+        if ((await form("/login", "username=owner&password=owner-pass-123")).status !== 401) ng("再設定したあとも、前のパスワードでログインできます");
+        if ((await form("/login", "username=owner&password=new-pass-123")).status !== 302) ng("再設定した新しいパスワードでログインできません");
+        if (fs.existsSync(file)) ng("再設定が済んだあとも、番号のファイルが残っています");
+        const reuse = await form("/forgot", `step=reset&code=${encodeURIComponent(code)}&username=owner&password=new-pass-456&password2=new-pass-456`, { origin: base });
+        if (reuse.status !== 400) ng("使い終わった確認の番号で、もう一度パスワードを変えられます");
+      }
     }
     // 二重起動: 同じポートでもう1つ起動したら、すぐ「すでに起動しています」と言って正常終了（終了コード0）し、動いている方は止まらない。
     // 0 以外で終わると Mac の自動起動（launchd）が10秒おきに起動し直し、ポートを使用中のまま永久に繰り返す

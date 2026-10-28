@@ -149,8 +149,8 @@ export function endSession(req: Request, res: Response) {
 
 export type AuthedRequest = Request & { user?: User };
 
-/** 認証が要らないパス（ログイン画面・初回設定・配信停止リンク）。/welcome は経路の側で「管理者がまだいない・このPCから」を確かめる */
-const PUBLIC_PATHS = [/^\/login$/, /^\/logout$/, /^\/welcome$/, /^\/unsubscribe\//, /^\/healthz$/, /^\/terms$/];
+/** 認証が要らないパス（ログイン画面・初回設定・配信停止リンク）。/welcome は経路の側で「管理者がまだいない・このPCから」を、/forgot は「このPCから」を確かめる */
+const PUBLIC_PATHS = [/^\/login$/, /^\/logout$/, /^\/welcome$/, /^\/forgot$/, /^\/unsubscribe\//, /^\/healthz$/, /^\/terms$/];
 
 export function authMiddleware(req: AuthedRequest, res: Response, next: NextFunction) {
   const db = getDb();

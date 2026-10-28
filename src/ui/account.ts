@@ -41,13 +41,14 @@ input:focus{outline:0;border-color:#0071E3;box-shadow:0 0 0 4px rgba(0,113,227,.
 @keyframes sheen{from{background-position:150% 0}to{background-position:-50% 0}}
 @keyframes sheen2{from{background-position:150% 0}to{background-position:-50% 0}}
 @media (prefers-reduced-motion:reduce){body,.box,.logo,.logo::after{animation:none!important}button{transition:none}}
-.note{background:#F5F5F7;color:#6E6E73;border-radius:8px;padding:9px 12px;font-size:12px;line-height:1.6;margin:14px 0 0}
+.note{background:#F5F5F7;color:#6E6E73;border-radius:8px;padding:9px 12px;font-size:12px;line-height:1.6;margin:14px 0 0;overflow-wrap:anywhere}
 .info{background:#E8F2FD;color:#0B4F94;border-radius:8px;padding:9px 12px;font-size:13px;line-height:1.6;margin-bottom:6px}
 .check{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:#1D1D1F;margin:18px 0 0;cursor:pointer}
 .check input{width:auto;margin:2px 0 0;flex:none}
 .hint{color:#6E6E73;font-size:12px;line-height:1.6;margin:4px 0 0 24px}
 .foot{position:fixed;left:0;right:0;bottom:10px;text-align:center;font-size:11px;color:#86868B;pointer-events:none}
-.foot a,.check a{color:#0066CC;pointer-events:auto}
+.foot a,.check a,.alt a{color:#0066CC;pointer-events:auto}
+.alt{text-align:center;font-size:13px;margin:14px 0 0}
 `;
 
 /** ログイン画面（ヘッダー無しの独立レイアウト）。notice は「管理者がまだいない」ときの案内など */
@@ -64,8 +65,45 @@ ${opts.error ? `<div class="err">${esc(opts.error)}</div>` : ""}
 <label>ログインID</label><input name="username" autocomplete="username" autofocus required>
 <label>パスワード</label><input name="password" type="password" autocomplete="current-password" required>
 <button>ログイン</button>
+<p class="alt"><a href="/forgot">パスワードを忘れた</a></p>
 <img class="buddy" src="/assets/mascot.png?v=1" alt="" onerror="this.remove()">
 </form>${authFoot(opts.licensee)}${FX_LOGIN}</body></html>`;
+}
+
+/** パスワードの再設定（このPCから開いたときだけ）。
+ *  step="start": 確認の番号を出すボタン。step="enter": 番号と新しいパスワードを入れる。
+ *  番号はこのPCの黒い画面とデータのフォルダの中のファイルにだけ出す（画面には出さない）。
+ *  黒い画面やフォルダを見られるのはこのPCの前にいる人だけなので、同じWi-Fiの他人やよそのサイトからは再設定できない */
+export function forgotPage(opts: { step: "start" | "enter" | "elsewhere"; error?: string; info?: string; username?: string; codeFile?: string } ): string {
+  const body = opts.step === "elsewhere"
+    ? `<div class="info">パスワードの再設定は、ApoBoost を起動したパソコンで http://localhost:${esc(String(process.env.PORT ?? 3210))} を開いて行ってください。ほかのパソコンやスマホからはできません。メンバーの方は、管理者に再発行を頼んでください。</div>
+<p class="alt"><a href="/login">ログイン画面に戻る</a></p>`
+    : opts.step === "start"
+    ? `<p class="sub">確認の番号を出して、新しいパスワードを決めます</p>
+${opts.error ? `<div class="err">${esc(opts.error)}</div>` : ""}
+<input type="hidden" name="step" value="code">
+<p class="note" style="margin-top:0">下のボタンを押すと、6けたの確認の番号が<b>ApoBoost の黒い画面</b>（タスクバーにしまわれていることもあります）に出ます。同じ番号は、ApoBoost のフォルダの中の <b>data</b> フォルダの「パスワード再設定の番号.txt」にも書きます。</p>
+<button>確認の番号を出す</button>
+<p class="alt"><a href="/login">ログイン画面に戻る</a></p>`
+    : `<p class="sub">黒い画面に出た番号と、新しいパスワードを入れてください</p>
+${opts.info ? `<div class="info">${esc(opts.info)}</div>` : ""}
+${opts.error ? `<div class="err">${esc(opts.error)}</div>` : ""}
+<input type="hidden" name="step" value="reset">
+<label>確認の番号（6けた）</label><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9０-９]{6}" required autofocus>
+<label>ログインID（黒い画面にも出ています）</label><input name="username" value="${esc(opts.username ?? "")}" autocomplete="username" required>
+<label>新しいパスワード（8文字以上）</label><input name="password" type="password" autocomplete="new-password" required minlength="8">
+<label>新しいパスワード（確認のためもう一度）</label><input name="password2" type="password" autocomplete="new-password" required minlength="8">
+<button>パスワードを変えてログイン</button>
+<p class="note">番号は10分で使えなくなります。${opts.codeFile ? `黒い画面が見つからないときは、${esc(opts.codeFile)} を開いてください。` : ""}</p>
+<p class="alt"><a href="/forgot">番号を出し直す</a>・<a href="/login">ログイン画面に戻る</a></p>`;
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>パスワードの再設定 | ApoBoost</title>
+<style>
+${AUTH_CSS}</style></head><body>
+<form class="box" method="post" action="/forgot">
+<h1><span class="logo"><img class="mark" src="/assets/logo.png?v=2" alt="ApoBoost" width="220" height="44"></span></h1>
+${body}
+</form>${authFoot()}</body></html>`;
 }
 
 /** ログイン前の画面の下: 使用を許諾した相手・著作権表示・利用規約 */

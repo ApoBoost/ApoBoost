@@ -29,7 +29,9 @@ import { checkUpdate, applyUpdate, requestRestart, currentVersion, updateChannel
 import { errorPage } from "../ui/layout.js";
 import { esc, layout, termsPage, lawView, todoView, todoRunView, setupView, checklistView, reportView, campaignListView, sendersView, type SenderExtra, campaignForm, campaignView, jobView, suppressionsView, settingsView, loginPage, passwordView, usersView, updateView, testView, gameView, guideView, statsView, importPreviewView, logsView, healthView, errKind, type NavUser } from "../views.js";
 import { authMiddleware, renameUser, requireAdmin, startSession, endSession, findUser, verifyPassword, createUser, setPassword, listUsers, ensureFirstAdmin, randomPassword, cleanupSessions, needsFirstSetup, isLocalRequest, createFirstAdmin, defaultAdminUsername, type AuthedRequest } from "../auth.js";
-import { firstAdminPage } from "../ui/account.js";
+import { firstAdminPage, forgotPage } from "../ui/account.js";
+import crypto from "node:crypto";
+import { DATA_DIR } from "../db.js";
 import { app, db, redirectWith, takeFlash, me, appState, navUser, loginFails, LOGIN_WINDOW, recentFails, issuedOnce, shareUrls } from "../app/context.js";
 
 /** 管理者がまだいないのに、このPC以外から開いたときの案内 */
@@ -150,6 +152,77 @@ app.post("/login", (req, res) => {
   startSession(res, u.id);
   // 「//よそのサイト」や「/\\…」は、ブラウザがよそのサイトへの移動として扱うので通さない
   res.redirect(/^\/(?![\/\\])/.test(next) ? next : "/");
+});
+
+// ---- パスワードの再設定（ログインせずに、このPCから）----
+// 管理者が1人だけでパスワードを忘れると、誰も再発行できず、送信の状況も見られなくなっていた。
+// 確認の番号は、このPCの黒い画面と data フォルダのファイルにだけ出す。ブラウザの画面には出さないので、
+// 番号を知れるのは、このPCの前にいる人（＝ファイルもデータベースも元から触れる人）だけ
+const RESET_FILE = path.join(DATA_DIR, "パスワード再設定の番号.txt");
+const RESET_MS = 10 * 60_000;
+let resetCode: { code: string; until: number; tries: number } | null = null;
+const dropResetFile = () => { try { fs.rmSync(RESET_FILE, { force: true }); } catch { /* 消せなくても、番号はもう使えない */ } };
+const resetCodeLive = () => {
+  if (resetCode && Date.now() > resetCode.until) { resetCode = null; dropResetFile(); }
+  return resetCode;
+};
+/** よそのサイトから送り込まれた送信は受けない（/welcome と同じ） */
+const sameOrigin = (req: express.Request) => { const o = String(req.headers.origin ?? ""); return !o || o === `${req.protocol}://${req.headers.host}`; };
+
+app.get("/forgot", (req, res) => {
+  if (needsFirstSetup()) return res.redirect("/welcome");
+  if (!isLocalRequest(req)) return res.status(403).send(forgotPage({ step: "elsewhere" }));
+  res.send(resetCodeLive() && req.query.enter ? forgotPage({ step: "enter", codeFile: RESET_FILE }) : forgotPage({ step: "start" }));
+});
+
+app.post("/forgot", (req, res) => {
+  if (needsFirstSetup()) return res.redirect("/welcome");
+  if (!isLocalRequest(req)) return res.status(403).send(forgotPage({ step: "elsewhere" }));
+  if (!sameOrigin(req)) return res.status(403).send(forgotPage({ step: "start", error: "この画面は、ApoBoost の画面から開いて送ってください" }));
+  if (req.body.step === "code") {
+    resetCode = { code: String(crypto.randomInt(0, 1_000_000)).padStart(6, "0"), until: Date.now() + RESET_MS, tries: 0 };
+    const users = (db.prepare("SELECT username, role FROM users WHERE active=1 ORDER BY role='admin' DESC, id").all() as { username: string; role: string }[])
+      .map((u) => `${u.username}${u.role === "admin" ? "（管理者）" : ""}`).join("、");
+    const lines = [
+      "", "==================== パスワードの再設定 ====================",
+      `  確認の番号: ${resetCode.code}`,
+      `  ログインID: ${users}`,
+      "  この番号を、ブラウザの「パスワードの再設定」の画面に入れてください（10分で使えなくなります）。",
+      "  自分で押した覚えがなければ、無視してください。",
+      "============================================================", "",
+    ];
+    console.log(lines.join("\n"));
+    try { fs.writeFileSync(RESET_FILE, `\ufeff${lines.join("\r\n")}`); } catch { /* 黒い画面には出ている */ }
+    logInfo("auth", "パスワードの再設定の番号を出しました（このPCから）");
+    return res.redirect("/forgot?enter=1");
+  }
+  const live = resetCodeLive();
+  const username = String(req.body.username ?? "").trim();
+  const again = (error: string) => res.status(400).send(live ? forgotPage({ step: "enter", error, username, codeFile: RESET_FILE }) : forgotPage({ step: "start", error }));
+  if (!live) return again("確認の番号の期限が切れました。もう一度「確認の番号を出す」を押してください");
+  const code = String(req.body.code ?? "").normalize("NFKC").replace(/\D/g, "");
+  if (code !== live.code) {
+    // 当てずっぽうで通らないよう、5回間違えたら番号を捨てる
+    if (++live.tries >= 5) { resetCode = null; dropResetFile(); return res.status(400).send(forgotPage({ step: "start", error: "確認の番号を5回間違えたので、番号を使えなくしました。もう一度「確認の番号を出す」を押してください" })); }
+    return again(`確認の番号が違います（黒い画面のいちばん新しい番号を入れてください。あと${5 - live.tries}回）`);
+  }
+  const u = findUser(username);
+  if (!u || !u.active) return again("そのログインIDは見つかりません。黒い画面に出ているログインIDを入れてください");
+  const p1 = String(req.body.password ?? ""), p2 = String(req.body.password2 ?? "");
+  if (p1 !== p2) return again("新しいパスワードが一致しません。もう一度入力してください");
+  try {
+    setPassword(u.id, p1, false);
+  } catch (e) {
+    return again(String((e as Error).message));
+  }
+  resetCode = null;
+  dropResetFile();
+  // ほかで開いたままのログインは閉じる（パスワードを知られて変えた場合に備えて）。ログインの失敗回数も消す
+  db.prepare("DELETE FROM sessions WHERE user_id=?").run(u.id);
+  for (const k of [...loginFails.keys()]) if (k.endsWith(`|${u.username}`) || k.endsWith("|*")) loginFails.delete(k);
+  logInfo("auth", `パスワードを再設定しました（このPCから・ログインID: ${u.username}）`);
+  startSession(res, u.id);
+  redirectWith(res, "/", `パスワードを変えました。次からは新しいパスワードでログインしてください（ログインID: ${u.username}）`);
 });
 
 app.get("/logout", (req, res) => {
