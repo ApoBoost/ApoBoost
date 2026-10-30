@@ -385,6 +385,21 @@ function migrate(db: Database.Database) {
   )`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_app_logs_kind ON app_logs(kind, id)`);
 
+  // v1.0.34 まで、送ったあとに開いていたページのアドレスを「フォームのURL」として残していた。GET で送るフォームでは
+  // 「…mail.cgi?name=…&mail=…%40…」のように入力内容が付いたままになり、送り直しや一覧のリンクで開くだけで、同じ内容が
+  // もう一度相手に送られる恐れがあった。そのアドレスを、記録に残っている「フォームがあったページ」（無ければ ? より前）に戻す。
+  // 一致するのは入力内容の付いた行だけなので、毎回起動時に流しても結果は変わらない
+  {
+    const bad = db.prepare(`SELECT id, form_url, result_text FROM form_jobs
+      WHERE instr(form_url, '?') > 0 AND (instr(substr(form_url, instr(form_url, '?')), '%40') > 0 OR instr(substr(form_url, instr(form_url, '?')), '@') > 0)`).all() as { id: number; form_url: string; result_text: string }[];
+    const fix = db.prepare("UPDATE form_jobs SET form_url=? WHERE id=?");
+    for (const r of bad) {
+      const page = /^form: (https?:\/\/\S+)$/m.exec(r.result_text ?? "")?.[1] ?? "";
+      const clean = (u: string) => (/[?].*(@|%40)/i.test(u) ? u.slice(0, u.indexOf("?")) : u);
+      fix.run(clean(page || r.form_url), r.id);
+    }
+  }
+
   // 右下のキャラクター（演出）。ゲームと同じく、新しく入れたPCでは最初は出さない（他社の管理画面として軽く見えないように）。
   // この設定ができる前から使っていたPCは、これまで通り表示にしておく
   if (!db.prepare("SELECT 1 FROM settings WHERE key='effects_enabled'").get()) {

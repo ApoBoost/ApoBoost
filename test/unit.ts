@@ -1354,6 +1354,17 @@ ok("applog: 書いて読める", recentLogs(5).some((r) => r.text === "テスト
   eq("上限: 全角数字・「を超えています」", limitFromError("本文が１，０００文字を超えています"), 1000);
   eq("上限: 数字の無いエラーは null", limitFromError("お名前を入力してください"), null);
   eq("上限: 「半角1000文字以下」だけなら、日本語はその半分", limitFromError("送信内容は半角1000文字以下で入力してください"), 500);
+  // 名前の欄の上限を本文の上限と読まない（営業文を25文字に切って入れ直していた）
+  eq("上限: 名前の「全角25文字以内」は本文の上限ではない", limitFromError("入力エラー: お名前は全角25文字以内で入力してください。 / 会社名を入力してください"), null);
+  eq("上限: 欄が並んでいても、本文の分だけ読む", limitFromError("入力エラー: フリガナは全角30文字以内で入力してください / お問い合わせ内容は800文字以内で入力してください"), 800);
+  eq("SPAM BLOCK（URLを含められない）は URL 禁止", urlBanned("サイト側で受け付けられませんでした: SPAM BLOCK（SPAM BLOCK 繧ｹ繝代Β 送信内容にURLを含める事は…）"), true);
+  {
+    const { personForForm } = await import("../src/formFiller.js");
+    eq("担当者名から会社名の語を外す", personForForm("BRIDGE HATCH 山田太郎", "ブリッジハッチ ヤマダタロウ", "BRIDGE HATCH株式会社"), { person: "山田太郎", kana: "ヤマダタロウ" });
+    eq("英字の会社名の語が会社名に無くても、漢字の名前があれば英字の語は外す", personForForm("Sales 山田 太郎", "ヤマダ タロウ", "株式会社サンプル"), { person: "山田 太郎", kana: "ヤマダ タロウ" });
+    eq("ふつうの担当者名はそのまま", personForForm("山田 太郎", "ヤマダ タロウ", "株式会社サンプル商事"), { person: "山田 太郎", kana: "ヤマダ タロウ" });
+    eq("英字だけの名前はそのまま", personForForm("John Smith", "ジョン スミス", "Acme Inc."), { person: "John Smith", kana: "ジョン スミス" });
+  }
   ok("URL禁止: 「URLを含める事はできません」", urlBanned("入力内容にURLを含める事はできません。"));
   ok("URL禁止: 関係の無いエラーは違う", !urlBanned("電話番号を正しく入力してください"));
   const nu = stripUrls("資料はこちら\nhttps://example.com/a\n\n詳しくは https://example.com/b をご覧ください\n山田");

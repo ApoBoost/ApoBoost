@@ -235,7 +235,9 @@ export async function pageHasContactForm(page: Page): Promise<boolean> {
       total: document.documentElement.scrollHeight,
       step: Math.max(400, Math.floor(window.innerHeight * 0.8)),
     }));
-    for (let y = step; y < total + step && y < 30000; y += step) {
+    // 12段・8秒まで（長いページで1ページに数十秒かけ、フォームの無いサイトが4分の打ち切りになっていた）
+    const scrollUntil = Date.now() + 8000;
+    for (let y = step, n = 0; y < total + step && y < 30000 && n < 12 && Date.now() < scrollUntil; y += step, n++) {
       await page.evaluate((yy) => window.scrollTo(0, yy), y);
       await page.waitForTimeout(350);
       if (await scanFrames(page)) return true;
@@ -426,7 +428,8 @@ async function linksOn(page: Page): Promise<Link[]> {
       const el = a as HTMLAnchorElement;
       const img = a.querySelector("img[alt]");
       return {
-        href: el.href,
+        // SVG の中の <a> は href が文字列ではない（「v.href.split is not a function」で落ちていた: unikettor.co.jp）
+        href: typeof el.href === "string" ? el.href : String((el.href as unknown as { baseVal?: string })?.baseVal ?? ""),
         text: [el.innerText, a.getAttribute("title"), a.getAttribute("aria-label"), img ? img.getAttribute("alt") : ""].filter(Boolean).join(" ").trim(),
         // フッター（またはページ下部）のリンクは、問い合わせページである確率が高い
         footer: Boolean(el.closest("footer, [class*='footer'], [id*='footer']")),
@@ -438,7 +441,15 @@ async function linksOn(page: Page): Promise<Link[]> {
 /** フォームのあるページへ遷移する。見つかれば最終URL、無ければ null。
  *  note.reason: 問い合わせ以外のフォームだった／note.dead: サイトが開けない／note.foreign: 別の会社のサイトに転送された
  *  companyName: 転送で別のドメインに着いたとき、同じ会社のサイトかを確かめるのに使う */
-export async function findContactForm(page: Page, formUrl: string, siteUrl: string, note: { reason?: string; dead?: string; foreign?: string } = {}, opts: { companyName?: string } = {}): Promise<string | null> {
+export async function findContactForm(page: Page, formUrl: string, siteUrl: string, note: { reason?: string; dead?: string; foreign?: string; slow?: string } = {}, opts: { companyName?: string } = {}): Promise<string | null> {
+  // 探す時間の上限。上限が無く、フォームの無いサイト（動画が流れ続けて通信が落ち着かない等）で4分の打ち切りまで探し続け、
+  // 「固まった」とみなしてブラウザを起動し直し、自動で送り直して、1社に8分かかっていた（Windows の利用先で37件中31件）
+  const deadline = Date.now() + (Number(process.env.FO_FIND_LIMIT_MS) || 120_000);
+  const late = () => {
+    if (Date.now() <= deadline) return false;
+    note.slow ??= `${Math.round((Number(process.env.FO_FIND_LIMIT_MS) || 120_000) / 1000)}秒探しても見つかりませんでした`;
+    return true;
+  };
   const tried = new Set<string>();
   // 開いた結果のURL（リダイレクト後）で、もう調べたページ。どのパスでもトップへ転送するサイトだと、
   // よくあるパス約40本で毎回同じトップページをスクロールして調べ直し、1社に何分もかかっていた
@@ -468,13 +479,14 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
   const reach: GotoInfo = {};
   const firstFail: GotoInfo = {};
   const goto = async (u: string) => {
+    if (late()) return false;
     const info: GotoInfo = {};
     const ok = await safeGoto(page, u, info);
     if (ok) reach.ok = true; else if (!firstFail.err && !firstFail.status) Object.assign(firstFail, info);
     return ok;
   };
   const tryUrl = async (u: string, report = false) => {
-    if (!u || tried.has(u)) return false;
+    if (!u || tried.has(u) || late()) return false;
     tried.add(u);
     if (!(await goto(u))) return false;
     if (!(await onOwnSite(report))) return false;
@@ -535,7 +547,7 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
   // 先に状態コードだけ聞いて（描画しない）、無いページ（404 等）は開かない。1社で50回近くページを描画していて遅く、相手のサーバーにも重かった
   const pathsUntil = Date.now() + 90_000;
   for (const p of COMMON_PATHS) {
-    if (Date.now() > pathsUntil) break;
+    if (Date.now() > pathsUntil || late()) break;
     const u = origin + p;
     if (tried.has(u)) continue;
     const head = await page.request.get(u, { timeout: 8000, failOnStatusCode: false, maxRedirects: 5 }).then((r) => ({ status: r.status(), url: r.url() })).catch(() => null);
@@ -552,6 +564,7 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
     if (await tryUrl(u)) return page.url();
   }
 
+  if (late()) return null;
   // 「会社概要」ページ経由（問い合わせリンクが会社概要の中にだけあるサイト向け: #1）
   if (await safeGoto(page, origin + "/company/") || (await safeGoto(page, site))) {
     const sub: string[] = await page.evaluate(() =>
@@ -570,7 +583,7 @@ export async function findContactForm(page: Page, formUrl: string, siteUrl: stri
   }
 
   // 最後の手段: トップに戻り「お問い合わせはこちら」等を押してモーダル/パネルを開く
-  if (await safeGoto(page, site)) {
+  if (!late() && (await safeGoto(page, site))) {
     // 押した先が登録・応募フォーム（「お問い合わせ・ご登録」のようなリンク）や、別の会社のサイトだったら使わない
     if ((await tryClickTrigger(page)) && (await onOwnSite()) && !(await nonInquiryReason(page).then((why) => { if (why && !note.reason) note.reason = `${why}: ${page.url()}`; return why; }))) return page.url();
   }

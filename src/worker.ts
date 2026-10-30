@@ -683,12 +683,20 @@ export async function runCampaign(campaignId: number, opts: { ignoreWindow?: boo
         if (!opts.ignoreWindow && !inSendWindow(campaign)) { reason = "送信時間帯外"; return; }
         // 「メールだけ／フォームだけ」を選んで開始した場合は、その種類だけを送る
         const only = String((campaign as { send_only?: string }).send_only ?? "");
-        const formCap = cappedDailyLimit(campaign.daily_limit).limit;
+        const formCapInfo = cappedDailyLimit(campaign.daily_limit);
+        const formCap = formCapInfo.limit;
         const formOk = only !== "email" && sentToday(campaignId, "form") < formCap;
         // メールは「ウォームアップ中の上限」と「使えるアカウントがあるか」で判断する（#18 #24）
         const mail = pickEmailSender(campaign, sender);
         const emailOk = only !== "form" && Boolean(mail);
         if (!formOk && !emailOk) {
+          // お試し期間が終わってライセンスが無いときは「上限」ではない。設定した上限（例: 50000）を出して「上限に達した」と知らせると、
+          // 何が起きたのか分からなかった（実際にあった）。ライセンスのことだと分かるように知らせる
+          if (formCap === 0 && campaign.daily_limit > 0 && only !== "email") {
+            reason = `ライセンスが必要: ${formCapInfo.note}`;
+            if (notify("ライセンスキーを登録してください", `${formCapInfo.note}（登録すると、続きから送れます）`, `license:${campaignId}`)) logInfo("worker", `ライセンスが無いため停止: ${campaign.name}`);
+            return;
+          }
           reason = only ? `${only === "email" ? "メール" : "フォーム"}の送信が上限または一時停止` : "本日の上限に到達";
           // 「上限に達して止まった」ことに気づけるように通知する（1時間に1回まで）
           if (notify("本日の送信上限に達しました", `「${campaign.name}」は今日の上限（フォーム${campaign.daily_limit}・メール${campaign.email_daily_limit}）に達したため止まりました。残りは明日の送信時間帯に自動で続きます`, `limit:${campaignId}`)) {

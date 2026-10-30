@@ -300,7 +300,7 @@ export function groupNames(req: express.Request): string[] {
   return (db.prepare(`SELECT DISTINCT group_name FROM form_campaigns WHERE group_name<>'' AND ${sc.sql} ORDER BY group_name`).all(...sc.args) as { group_name: string }[]).map((r) => r.group_name);
 }
 
-/** 「失敗した会社を再送信」の対象＝会社（ドメイン）ごとに最新のジョブが 失敗／フォーム無し のもの。
+/** 「失敗した会社を再送信」の対象＝会社（ドメイン）ごとに最新のジョブが 失敗／フォーム無し のもの（届いたか分からない「判定不能」は除く）。
  *  同じ会社の古い試行（その後に成功・別状態になった行）は含めない。一覧・件数・再送信の3か所で共通に使う。 */
 export function retryTargetJobs(campaignId: number): { id: number; company_name: string; status: string; result_text: string }[] {
   // 会社（ドメイン）ごとの最新の1行を、ウィンドウ関数でまとめて1回で選ぶ。
@@ -311,6 +311,8 @@ export function retryTargetJobs(campaignId: number): { id: number; company_name:
         ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(j.domain,''),CAST(j.id AS TEXT)) ORDER BY j.updated_at DESC, j.id DESC) rn
       FROM form_jobs j WHERE j.campaign_id=? AND j.is_test=0)
     WHERE rn=1 AND status IN ('failed','skip_no_form')
+      -- 届いたか分からないもの（送信ボタンは押し済み）は含めない。まとめて送り直すと、届いていた会社に同じ営業文がもう一度届く
+      AND result_text NOT LIKE '%送信後の判定不能%' AND result_text NOT LIKE '%送信済みか不明%' AND result_text NOT LIKE '%送信済みか確認できませんでした%'
     ORDER BY company_name`).all(campaignId) as { id: number; company_name: string; status: string; result_text: string }[];
 }
 

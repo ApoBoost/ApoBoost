@@ -394,6 +394,61 @@ const server = http.createServer(async (req, res) => {
   // 56) Mail Form Pro の確認窓（#mfp_overlay は position:absolute。送信ボタンはフォームの外）
   if (p === "/mfp") return post ? done("mfp") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post" id="f">${fields("<th>電話番号</th>")}<input type="submit" value="submit" onclick="return false" style="display:none"><button type="button" onclick="var o=document.createElement('div');o.id='mfp_overlay';o.style.cssText='position:absolute;top:0;left:0;width:100%;height:3000px;z-index:10001;background:rgba(0,0,0,.6)';o.innerHTML='<div style=&quot;background:#fff;width:400px;margin:150px auto;padding:20px&quot;><p>入力内容をご確認ください</p><button type=button onclick=&quot;document.getElementById(\\'mfp_overlay\\').remove()&quot;>キャンセル</button> <button type=button id=mfp_button_send onclick=&quot;document.getElementById(\\'f\\').submit()&quot;>送信する</button></div>';document.body.appendChild(o)">確認画面へ</button></form>`));
   // 57) 同じページの中で確認表示に切り替わる（欄が読み取り専用になり「送信」「戻る」が出る。contact-form-7-add-confirm の形）
+  // ---- 6周目（Windows の利用先 10/27〜30 の失敗770件から）----
+  // Movable Type の MailForm: mail_author・mail_subject はメールの欄ではない
+  if (p === "/mtmail") return post ? done("mtmail") : send(page("お問い合わせ", `<form method="post"><table><tr><td>ご氏名</td><td><input name="mail_author"></td></tr><tr><td>メールアドレス</td><td><input name="mail_email"></td></tr><tr><td>タイトル</td><td><input name="mail_subject"></td></tr><tr><td>本文</td><td><textarea name="mail_text"></textarea></td></tr></table><input type="submit" value="送信"></form>`));
+  // inquiry_name（_ つき）は名前の欄。本文の欄と読んで営業文を入れない
+  if (p === "/inqname") {
+    if (post) { if ((b.inquiry_name ?? "").length > 30) return send(page("エラー", `<p class="error">お名前は30文字以内で入力してください</p>`)); return done("inqname"); }
+    return send(page("お問い合わせ", `<form method="post"><table><tr><th>お名前</th><td><input name="inquiry_name"></td></tr><tr><th>メール</th><td><input name="inquiry_email"></td></tr><tr><th>お問い合わせ内容</th><td><textarea name="inquiry_body"></textarea></td></tr></table><button type="submit">送信する</button></form>`));
+  }
+  // 「セイ」「メイ」だけのラベル・入力例がカナの欄はフリガナ（カタカナでないと弾く）
+  if (p === "/seimei") {
+    if (post) { if (!/^[ァ-ヶー]+$/.test(b.k1 ?? "") || !/^[ァ-ヶー]+$/.test(b.k2 ?? "")) return send(page("お問い合わせ", `<p class="error">フリガナはカタカナで入力してください</p>`)); return done("seimei"); }
+    return send(page("お問い合わせ", `<form method="post"><dl><dt>ご担当者</dt><dd><input name="sei" placeholder="山田"><input name="mei" placeholder="太郎"></dd><dt>ご担当者（セイ）</dt><dd><input name="k1"></dd><dt>メイ</dt><dd><input name="k2"></dd><dt>メール</dt><dd><input name="em"></dd><dt>内容</dt><dd><textarea name="msg"></textarea></dd></dl><button type="submit">送信する</button></form>`));
+  }
+  // onclick 付きのチェックボックス（値に「送信」）を送信ボタンとして押さない
+  if (p === "/chkbtn") return post ? done("chkbtn") : send(page("お問い合わせ", `<form method="post">${fields("<th>電話番号</th>")}<p><input type="checkbox" name="kp" value="送信チェック済み" onclick="void 0">入力内容を保持</p><input type="submit" value="メールを送信する"></form>`));
+  // 1px の箱に隠したダミーの送信ボタン（古い Mail Form Pro）。本物はフォームの外の確認窓
+  if (p === "/mfp1px") return post ? done("mfp1px") : send(page("お問い合わせ", `<form method="post" id="mf" onsubmit="return false">${fields("<th>電話番号</th>")}<div style="width:1px;height:1px;overflow:hidden"><input type="submit" value="submit"></div><input type="button" id="button_mfp_goconfirm" value="確認画面へ" onclick="document.getElementById('confirmBody').style.display='block'"></form><div id="confirmBody" style="display:none;position:absolute;top:10px;left:10px;z-index:10;background:#fff"><p>入力内容をご確認ください</p><input type="button" value="戻る" onclick="this.parentNode.style.display='none'"><input type="button" value="送信する" onclick="var f=document.getElementById('mf');f.onsubmit=null;f.submit()"></div>`));
+  // 送ったあと数秒だけ「ありがとうございます」が出て消える（Wix）。通信は落ち着かない
+  if (p === "/flash") {
+    if (post) { hit("flash", b); res.writeHead(200, { "content-type": "application/json" }); return res.end("{}"); }
+    if (p === "/flash" && req.method === "GET" && url.search === "?ping") return send("ok");
+    return send(page("お問い合わせ", `<form id="f">${fields("<th>電話番号</th>")}<button type="submit">送信</button></form><p id="ok" style="visibility:hidden">お問い合わせありがとうございます！担当者よりご連絡いたします。</p><script>setInterval(function(){fetch('/flash?ping')},400);document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();fetch('/flash',{method:'POST',body:new URLSearchParams(new FormData(this))}).then(function(){document.getElementById('f').reset();var o=document.getElementById('ok');o.style.visibility='visible';setTimeout(function(){o.style.visibility='hidden'},2500)})})</script>`));
+  }
+  // 確認画面まで進むが、送信ボタンが無い（送信は押していない＝送れていない）
+  if (p === "/confonly") {
+    if (post) { hit("confonly_confirm", b); return send(page("確認", `<h1>入力内容の確認</h1><p>以下の内容でよろしいですか。</p><p>${esc(b.nm)}</p><p>お電話でもお受けしています。</p>`)); }
+    return send(page("お問い合わせ", `<form method="post">${fields("<th>電話番号</th>")}<button type="submit">入力内容を確認する</button></form>`));
+  }
+  // 「その他」を選ぶと、その内容の欄が必須になる
+  if (p === "/othersel") {
+    if (post) { if (b.kind === "その他" && !b.kind_sonota) return send(page("お問い合わせ", `<p class="error">お問い合わせの種類［その他］の内容を入力してください</p>`)); return done("othersel"); }
+    return send(page("お問い合わせ", `<form method="post"><table><tr><th>種類</th><td><select name="kind" required><option value="">選択してください</option><option>採用について</option><option>その他</option></select><input name="kind_sonota" placeholder="その他を選んだ方はご入力ください"></td></tr></table>${fields("<th>電話番号</th>")}<button type="submit">送信する</button></form>`));
+  }
+  // 見出しが入力欄を包む箱の前にある（<h2>貴社名</h2><ul><li><input>）
+  if (p === "/hdrlabel") {
+    if (post) { if (!b.f121 || !b.f122) return send(page("お問い合わせ", `<p class="error">貴社名（必須）を入力してください。 / ご担当者名（必須）を入力してください。</p>`)); return done("hdrlabel"); }
+    return send(page("お問い合わせ", `<form method="post"><h2>貴社名<span>必須</span></h2><ul><li><input name="f121" required></li></ul><h2>ご担当者名<span>必須</span></h2><ul><li><input name="f122" required></li></ul><h2>メールアドレス</h2><ul><li><input name="f123"></li></ul><h2>お問い合わせ内容</h2><ul><li><textarea name="f124"></textarea></li></ul><button type="submit">送信する</button></form>`));
+  }
+  // フォームの中に name="q" の欄（選択欄の絞り込み）がある。検索フォームと読まない
+  if (p === "/qinform") return post ? done("qinform") : send(page("お問い合わせ", `<form method="post"><input name="q" placeholder="業種を絞り込む">${fields("<th>電話番号</th>")}<button type="submit">確認画面へ進む</button></form>`));
+  // 見た目を作り替える部品で隠された、必須の select
+  if (p === "/nicesel") {
+    if (post) { if (!b.kind) return send(page("お問い合わせ", `<p class="error">お問い合わせ種別を選択してください</p>`)); return done("nicesel"); }
+    return send(page("お問い合わせ", `<form method="post"><table><tr><th>お問い合わせ種別</th><td><select name="kind" required style="display:none"><option value="">選択</option><option>製品について</option><option>その他</option></select><div class="nice-select" style="display:inline-block;width:120px;height:20px;border:1px solid #ccc"><span>選択</span></div></td></tr></table>${fields("<th>電話番号</th>")}<button type="submit">送信する</button></form>`));
+  }
+  // 「SPAM BLOCK … URLを含める事はできません」（文字コードの指定なし）。URL を外して入れ直せば通る
+  if (p === "/spamblock") {
+    if (post) {
+      if (/https?:/.test(b.msg ?? "")) { res.writeHead(200, { "content-type": "text/html" }); return res.end(`<html><head><title>SPAM BLOCK</title></head><body><h1>SPAM BLOCK</h1><p>スパム行為の可能性があるため、送信できません。<br />送信内容にURLを含める事はできません。</p></body></html>`); }
+      return done("spamblock");
+    }
+    return send(page("お問い合わせ", `<form method="post">${fields("<th>電話番号</th>")}<button type="submit">送信する</button></form>`));
+  }
+  // Contact Form 7 の画像認証（image-auth-japanese-version）。答えずに飛ばす
+  if (p === "/imgauth") return post ? done("imgauth") : send(page("お問い合わせ", `<form method="post">${fields("<th>電話番号</th>")}<p>画像の文字を入力<img class="image_auth_jp_quiz" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="80" height="20"><input class="wpcf7-image_auth_jp" name="spam-block-01"></p><button type="submit">送信する</button></form>`));
   if (p === "/inpage") return post ? done("inpage") : send(page("お問い合わせ", `<h1>お問い合わせ</h1><form method="post" id="f">${fields("<th>電話番号</th>")}<button type="button" id="cf" onclick="var f=document.getElementById('f');f.querySelectorAll('input,textarea').forEach(function(e){e.readOnly=true});this.style.display='none';document.getElementById('sb').style.display='inline';document.getElementById('bk').style.display='inline'">確認</button><button type="button" id="bk" style="display:none">戻る</button><button type="submit" id="sb" style="display:none">送信</button></form>`));
   // 58) ボタン名の字間に空白（「確 認」「戻 る」「送　信」）。確認画面で「戻る」を押さない
   if (p === "/spaced") {
@@ -453,7 +508,8 @@ try {
     ...["ajaxa", "ajaxb", "ajaxc", "stepconf", "ovl", "twota", "nf", "nf2", "hang", "quiz"].map((k): [string, string, string] => [k, `/${k}`, ""]),
     ...["gform", "numtel", "pick", "unk", "numerr", "capterr", "refusechk", "rcta"].map((k): [string, string, string] => [k, `/${k}`, ""]),
     ["refusechk2", "/refusechk", ""],
-    ...["lenlim", "nourl", "nourlspam", "cf7prob", "modal", "confkeep", "waitchk", "getecho", "cmtonly", "smtpfail", "spiral", "oldform", "blogpost", "mfp", "inpage", "spaced", "cf7state", "nothing", "resetreload", "http500ok", "privlink", "basercms", "mathcap", "reserve", "foreign", "fadein", "mailmag"].map((k): [string, string, string] => [k, `/${k}`, ""])];
+    ...["lenlim", "nourl", "nourlspam", "cf7prob", "modal", "confkeep", "waitchk", "getecho", "cmtonly", "smtpfail", "spiral", "oldform", "blogpost", "mfp", "inpage", "spaced", "cf7state", "nothing", "resetreload", "http500ok", "privlink", "basercms", "mathcap", "reserve", "foreign", "fadein", "mailmag"].map((k): [string, string, string] => [k, `/${k}`, ""]),
+    ...["mtmail", "inqname", "seimei", "chkbtn", "mfp1px", "flash", "confonly", "othersel", "hdrlabel", "qinform", "nicesel", "spamblock", "imgauth"].map((k): [string, string, string] => [k, `/${k}`, ""])];
   // 文字数・URL の制限を試すサイトには、長くて URL の入った本文を送る（先頭の名乗りと最後の署名は残ること）
   const LONG = ["株式会社テスト 御中", "はじめまして。サンプル商事の山田です。", "中略の説明です。".repeat(30), "詳しい資料はこちらです。\nhttps://example.com/doc", "山田 太郎\nsales@example.com"].join("\n\n");
   // フォームの探し方の型（4周目）。サイトのURLを丸ごと指定するものと、社名を渡すもの
@@ -468,7 +524,7 @@ try {
     if (k === "hang") process.env.FO_SUBMIT_LIMIT_MS = "40000"; else delete process.env.FO_SUBMIT_LIMIT_MS;
     // 会社ごとに別のホスト名にする（同じドメインへの連続送信の扱いに引っかからないように）
     const host = `http://t${n}.localhost:${port}`;
-    const r = await submitToCompany(browser, { jobId: 9000 + n, formUrl: formPath ? host + formPath : "", siteUrl: sitePath ? (sitePath.startsWith("http") ? sitePath : host + sitePath) : "", company: companyOf[k], sender, subject: "ご案内", message: ["lenlim", "nourl", "nourlspam"].includes(k) ? LONG : "はじめまして。サービスのご案内です。\nよろしくお願いいたします。", ignoreRefusal: k === "refusechk2" });
+    const r = await submitToCompany(browser, { jobId: 9000 + n, formUrl: formPath ? host + formPath : "", siteUrl: sitePath ? (sitePath.startsWith("http") ? sitePath : host + sitePath) : "", company: companyOf[k], sender, subject: "ご案内", message: ["lenlim", "nourl", "nourlspam", "spamblock"].includes(k) ? LONG : "はじめまして。サービスのご案内です。\nよろしくお願いいたします。", ignoreRefusal: k === "refusechk2" });
     out[k] = { status: r.status, detail: r.detail, log: r.log };
     console.log(`- ${k}: ${r.status} | ${r.detail.split("\n")[0]}`);
     if (process.env.FO_DEBUG) console.log(r.log.join("\n"));
@@ -645,6 +701,21 @@ if (has("reserve")) { assert.equal(got.reserve, undefined, `reserve: 来店予�
 if (has("fadein")) sentOnce("fadein", "スクロールで現れるフォームを、スクロールして待ってから見つける");
 if (has("mailmag")) { assert.equal(got.mailmag, undefined, `mailmag: メルマガ登録に送らない → ${out.mailmag.detail}`); assert.notEqual(out.mailmag.status, "sent"); }
 if (has("foreign")) { assert.equal(got.foreign, undefined, `foreign: ${out.foreign.detail}`); assert.equal(out.foreign.status, "skip_no_form"); }
+
+// ---- 6周目 ----
+if (has("mtmail")) { sentOnce("mtmail", "mail_author・mail_subject をメールの欄と読まない"); assert.equal(got.mtmail[0].mail_author, "山田 太郎"); assert.equal(got.mtmail[0].mail_email, "sales@example.com"); assert.notEqual(got.mtmail[0].mail_subject, "sales@example.com"); }
+if (has("inqname")) { sentOnce("inqname", "inquiry_name を名前の欄と読む"); assert.equal(got.inqname[0].inquiry_name, "山田 太郎"); }
+if (has("seimei")) { sentOnce("seimei", "「セイ」「メイ」の欄にカタカナを入れる"); assert.equal(got.seimei[0].k1, "ヤマダ"); assert.equal(got.seimei[0].k2, "タロウ"); }
+if (has("chkbtn")) { sentOnce("chkbtn", "チェックボックスを送信ボタンとして押さない"); }
+if (has("mfp1px")) { sentOnce("mfp1px", "1px に隠したダミーではなく、確認窓の「送信する」を押す"); }
+if (has("flash")) { sentOnce("flash", "数秒だけ出て消える完了表示を読む"); }
+if (has("confonly")) { assert.equal(out.confonly.status, "failed"); assert.ok(out.confonly.detail.startsWith("送れていません"), `confonly: 確認画面で止まったら「送れていません」 → ${out.confonly.detail}`); }
+if (has("othersel")) { sentOnce("othersel", "「その他」を選んだら、その内容の欄も埋める"); }
+if (has("hdrlabel")) { sentOnce("hdrlabel", "箱の前の見出しをラベルとして読む"); assert.equal(got.hdrlabel[0].f121, "株式会社サンプル商事"); assert.equal(got.hdrlabel[0].f122, "山田 太郎"); }
+if (has("qinform")) { sentOnce("qinform", "フォームの中の name=q で検索フォームと読まない"); }
+if (has("nicesel")) { sentOnce("nicesel", "見た目の部品で隠された select を選ぶ"); assert.ok(got.nicesel[0].kind, "nicesel: 種別が選ばれている"); }
+if (has("spamblock")) { sentOnce("spamblock", "SPAM BLOCK（URL禁止）なら URL を外して入れ直す"); assert.ok(!/https?:/.test(got.spamblock[0].msg), "spamblock: URL を外している"); }
+if (has("imgauth")) { assert.equal(out.imgauth.status, "skip_captcha", `imgauth: ${out.imgauth.detail}`); assert.equal(got.imgauth, undefined); }
 
 console.log("todo: ALL OK");
 process.exit(0);

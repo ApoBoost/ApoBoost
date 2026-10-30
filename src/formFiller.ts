@@ -30,10 +30,15 @@ export type Category =
 const RULES: [Category, RegExp][] = [
   ["ignore", /(fax|ファックス|ファクス|password|パスワード|search|検索|captcha|認証コード|画像の文字|クーポン|coupon)/i],
   ["email_confirm", /((メール|mail).{0,12}(確認|再入力|confirm)|(確認|confirm|re-?enter).{0,12}(メール|mail))/i],
-  ["email", /(メール|e-?mail|mail)/i],
+  // mail_author・mail_subject（Movable Type）や mailform-name のように、名前が mail で始まるだけの欄はメールではない
+  // （名前や件名の欄にメールアドレスを入れ、サイトのエラーで弾かれていた: eter-nita.jp・mausu.net・nbcorp.co.jp）
+  ["email", /(メール|e-?mail|mail(?![_-]?(author|subject|title|text|body|name|form|setting|blog|post|message|content)))/i],
   ["kana_last", /((フリガナ|ふりがな|カナ|kana|セイ)(.{0,6})?(姓|せい|セイ|苗字|last|sei\b)|(姓|せい|苗字).{0,6}(フリガナ|ふりがな|カナ|kana)|kana_sei|sei_kana|kana_last|last_kana|lastkana)/i],
   ["kana_first", /((フリガナ|ふりがな|カナ|kana|メイ)(.{0,6})?(名|めい|メイ|first|mei\b)|(名|めい).{0,6}(フリガナ|ふりがな|カナ|kana)|kana_mei|mei_kana|kana_first|first_kana|firstkana)/i],
-  ["kana", /(フリガナ|ふりがな|カナ|kana|furigana|よみ|ヨミ|ruby|phonetic)/i],
+  // 「ご担当者（セイ）」のように、セイ・メイだけが書いてある欄（n-roumu.com の実例）
+  ["kana_last", /(^|[^ァ-ヶぁ-ん])(セイ|せい)([^ァ-ヶぁ-ん]|$)/],
+  ["kana_first", /(^|[^ァ-ヶぁ-ん])(メイ|めい)([^ァ-ヶぁ-ん]|$)/],
+  ["kana", /(フリガナ|ふりがな|ふりかな|カナ|kana|furigana|よみ|ヨミ|ruby|phonetic)/i],
   ["name_last", /(姓|苗字|名字|lastname|last_name|last-name|family|\bsei\b|surname)/i],
   // 部署名は「〜名」で下の名前に当たってしまうので、名前の判定より先に見る（「部署名」に下の名前が入る事故の対策）
   ["department", /(部署|部門|department|division)/i],
@@ -41,10 +46,15 @@ const RULES: [Category, RegExp][] = [
   ["prefecture", /(都道府県|prefecture|pref\b)/i],
   // 住所の欄（住所3（町名番地）等）は名前より先に判定する。「町名」の「名」を下の名前と誤判定し、住所欄に名前が入る事故があった
   ["address", /(住所\s*[0-9０-９]|町名|番地|丁目|建物名|市区町村|street\s*address|address\s*line)/i],
-  ["name_first", /(^|[^氏会社品件題法人職媒校体署門舗設院織課局室属町])名(?![前称刺簿])|firstname|first_name|first-name|given|\bmei\b/i], // 校体: 「学校名」「団体名」、署門舗…: 「部署名」「店舗名」「施設名」、町: 「町名」を下の名前と誤判定した事故の対策
-  ["company", /(会社|企業|法人|社名|貴社|御社|団体|組織|屋号|店舗名|店名|company|corp|organization|organisation|firm)/i],
-  ["position", /(役職|職位|position|title.*役)/i],
-  ["name", /(氏名|お名前|名前|担当者|ご担当|your-name|\bname\b|fullname|full_name|full-name)/i],
+  // 役職・会社名は、下の名前（「〜名」）より先に見る。「企業名」「事業所（会社）名」が下の名前に、
+  // 「organization-title」が会社名になっていた。「ご施設名」「医院名」「学校名」も会社名として入れる（必須で止まっていた）
+  ["position", /(役職|職位|position|title.*役|organization-title)/i],
+  ["company", /(会社|企業|法人|社名|貴社|御社|団体|組織|屋号|店舗名|店名|事業所|施設名|医院名|病院名|学校名|company|corp|organization|organisation|firm)/i],
+  ["name_first", /(^|[^氏会社品件題法人職媒校体署門舗設院織課局室属町者])名(?![前称刺簿])|firstname|first_name|first-name|given|\bmei\b/i], // 校体: 「学校名」「団体名」、署門舗…: 「部署名」「店舗名」「施設名」、町: 「町名」、者: 「ご担当者名」「代表者名」を下の名前と誤判定した事故の対策
+  // inquiry_name・your_name・_name も（\bname\b は「_」を単語の一部とみなすので当たらず、本文の欄と判定して名前の欄に営業文を入れていた）
+  ["name", /(氏名|お名前|名前|担当者|ご担当|your-name|(?<![a-z])name(?![a-z])|fullname|full_name|full-name)/i],
+  // 「お電話のつながりやすい時間帯」「tel_time」は電話番号の欄ではない
+  ["type", /(時間帯|tell?_?time)/i],
   ["tel", /(電話|tel|phone|携帯|mobile|連絡先番号)/i],
   ["postal", /(郵便|〒|zip|postal|postcode)/i],
   ["prefecture", /(都道府県|prefecture|pref\b)/i],
@@ -72,19 +82,34 @@ export function classify(f: FieldInfo): Category {
   }
   if (f.type === "url") return "url";
   if (["file", "hidden", "submit", "button", "reset", "image", "password", "search", "color", "range"].includes(f.type)) return "ignore";
-  const [own, ctx = ""] = f.sig.split(" || ");
+  // 「mailform_name1」「dnn$ctr599$ViewMailForm$…」のように、フォームの名前が全部の欄の id に入っていると、全部がメールの欄になっていた
+  const scrub = (t: string) => t.replace(/(view)?mail_?form/gi, " ");
+  const [own, ctx = ""] = scrub(f.sig).split(" || ");
   if (f.type === "radio" || f.type === "checkbox") {
     // 選択肢のラベル（「メール」「電話」など）は項目名ではないので、同意だけ自分のラベルで判定し、あとは設問側の見出しで判定
+    // 「チェックを外してから送信してください（スパム対策）」の欄は、付けたままにしない（sghss.co.jp）
+    if (/チェックを外して|外してから送信/.test(f.sig)) return "ignore";
     if (RULES.find(([c]) => c === "agree")![1].test(own)) return "agree";
     for (const [cat, re] of RULES) if (cat !== "ignore" && cat !== "message" && re.test(ctx)) return cat === "email" || cat === "tel" || cat === "name" ? "type" : cat;
     return "type";
   }
   // まず要素自身の手がかり（name/id/placeholder/ラベル/直前テキスト）だけで判定し、決まらなければ周辺テキストも含めて判定
   const fix = (cat: Category): Category => (cat === "type" && f.tag === "input" && /(内容|本文|message|ご相談|ご質問|ご要望)/i.test(f.sig) ? "message" : cat);
-  for (const [cat, re] of RULES) if (re.test(own)) return fix(cat);
-  for (const [cat, re] of RULES) if (re.test(f.sig)) return fix(cat);
-  if (f.tag === "select") return "type";
+  for (const [cat, re] of RULES) if (re.test(own)) return kanaHint(f, fix(cat));
+  for (const [cat, re] of RULES) if (re.test(scrub(f.sig))) return kanaHint(f, fix(cat));
+  if (f.tag === "select") return /北海道/.test(f.options.map((o) => o.text).join(" ")) && f.options.length >= 40 ? "prefecture" : "type";
   return "ignore";
+}
+
+/** 名前と判定した欄でも、name に kana・furi・yomi 等が入っている、または入力例がカナだけなら、フリガナの欄にする。
+ *  「name1_ka」「user_name_translation」「nameRead（例）やまだたろう）」「name="ふりかな"」に漢字の名前を入れて弾かれていた */
+function kanaHint(f: FieldInfo, cat: Category): Category {
+  if (cat !== "name" && cat !== "name_last" && cat !== "name_first") return cat;
+  const ex = f.placeholder.replace(/^\s*[(（]?例[)）]?[:：]?\s*/, "").trim();
+  const hint = /(kana|furi|yomi|ruby|name_?read|readname|translation|(^|[_-])ka$)/i.test(f.name) || /(kana|furi|yomi)/i.test(f.id)
+    || (ex.length >= 2 && /^[ァ-ヶー\s　]+$/.test(ex)) || (ex.length >= 2 && /^[ぁ-んー\s　]+$/.test(ex));
+  if (!hint) return cat;
+  return cat === "name_last" ? "kana_last" : cat === "name_first" ? "kana_first" : "kana";
 }
 
 // ページ内の入力項目を収集し、各要素に data-fo-idx を振る
@@ -120,6 +145,19 @@ const COLLECT_SCRIPT = `
       }
       return false;
     }
+    // 見た目を作り替える部品（nice-select・select2・SumoSelect 等）で隠された本物の select。隠れていても、見えている作り替えの部品があれば対象にする
+    // （必須の「お問い合わせ種別」が読み取られず、空のまま弾かれていた: shinwa-eco.com 等5社）
+    if (el.tagName === 'SELECT' && (st.display === 'none' || st.opacity === '0' || st.visibility === 'hidden')) {
+      const PLUG = /(nice-select|customSelect|select2|SumoSelect|selectric|chosen|SelectWrapper|choices|bootstrap-select|ts-wrapper|selectize|jcf)/i;
+      const cands = [el.nextElementSibling, el.parentElement];
+      for (const c of cands) {
+        if (!c) continue;
+        const cls = (typeof c.className === 'string' ? c.className : '') + ' ' + (typeof el.className === 'string' ? el.className : '');
+        const cr = c.getBoundingClientRect();
+        if (PLUG.test(cls) && cr.width > 0 && cr.height > 0) return true;
+      }
+      return false;
+    }
     if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
     if (el.getAttribute('aria-hidden') === 'true') return false;
     const r = el.getBoundingClientRect();
@@ -136,6 +174,8 @@ const COLLECT_SCRIPT = `
     return r.width > 0 && r.height > 0;
   };
   // 要素自身に近い手がかり（ラベル・直前のテキスト）。周辺テキストより優先して判定に使う
+  // 「※」「必須」だけの文字（ラベルの横の印）。これをラベルとして読むと、ほんとうのラベルにたどり着けない（whatever.jp の「ご担当者名<span>※</span>」）
+  const markOnly = (t) => /^[\s※*＊]*(必須|required|任意)?[\s※*＊]*$/i.test(t);
   const ownText = (el) => {
     const parts = [];
     if (el.id) document.querySelectorAll('label[for="' + CSS.escape(el.id) + '"]').forEach(l => parts.push(l.innerText));
@@ -145,7 +185,7 @@ const COLLECT_SCRIPT = `
     // 名前・メール欄がラベルなし（ignore）になって Googleフォームに1件も送れていなかった
     if (el.getAttribute('aria-labelledby')) { el.getAttribute('aria-labelledby').split(/\\s+/).forEach((lid) => { const l = lid ? document.getElementById(lid) : null; if (l && (l.innerText || '').trim()) parts.push(l.innerText); }); }
     let prev = el.previousSibling; let hops = 0;
-    while (prev && hops < 3) { const t = (prev.textContent || '').trim(); if (t) { if (t.length <= 12) parts.push(t); break; } prev = prev.previousSibling; hops++; }
+    while (prev && hops < 3) { const t = (prev.textContent || '').trim(); if (t && !markOnly(t)) { if (t.length <= 12) parts.push(t); break; } prev = prev.previousSibling; hops++; }
     // チェックボックス・ラジオは文字が後ろにあることが多い（同意欄が「同意」と分からず、チェックしていなかった: yellowtails の実例）
     if ((el.type === 'checkbox' || el.type === 'radio') && !el.closest('label')) {
       let next = el.nextSibling; let h2 = 0;
@@ -169,7 +209,7 @@ const COLLECT_SCRIPT = `
     const dd = el.closest('dd'); if (dd) { let p = dd.previousElementSibling; while (p && p.tagName !== 'DT') p = p.previousElementSibling; if (p) { const t = (p.innerText || '').trim(); if (t) return t; } }
     // 直前の兄弟ブロック（<p>会社名</p><input> や <div class=label>）
     let sib = el.previousElementSibling; let hops = 0;
-    while (sib && hops < 2) { const t = (sib.innerText || '').trim(); if (t && t.length <= 40 && !sib.querySelector('input,textarea,select')) return t; sib = sib.previousElementSibling; hops++; }
+    while (sib && hops < 3) { const t = (sib.innerText || '').trim(); if (t && t.length <= 40 && !markOnly(t) && !sib.querySelector('input,textarea,select')) return t; sib = sib.previousElementSibling; hops++; }
     // 汎用: 親ブロック内のテキスト（短いもの）。
     // 内側の箱が注意書きだけ（「※個人の方は…」等）でラベル本体がその外側にあるサイト（Jicoo等）があるため、
     // 条件を満たす箱のうち一番外側のものを採用する（inputsが2個以下という制約で隣の欄の文言は混ざらない）
@@ -178,6 +218,21 @@ const COLLECT_SCRIPT = `
       const t = (box.innerText || '').trim();
       if (t && t.length < 80 && box.querySelectorAll('input,textarea,select').length <= 2) best = t;
       box = box.parentElement; hops++;
+    }
+    // 箱の中に文字が無い: 見出しが入力欄を包む箱の「前」にある（<h2>貴社名<span>必須</span></h2><ul><li><input>、cardnet.co.jp 等）。
+    // 入力欄が3つ以下の箱をたどり、その直前の短い見出しを使う
+    if (!best || markOnly(best)) {
+      let anc = el.parentElement; let lv = 0;
+      while (anc && anc !== document.body && lv < 4 && anc.querySelectorAll('input,textarea,select').length <= 3) {
+        let ps = anc.previousElementSibling; let h = 0;
+        while (ps && h < 2) {
+          const t = (ps.innerText || '').trim();
+          if (ps.querySelector('input,textarea,select')) break;
+          if (t && !markOnly(t)) { if (t.length <= 40) return t; break; }
+          ps = ps.previousElementSibling; h++;
+        }
+        anc = anc.parentElement; lv++;
+      }
     }
     return best;
   };
@@ -235,7 +290,7 @@ const COLLECT_SCRIPT = `
     if (isCommentForm(el)) continue;
     el.setAttribute('data-fo-idx', String(i));
     // name が data[MailMessage][name_1] の形（baserCMS）は、いちばん内側だけで判定する（外側の Mail に当たって全欄をメールと読み、名前・電話にもメールアドレスを入れていた）
-    const own = [ownText(el), el.getAttribute('placeholder'), (el.getAttribute('name') || '').replace(/^.*\\[([^\\[\\]]+)\\]$/, '$1'), el.id, el.getAttribute('autocomplete'), el.getAttribute('title')].filter(Boolean).join(' | ').replace(/\\s+/g, ' ').slice(0, 200);
+    const own = [ownText(el), el.getAttribute('placeholder'), ((n) => { const inner = n.replace(/^.*\\[([^\\[\\]]+)\\]$/, '$1'); return /^(\\d+|data)$/.test(inner) ? n.replace(/\\[.*$/, '') : inner; })(el.getAttribute('name') || ''), el.id, el.getAttribute('autocomplete'), el.getAttribute('title')].filter(Boolean).join(' | ').replace(/\\s+/g, ' ').slice(0, 200);
     const sig = own + ' || ' + labelText(el).replace(/\\s+/g, ' ').slice(0, 200);
     const required = el.required || el.getAttribute('aria-required') === 'true' || /必須|required|\\*/.test(labelText(el).slice(0, 60)) || /required|必須/i.test(String(el.className || '')) || reqMark(el);
     const options = el.tagName === 'SELECT' ? toArr(el.options).map(o => ({ value: o.value, text: (o.textContent || '').trim(), disabled: !!o.disabled })) : [];
@@ -341,6 +396,20 @@ export type FillValues = {
   message: string;
 };
 
+/** 担当者名とフリガナから、会社名の語を外す。担当者名を「BRIDGE HATCH 山田太郎」のように会社名つきで登録していると、
+ *  「漢字またはひらがなで」「スペースを含めないで」「全角で」「12文字以内」などで弾かれていた（Windows の利用先で約30社）。
+ *  漢字の名前が残るなら、その前の英字だけの語も外す。フリガナは、残った名前の語の数だけ後ろから使う */
+export function personForForm(person: string, kana: string, company: string): { person: string; kana: string } {
+  const norm = (t: string) => t.normalize("NFKC").toLowerCase();
+  const comp = norm(company);
+  const toks = person.trim().split(/[\s　]+/).filter(Boolean);
+  let keep = toks.filter((t) => !(norm(t).length >= 2 && comp.includes(norm(t))));
+  if (keep.some((t) => /[一-龥々ぁ-んァ-ヶ]/.test(t))) keep = keep.filter((t) => /[一-龥々ぁ-んァ-ヶ]/.test(t));
+  if (!keep.length || keep.length === toks.length) return { person, kana };
+  const ktoks = kana.trim().split(/[\s　]+/).filter(Boolean);
+  return { person: keep.join(" "), kana: ktoks.length > keep.length ? ktoks.slice(-keep.length).join(" ") : kana };
+}
+
 function splitName(full: string): [string, string] {
   const parts = full.trim().split(/[\s　]+/);
   if (parts.length >= 2) return [parts[0], parts.slice(1).join(" ")];
@@ -410,6 +479,8 @@ function wantsDigitsOnly(f: FieldInfo, hyphenLen: number): boolean {
   // type=number にはハイフン入りの文字を入れられない（「Cannot type text into input[type=number]」で空のままになっていた）
   if (f.type === "number") return true;
   if (f.placeholder.includes("-") || f.placeholder.includes("－")) return false;
+  // 入力例がハイフン無しの番号（例）09012349876）なら、数字だけで入れる（asking.co.jp・kkdac 等）
+  if (/(^|[^\d])\d{10,11}([^\d]|$)/.test(f.placeholder.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)))) return true;
   if (f.maxlength > 0 && f.maxlength < hyphenLen) return true;
   if (f.inputmode === "numeric" || f.inputmode === "tel" && f.maxlength > 0 && f.maxlength < hyphenLen) return true;
   if (f.pattern && /^\^?\[?0-9\]?[\d\\{},+*]*\$?$/.test(f.pattern) && !f.pattern.includes("-")) return true;
@@ -471,17 +542,28 @@ function cutAtSentence(text: string, max: number): string {
 /** エラー文から、本文の文字数の上限を読む（「500文字以内で入力してください」「半角255文字（全角127文字）以内」「1000文字を超えています」）。
  *  全角の数が書いてあればそちらを使う（日本語の本文は全角のため）。読めなければ null */
 export function limitFromError(detail: string): number | null {
-  const t = detail.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).replace(/[,，]/g, "");
-  const zen = /全角\s*(\d{2,5})\s*(文字|字)/.exec(t);
-  const any = zen ?? /(\d{2,5})\s*(文字|字)\s*[）)]?\s*(以内|まで|以下|を超え|をこえ|未満)/.exec(t);
-  if (!any) return null;
-  // 「半角1000文字以下」だけが書いてあれば、日本語（全角）はその半分しか入らない
-  const n = !zen && /半角\s*\d/.test(t) ? Math.floor(Number(any[1]) / 2) : Number(any[1]);
-  return n >= 20 ? n : null;
+  // エラー文は欄ごとに「 / 」でつながっている。名前やフリガナの「全角25文字以内」を本文の上限と読み、
+  // 営業文を25文字に切って入れ直していた（labo-party・713.co.jp の実例。通っていたら切れた文面が届くところだった）。
+  // 本文以外の欄の名前が出てくる部分は読まず、上限も100文字以上のときだけ使う
+  const OTHER = /(名前|氏名|会社|社名|法人|団体|住所|電話|TEL|カナ|フリガナ|ふりがな|郵便|メール|件名|部署|役職|URL|ホームページ)/i;
+  const BODY = /(内容|本文|メッセージ|備考|詳細|質問|相談|問い?合わ?せ|問合せ|要望|コメント)/;
+  for (const seg of detail.split(/\s\/\s|\n/)) {
+    if (OTHER.test(seg) && !BODY.test(seg)) continue;
+    const t = seg.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).replace(/[,，]/g, "");
+    const zen = /全角\s*(\d{2,5})\s*(文字|字)/.exec(t);
+    const any = zen ?? /(\d{2,5})\s*(文字|字)\s*[）)]?\s*(以内|まで|以下|を超え|をこえ|未満)/.exec(t);
+    if (!any) continue;
+    // 「半角1000文字以下」だけが書いてあれば、日本語（全角）はその半分しか入らない
+    const n = !zen && /半角\s*\d/.test(t) ? Math.floor(Number(any[1]) / 2) : Number(any[1]);
+    if (n >= 100) return n;
+  }
+  return null;
 }
 
 /** エラー文が「本文に URL を入れられない」と言っているか */
 export function urlBanned(detail: string): boolean {
+  // 「SPAM BLOCK … 送信内容にURLを含める事はできません」。文字コードの指定が無いページで日本語が化けても、見出しと URL の字は残る（9est.co.jp 等の実例4件）
+  if (/SPAM\s*BLOCK/i.test(detail) && /URL/i.test(detail)) return true;
   // 「URLは入力できません」「リンクの記述は認められていません」「内容にアドレスを含めることはできません」も（Windows の利用先で計8社）
   return /(URL|ＵＲＬ|ｕｒｌ|リンク|https?|アドレス)/i.test(detail) && /((でき|出来)ません|禁止|含め|入れないで|使用し?ないで|お控え|認められ)/.test(detail)
     && !/メールアドレス(を|が|は)?(正しく|入力|ご入力|確認)/.test(detail);
@@ -529,7 +611,8 @@ export function fitMessageToSite(message: string, detail: string, short = ""): {
 export const kataToHira = (s: string) => s.replace(/[ァ-ヶ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60));
 
 export async function fillFields(target: Page | Frame, fields: FieldInfo[], v: FillValues, opts: { requireMessage?: boolean; normalize?: boolean; mode?: "fill" | "type"; kana?: "hira" | "kata"; numFormat?: "digits" | "hyphen" } = {}): Promise<FillReport> {
-  const s = v.sender;
+  const pf = personForForm(v.sender.person, v.sender.person_kana || "", v.sender.company);
+  const s = { ...v.sender, person: pf.person, person_kana: pf.kana };
   // normalize 時は「カナのスペース除去」などの修正ルールを通す（送信エラー後の埋め直し用）
   const nz = (cat: Category, value: string) => (opts.normalize ? applyFixups(cat, value) : value);
   // フリガナ欄をひらがなで入れるべきか: ラベルに「ひらがな」とある、またはエラー文で「ひらがなで」と言われた（#120）
@@ -555,7 +638,8 @@ export async function fillFields(target: Page | Frame, fields: FieldInfo[], v: F
   const msgField = msgAreas.find((f) => MAIN_MSG.test(ownOf(f)) && !SUB_MSG.test(ownOf(f))) ?? msgAreas.find((f) => MAIN_MSG.test(ownOf(f))) ?? msgAreas[0] ?? fields.find((f) => classify(f) === "message");
   if (!msgField && opts.requireMessage !== false) return report;
   // 段階式フォームの1ページ目（本文欄はまだ出ていない）は、見えている欄を全部対象にする
-  const scoped = msgField ? fields.filter((f) => f.formIndex === msgField.formIndex) : fields;
+  // 同意のチェックが form の外に置かれていることがある（relocation.jp 等3社）。外のものも同意だけは対象にする
+  const scoped = msgField ? fields.filter((f) => f.formIndex === msgField.formIndex || (f.formIndex === -1 && f.type === "checkbox" && classify(f) === "agree")) : fields;
 
   // 項目の種類。欄を1つずつ単独で判定すると、「姓・名」のように1つのラベルに入力欄が2つ並ぶフォームで
   // 2欄とも「姓」になり「田中 田中」と送ってしまう（実例: di-v.co.jp の name_last#2,name_last#3）。
@@ -715,7 +799,8 @@ export async function fillFields(target: Page | Frame, fields: FieldInfo[], v: F
         value = pick?.f.value;
       }
       if (value !== undefined) {
-        try { await loc(f).selectOption(value, { timeout: 3000 }); ok = true; } catch { report.log.push(`select失敗 idx=${f.idx}`); }
+        ok = await selectRobust(loc(f), value, f.options);
+        if (!ok) report.log.push(`select失敗 idx=${f.idx}`);
       }
     } else {
       switch (cat) {
@@ -826,7 +911,7 @@ export async function fillRequiredLeftovers(target: Page | Frame, log: string[])
       if (String(current).trim()) continue;
       if (f.tag === "select") {
         const pick = pickOption(realOptions(f.options).map((o) => ({ f: o, text: `${o.text} ${o.value}` })), cat);
-        if (pick) { await el.selectOption(pick.f.value, { timeout: 3000 }).catch(() => {}); filled++; log.push(`必須の選択を補完: 「${label(f)}」→「${pick.f.text.slice(0, 20)}」`); }
+        if (pick && (await selectRobust(el, pick.f.value, f.options))) { filled++; log.push(`必須の選択を補完: 「${label(f)}」→「${pick.f.text.slice(0, 20)}」`); }
         continue;
       }
       // 値があるはずの欄（メール・電話など）が空なのは別の原因なので、ここでは触らない
@@ -867,6 +952,73 @@ export async function checkConfirmAgreements(target: Page | Frame, fields: Field
 /** Googleフォームなどの「見た目だけの選択肢」（role=radio / role=checkbox）を選ぶ（#119）。
  *  これらは input 要素ではないため、これまで存在に気づけず「この質問は必須です」で弾かれていた。
  *  requiredOnly=true のときは必須の設問だけ、false のときは未選択の設問すべてを対象にする（エラー後の埋め直し用） */
+/** 「その他」を選んだときに入力を求められる欄（「その他の内容」「その他の回答」・name に other / sonota / free）を埋める。
+ *  その他を選んだまま空にしていて「［その他］の内容を入力してください」で止まっていた（Googleフォーム・enageed.jp・aikawavmc.com 等15社以上） */
+/** select を選ぶ。選べたか（値が残っているか）まで確かめる。
+ *  Wix などは selectOption で選んでも値が空に戻る（キーボードで選ぶと残る）。見た目の部品で隠された select は JS で値を入れて知らせる */
+async function selectRobust(el: ReturnType<Page["locator"]>, value: string, options: FieldInfo["options"]): Promise<boolean> {
+  const now = () => el.inputValue({ timeout: 1500 }).catch(() => "");
+  try { await el.selectOption(value, { timeout: 3000 }); } catch { /* 下で別の方法を試す */ }
+  if ((await now()) === value) return true;
+  const at = options.findIndex((o) => o.value === value);
+  if (at >= 0) {
+    try {
+      await el.focus({ timeout: 1500 });
+      await el.press("Home");
+      for (let i = 0; i < at; i++) await el.press("ArrowDown");
+      await el.press("Enter").catch(() => {});
+    } catch { /* 下で JS を試す */ }
+    if ((await now()) === value) return true;
+  }
+  await el.evaluate((e, v) => {
+    const sel = e as HTMLSelectElement;
+    sel.value = v;
+    sel.dispatchEvent(new Event("input", { bubbles: true }));
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  }, value).catch(() => {});
+  return (await now()) === value;
+}
+
+export async function fillOtherText(target: Page | Frame, log: string[], value = "ご提案"): Promise<number> {
+  const idxs: string[] = await timed(target.evaluate(() => {
+    const out: string[] = [];
+    const vis = (e: Element) => { const r = e.getBoundingClientRect(); const cs = getComputedStyle(e); return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none"; };
+    const OTHER = /^\s*(その他|other|others|そのほか)\s*[:：]?\s*$/i;
+    // 選ばれている「その他」（ラジオ・チェック・セレクト・Googleフォームの選択肢）
+    const picked: Element[] = [];
+    document.querySelectorAll("input[type=radio]:checked, input[type=checkbox]:checked").forEach((e) => {
+      const i = e as HTMLInputElement;
+      const lab = (i.closest("label")?.innerText || (i.id ? (document.querySelector('label[for="' + CSS.escape(i.id) + '"]') as HTMLElement | null)?.innerText : "") || i.value || "").trim();
+      if (OTHER.test(lab) || /^(other|sonota|その他)$/i.test(i.value)) picked.push(i);
+    });
+    document.querySelectorAll("select").forEach((e) => { const sel = e as HTMLSelectElement; const o = sel.options[sel.selectedIndex]; if (o && OTHER.test(o.text)) picked.push(sel); });
+    document.querySelectorAll('[role=radio][aria-checked=true], [role=checkbox][aria-checked=true]').forEach((e) => { if (OTHER.test((e as HTMLElement).innerText || e.getAttribute("aria-label") || e.getAttribute("data-value") || "") || e.getAttribute("data-value") === "__other_option__") picked.push(e); });
+    for (const p of picked) {
+      // 同じ設問の箱（選択肢を含む、入力欄が少ない箱）の中の、見えている空の文字欄
+      let box: Element | null = p.parentElement;
+      for (let i = 0; i < 5 && box; i++, box = box.parentElement) {
+        const texts = Array.from(box.querySelectorAll("input[type=text], input:not([type]), textarea")).filter((t) => vis(t) && !(t as HTMLInputElement).value && !t.hasAttribute("data-fo-msg"));
+        const named = texts.find((t) => /(other|sonota|その他|free|etc|具体)/i.test((t.getAttribute("name") || "") + " " + t.id + " " + (t.getAttribute("placeholder") || "") + " " + (t.getAttribute("aria-label") || "")));
+        const pick = named ?? (box.querySelectorAll("input[type=text], input:not([type]), textarea").length <= 2 ? texts[0] : undefined);
+        if (pick) {
+          if (!pick.getAttribute("data-fo-other")) pick.setAttribute("data-fo-other", String(out.length));
+          out.push(pick.getAttribute("data-fo-other")!);
+          break;
+        }
+        if (box.querySelectorAll("textarea, input[type=text], input:not([type])").length > 4) break;
+      }
+    }
+    return out;
+  }), 5000, "その他の欄").catch(() => [] as string[]);
+  let n = 0;
+  for (const k of idxs) {
+    const el = target.locator(`[data-fo-other="${k}"]`).first();
+    try { await el.fill(value, { timeout: 3000 }); n++; } catch { /* 入らなければそのまま */ }
+  }
+  if (n) log.push(`「その他」を選んだ欄の内容に「${value}」を入力（${n}件）`);
+  return n;
+}
+
 export async function fillAriaChoices(target: Page | Frame, log: string[], opts: { requiredOnly?: boolean } = {}): Promise<number> {
   type G = { g: number; kind: "radio" | "checkbox"; label: string; options: { i: number; text: string }[] };
   let groups: G[] = [];
@@ -984,6 +1136,20 @@ async function ensureChecked(target: Page | Frame, f: FieldInfo): Promise<boolea
 async function ensureCheckedInner(target: Page | Frame, f: FieldInfo): Promise<boolean> {
   const el = target.locator(`[data-fo-idx="${f.idx}"]`).first();
   const isOn = () => el.evaluate((e) => (e as HTMLInputElement).checked).catch(() => false);
+  // 規約の枠を最後までスクロールしないと同意のチェックが押せないフォーム（three-v-amenity.co.jp 等5社）。
+  // 押せないまま JS でチェックを付けても、送信ボタンは有効にならない。規約らしい枠を下まで送ってから押す
+  if (await el.evaluate((e) => (e as HTMLInputElement).disabled).catch(() => false)) {
+    await target.evaluate(() => {
+      for (const b of Array.from(document.querySelectorAll("div, section, p, textarea, iframe"))) {
+        const cs = getComputedStyle(b);
+        if (!/(auto|scroll)/.test(cs.overflowY) || b.scrollHeight <= b.clientHeight + 2) continue;
+        if (!/(規約|個人情報|プライバシー|privacy|policy)/i.test((b as HTMLElement).innerText || (b as HTMLTextAreaElement).value || "")) continue;
+        b.scrollTop = b.scrollHeight;
+        b.dispatchEvent(new Event("scroll", { bubbles: true }));
+      }
+    }).catch(() => {});
+    await target.waitForTimeout(400);
+  }
   // まず label / label[for] の実クリック（React系はこれでないと状態が更新されない）
   try { await el.check({ timeout: 2000 }); } catch {}
   if (await isOn()) return true;
@@ -1013,7 +1179,7 @@ async function ensureCheckedInner(target: Page | Frame, f: FieldInfo): Promise<b
 
 /** ラジオ／セレクトの選択肢から「営業の問い合わせ」に一番近いものを選ぶ */
 function pickOption<T>(opts: { f: T; text: string }[], cat: Category): { f: T; text: string } | undefined {
-  const valid = opts.filter((o) => o.text.trim() && !/(選択して(ください|下さい)|選んで(ください|下さい)|お選び(ください|下さい)|please select|^[-ー－─=＝▼▽*＊\s]*(選択|未選択|選択なし)?[-ー－─=＝▼▽*＊\s]*$)/i.test(o.text.trim()));
+  const valid = opts.filter((o) => o.text.trim() && !/(選択して(ください|下さい)|選んで(ください|下さい)|お選び(ください|下さい)|please select|^[-ー－─=＝▼▽*＊\s]*(選択|未選択|選択なし|select|choose)?[-ー－─=＝▼▽*＊\s.]*$)/i.test(o.text.trim()));
   if (!valid.length) return undefined;
   if (cat === "agree") return valid.find((o) => /(同意する|同意します|agree|はい|yes)/i.test(o.text)) ?? valid[0];
   // 都道府県は送信者の所在地と合うものだけ（matchPrefOption）。合わないのに先頭の「北海道」を選ぶと事実と違う値を送る
@@ -1046,7 +1212,7 @@ function pickOption<T>(opts: { f: T; text: string }[], cat: Category): { f: T; t
 // 「要確認」として手動送信リストへ振り分ける。CAPTCHA等のボット対策を回避する機能ではない。
 
 /** 触ってはいけない ignore（fax・パスワード・認証系など）と、単に分類できなかった想定外項目を区別する */
-const NEVER_AI_RE = /(fax|ファックス|ファクス|password|パスワード|search|検索|captcha|認証コード|画像の文字|クーポン|coupon)/i;
+const NEVER_AI_RE = /(fax|ファックス|ファクス|password|パスワード|search|検索|captcha|認証コード|画像認証|画像の文字|img_auth|spam-block|クーポン|coupon)/i;
 
 const ownLabelOf = (f: FieldInfo) => {
   const raw = ((f.sig.split(" || ")[0] || "").split(" | ")[0] || f.name).trim();
@@ -1188,13 +1354,13 @@ ${list}
 const SUBMIT_RE = /(送信|送る|申し?込|送付|submit|send|soushin|sousin|完了する|確定|この内容で)/i;
 const CONFIRM_RE = /(確認|次へ|進む|すすむ|confirm|kakunin|next|preview|入力内容)/i;
 // 「入力内容変更」「入力内容を編集」は確認画面の戻るボタン（「入力内容」を含むので確認ボタンとして押していた）
-const BACK_RE = /(戻る|もどる|修正|back|modoru|return|edit|訂正|キャンセル|cancel|リセット|reset|clear|クリア|やり直|変更|編集|書き直)/i;
+const BACK_RE = /(戻る|もどる|修正|back|modoru|return|edit|訂正|キャンセル|cancel|リセット|reset|clear|クリア|やり直|変更|編集|書き直|送信せず|閉じる|close|中止)/i;
 // 送信・確認の言葉を含んでいても、押してはいけないボタン。
 // 「入力内容保存／読込」（formzu）を確認ボタンとして押し続けた例、検索ボタン（class名 sb-search-submit）を送信ボタンとして押した例があった
 // フォームの中にある「確認」を含むボタン・リンクも押さない: SSLシール（「クリックして証明書の内容をご確認ください」）・
 // 「個人情報の取り扱いに関する確認事項」・「…資料で確認する」・「お問い合わせの前に…ご確認ください。」・日付ピッカーの「Next month」
 // （「資料」だけにすると「資料を請求する」の送信ボタンまで外れるので「資料で確認」に絞る。「prev」は「preview」に当たらないよう単語で見る）
-const NOT_SUBMIT_RE = /(保存|読込|読み込|印刷|print|検索|search|ログイン|login|住所(を)?(自動)?(入力|取得)|郵便番号から|添付|ファイル(を)?選択|upload|アップロード|メルマガ|newsletter|subscribe|翻訳|translate|証明書|確認事項|ご確認(ください|下さい)|資料で(ご)?確認|month|year|\bprev\b|previous|カレンダー|calendar)/i;
+const NOT_SUBMIT_RE = /(保存|読込|読み込|印刷|print|検索|search|ログイン|login|住所(を)?(自動)?(入力|取得)|郵便番号から|添付|ファイル(を)?選択|upload|アップロード|メルマガ|newsletter|subscribe|翻訳|translate|証明書|確認事項|ご確認(ください|下さい)|資料で(ご)?確認|month|year|\bprev\b|previous|カレンダー|calendar|(プライバシー|個人情報|規約|ポリシー|免責|住所|地域|地図|アクセス).{0,10}を?確認|(押して|クリックして)(ください|下さい)|「)/i;
 // 確認ボタンらしい文末（「入力内容を確認する」「確認画面へ進む」「次へ」）。<a> や div の「…をご確認」より先に選ぶ
 const CONFIRM_TAIL_RE = /(確認(する|します|画面へ|画面に進む|画面へ進む|へ進む|へ|画面)?|次へ(進む)?|進む|すすむ|confirm|next|preview)[\s>＞»→▶]*$/i;
 // 段階式フォームの1ページ目で押してよいボタン（「次へ」だけ。送信は押さない）
@@ -1241,6 +1407,17 @@ const BUTTONS_SCRIPT = `
     const r = el.getBoundingClientRect(); const st = getComputedStyle(el);
     if (r.width === 0 || r.height === 0 || st.display === 'none' || st.visibility === 'hidden') continue;
     const tag = el.tagName;
+    // 押すボタンになれない入力欄（onclick 付きのチェックボックス「送信チェック済み」等）は候補にしない。
+    // 文言に「送信」が入っているので、本物の「メールを送信する」より先に押していた（tv-impact.net 等6社）
+    if (tag === 'INPUT' && !/^(submit|button|image)$/i.test(el.getAttribute('type') || '')) continue;
+    if (/^(SELECT|TEXTAREA|LABEL|OPTION)$/.test(tag)) continue;
+    // 1px の箱に隠したダミーの送信ボタン（古い Mail Form Pro の #mailfrom_hidden_object）。押しても何も起きず、本物の送信ボタン（フォームの外）を押せなかった（7社）
+    let clipped = false;
+    for (let a = el.parentElement, n = 0; a && n < 4 && !clipped; a = a.parentElement, n++) {
+      const ar = a.getBoundingClientRect();
+      if ((ar.width <= 2 || ar.height <= 2) && getComputedStyle(a).overflow === 'hidden') clipped = true;
+    }
+    if (clipped) continue;
     // div等をボタン扱いするのは、テキストが短い（=ボタンらしい）ものだけ。大きなコンテナを誤クリックしない。
     // 本物のボタンを包む箱（<div class="btn-wrap"><button>送信する</button></div>）も候補にしない（箱の真ん中を押してもボタンに当たらない）
     if (!/^(BUTTON|INPUT|A)$/.test(tag) && ((el.innerText || '').trim().length > 40 || el.querySelector('input,textarea,select,button,a,[role=button]'))) continue;
@@ -1260,7 +1437,11 @@ const BUTTONS_SCRIPT = `
     if (tag === 'A' && !el.getAttribute('role') && !el.getAttribute('onclick') && !/btn|button|submit/i.test(cls + ' ' + (el.id || ''))) {
       const href = (el.getAttribute('href') || '').trim();
       const stays = href === '' || href.charAt(0) === '#' || /^javascript:/i.test(href) || !!el.closest('form');
-      if (!stays || !text || text.length > 20) continue;
+      // 確認画面の「メールを送信する」が send.html へのただのリンク、という古いサイトがある（foresightinc.jp）。同じサイトへの
+      // 「送信する」だけのリンクは、ほかに押せるボタンが無いときの候補にする（下で leaves=true になる）
+      let sendLink = false;
+      try { sendLink = new URL(el.href, location.href).origin === location.origin && /^(この内容で)?(メールを)?送信(する|します)?$/.test(text); } catch (e) {}
+      if ((!stays && !sendLink) || !text || text.length > 20) continue;
     }
     // ヘッダー・フッターの箱か。body や全体を包むラッパー（<body class="header-fixed"> 等）に class が当たっただけのものは数えない
     // （当たると、固定表示のポップアップ検知とフォーム外のリンクが全部だめになっていた）
@@ -1290,14 +1471,19 @@ const BUTTONS_SCRIPT = `
     if (!form && /(slick|swiper|carousel|slider|splide|owl-|glide|flickity)/i.test(cls + ' ' + ((el.parentElement && typeof el.parentElement.className === 'string') ? el.parentElement.className : ''))) continue;
     let search = /search|検索/i.test(cls + ' ' + (el.id || '') + ' ' + (el.getAttribute('name') || ''));
     if (form && !search) {
-      search = form.getAttribute('role') === 'search' || /search/i.test((form.getAttribute('action') || '') + ' ' + (typeof form.className === 'string' ? form.className : '') + ' ' + (form.id || ''))
-        || !!form.querySelector('input[type=search], input[name="s"], input[name="q"]');
+      // 入力した本文欄を含むフォームは検索フォームではない。選択欄の絞り込み（bootstrap-select の検索欄）や、ページ全体を1つの form で包む
+      // ASP.NET の作りでは、検索欄が同じ form の中にあり、全部のボタンを検索ボタンとみなして「送信ボタンが見つからない」になっていた（6社）
+      search = !form.querySelector('textarea[data-fo-idx]') && (form.getAttribute('role') === 'search' || /search/i.test((form.getAttribute('action') || '') + ' ' + (typeof form.className === 'string' ? form.className : '') + ' ' + (form.id || ''))
+        || !!form.querySelector('input[type=search], input[name="s"], input[name="q"]'));
     }
     if (!search && el.closest('[role=search]')) search = true;
     el.setAttribute('data-fo-btn', String(i));
     // ページ内ポップアップ（確認ダイアログ等）の中のボタンか。明示的なダイアログ要素か、画面に固定表示された重なり（position:fixed で z-index が高い）の中
     // Mail Form Pro の確認窓（#mfp_overlay・position:absolute）も。送信ボタンがフォームの外にあり、後ろの「確認画面へ」を押し続けていた（23社）
-    let inDialog = !!el.closest('dialog[open],[role=dialog],[role=alertdialog],[aria-modal=true],[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],[class*="popup"],[class*="lightbox"],#mfp_overlay,[id*="overlay"],[class*="overlay"]') || (!!topLayer && topLayer.contains(el));
+    // 自分の class は見ない（ferret One の「送信」は class="popup-link" で、押すとポップアップを開くだけのボタン。中の本物の「送信」より先に押し続けていた）
+    let inDialog = !!(el.parentElement && el.parentElement.closest('dialog[open],[role=dialog],[role=alertdialog],[aria-modal=true],[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],[class*="popup"],[class*="lightbox"],#mfp_overlay,#confirmBody,[id*="overlay"],[class*="overlay"]')) || (!!topLayer && topLayer.contains(el));
+    // Cookie の同意の帯（「確認しました」）はポップアップでもボタンでもない
+    if (el.closest('[id*="cookie" i],[class*="cookie" i],[class*="consent" i],#CybotCookiebotDialog')) { el.removeAttribute('data-fo-btn'); continue; }
     // 固定表示のヘッダー・追従する案内ボタン（「お申し込み」等の実URLの <a>）はポップアップではない
     const fixedOk = !inChrome('header, nav, [class*="header"], [id*="header"]') && !leavesReal;
     for (let a = el.parentElement; fixedOk && !inDialog && a && a !== document.body; a = a.parentElement) {
@@ -1346,6 +1532,20 @@ export async function allSubmitButtonsDisabled(target: Page | Frame): Promise<bo
 export type ClickNet = { navigated?: boolean; httpStatus?: number; httpUrl?: string; redirected?: boolean; postOk?: boolean };
 
 export async function clickNextButton(target: Page | Frame, page: Page, log: string[], opts: { preferSubmit?: boolean; net?: ClickNet; nextOnly?: boolean } = {}): Promise<"confirm" | "submit" | "none"> {
+  // 押したあとに数秒だけ出る完了の表示（Wix の「お問い合わせありがとうございます」等）を、出ているうちに書き留めておく。
+  // 通信が落ち着くのを待ってから判定すると、もう消えていて判定不能になっていた（Wix のサイトで16社。実際は送れていた）
+  await target.evaluate((src) => {
+    const w = window as unknown as { __foSeen?: string[]; __foTimer?: ReturnType<typeof setInterval> };
+    w.__foSeen = [];
+    if (w.__foTimer) clearInterval(w.__foTimer);
+    const re = new RegExp(src, "i");
+    const end = Date.now() + 40000;
+    w.__foTimer = setInterval(() => {
+      if (Date.now() > end) { clearInterval(w.__foTimer); return; }
+      const m = ((document.body && document.body.innerText) || "").replace(/\s+/g, "").match(re);
+      if (m && w.__foSeen!.indexOf(m[0]) < 0 && w.__foSeen!.length < 20) w.__foSeen!.push(m[0]);
+    }, 250);
+  }, SUCCESS_RE.source).catch(() => {});
   // 押した直後でページが切り替わっている途中だと evaluate が落ちる（Execution context was destroyed）。読み込みを待って1回だけやり直す
   const btns = (await timed(target.evaluate(BUTTONS_SCRIPT), 8000, "ボタンの収集").catch(async () => {
     await page.waitForLoadState("domcontentloaded", { timeout: 8000 }).catch(() => {});
@@ -1392,7 +1592,7 @@ export async function clickNextButton(target: Page | Frame, page: Page, log: str
         const forms = document.querySelectorAll("form");
         for (let k = 0; k < forms.length; k++) {
           const g = forms[k];
-          if (g.getAttribute("role") === "search" || g.querySelector('input[type=search], input[name="s"], input[name="q"]')) continue;
+          if (!g.querySelector("textarea[data-fo-idx]") && (g.getAttribute("role") === "search" || g.querySelector('input[type=search], input[name="s"], input[name="q"]'))) continue;
           const n = g.querySelectorAll("input[type=hidden]").length;
           if (n >= 2 && n > best) { best = n; f = g; }
         }
@@ -1674,6 +1874,12 @@ export async function judgeOutcome(page: Page, hadFieldsBefore: number, afterSub
     const btnLeft = await submitButtonRemains(where);
     if (strong.length && !(confirmFresh && btnLeft) && (afterSubmit || (!confirmFresh && !btnLeft))) return { status: "sent", detail: "完了文言を検知" };
     if (!strong.length && !confirmFresh && !btnLeft) return { status: "sent", detail: "完了文言を検知" };
+  }
+  // 押したあと数秒だけ出て消えた完了の表示（clickNextButton で書き留めたもの）。送信前のページに無かった強い文言で、確認画面でないときだけ
+  if (afterSubmit && !confirmFresh) {
+    const seen: string[] = await timed(where.evaluate(() => (window as unknown as { __foSeen?: string[] }).__foSeen ?? []), 3000, "完了表示の記録").catch(() => [] as string[]);
+    const gone = seen.filter((h) => !beforeCompact.includes(h) && !WEAK_SUCCESS_RE.test(h));
+    if (gone.length) return { status: "sent", detail: `完了文言を検知（押したあと一時的に表示「${gone[0].slice(0, 30)}」）` };
   }
   // 完了URL: 送信前のURLがすでに当てはまる（/customer-success/contact/ 等）なら使わない。パスが変わったときだけ採用する
   const pathOf = (u: string) => { try { return new URL(u).pathname; } catch { return ""; } };

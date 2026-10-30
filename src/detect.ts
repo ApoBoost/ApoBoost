@@ -73,6 +73,10 @@ export const CAPTCHA_SELECTORS = [
   "input[name*='captcha' i]",
   "input[name*='securimage' i]",
   ".pera1-captcha-wrap", // ペライチ独自の「私はロボットではありません」
+  // Contact Form 7 の画像認証（image-auth-japanese-version-for-contactform7）。「特になし」を入れて入力エラーになっていた（14社）
+  "img.image_auth_jp_quiz",
+  "input.wpcf7-image_auth_jp",
+  "input[name*='img_auth' i]",
 ];
 /** 見えない要素でも、あれば人の確認が要るしるし。Cloudflare Turnstile は応答欄が隠し欄で、iframe も shadow DOM の中にあって見えない。
  *  Shopify の問い合わせフォームは送信時に hCaptcha の確認が出る（Windows の利用先で18件が送れていなかった） */
