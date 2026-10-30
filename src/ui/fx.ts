@@ -33,7 +33,9 @@ export const FX_LOGIN = !FX_ENABLED ? "" : `<style>
 #fx-globe spline-viewer{position:absolute;inset:0;width:100%;height:100%;opacity:0;transition:opacity 1.2s}
 #fx-globe spline-viewer.on{opacity:1}
 .box{position:relative;z-index:1;box-shadow:0 1px 2px rgba(6,34,86,.05),0 24px 60px -24px rgba(6,34,86,.35)}
-@media (min-width:900px){body{padding-left:56vw}}
+/* 下の一行（許諾先・お試し期間・著作権）は右の白い面だけに置く。全幅のままだと左半分が地球の面の下に隠れて読めなかった */
+.foot{z-index:1;padding:0 12px}
+@media (min-width:900px){body{padding-left:56vw}.foot{left:56vw}}
 /* 狭い画面では地球を全面の背景にして、その上にログインの箱を置く */
 @media (max-width:899px){#fx-globe{width:100%}}
 </style>
